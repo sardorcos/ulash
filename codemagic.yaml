@@ -88,7 +88,24 @@ workflows:
           done
           mkdir -p "$HOME/private_keys"
           KEY_PATH="$HOME/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_IDENTIFIER}.p8"
-          printf '%s\n' "$APP_STORE_CONNECT_PRIVATE_KEY" > "$KEY_PATH"
+          # Normalise whatever form the integration provides (raw PEM, escaped
+          # newlines, @file:/@env: reference, or bare base64) into a PEM file.
+          # Only the shape is printed, never the key.
+          python3 - "$KEY_PATH" <<'PY'
+          import os, re, sys, textwrap
+          raw = os.environ["APP_STORE_CONNECT_PRIVATE_KEY"].strip()
+          if raw.startswith("@file:"):
+              raw = open(os.path.expanduser(raw[6:])).read().strip()
+          elif raw.startswith("@env:"):
+              raw = os.environ[raw[5:]].strip()
+          raw = raw.replace("\\r", "").replace("\\n", "\n").replace("\r", "")
+          body = re.sub(r"-----[A-Z ]+-----", "", raw)
+          body = re.sub(r"\s+", "", body)
+          pem = "-----BEGIN PRIVATE KEY-----\n" + "\n".join(textwrap.wrap(body, 64)) + "\n-----END PRIVATE KEY-----\n"
+          print(f"key shape: {len(raw)} chars, header={'BEGIN' in raw}, body={len(body)} base64 chars")
+          with open(sys.argv[1], "w") as handle:
+              handle.write(pem)
+          PY
           chmod 600 "$KEY_PATH"
           TEAM_ID=$(app-store-connect bundle-ids list --bundle-id-identifier "$BUNDLE_ID" --strict-match-identifier --platform IOS --json \
             | python3 -c 'import json,sys; a=json.load(sys.stdin)[0].get("attributes",{}); print(a.get("seedId") or a.get("seed_id") or "")')
