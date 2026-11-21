@@ -15,11 +15,11 @@
 | Валидация Info.plist (plistlib), codemagic.yaml (PyYAML), структуры project.pbxproj, размеров и отсутствия альфа-канала у иконок | пройдена |
 | GitHub Actions (чистые раннеры), `Verify source` с `build_ios` и `build_android` | пройдено: анализ и все тесты (Ubuntu), `flutter build ios --release --no-codesign` (macOS, Xcode, Swift), `flutter build apk --debug` arm64 (Ubuntu, JDK 21, Kotlin/Gradle) |
 | GitHub Actions `iOS → TestFlight` в режиме `dry_run` | пройдено: тесты на Linux, затем на macOS (Xcode 26.6) `xcodebuild archive` без подписи — `** ARCHIVE SUCCEEDED **`, `uz.ulash.app` 1.0.0 |
+| Codemagic `ios-testflight` (общий сертификат Distribution `R6X78X2AJN`, интеграция `monetniy-mir-asc`) | пройдено: подписанный `Ulash.ipa` 1.0.0 (263251447) загружен, в App Store Connect статус сборки **VALID**; внутренняя группа «Internal Testers» с доступом ко всем сборкам, владелец аккаунта добавлен |
 | Независимое ревью нативного кода (Swift, Kotlin, pbxproj, каналы) и Dart-диффа | замечания исправлены (коммит «Fix issues found by independent review») |
 
 ## Не выполнялось в этой среде
 
-- Подписанная сборка и загрузка в TestFlight: ждёт API-ключа App Store Connect (`.github/workflows/testflight.yml`).
 - Установка на физические iPhone/iPad/Android/Windows и межплатформенная матрица DIR-01…06.
 - Поведение запроса «Локальная сеть» на iPhone, фоновое время iOS, системный выбор медиа, «Поделиться».
 
