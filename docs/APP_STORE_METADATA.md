@@ -113,7 +113,7 @@ Ulash moves files between your own devices directly over your local network — 
 > 3. On device A open "Devices" → "Scan QR" (or "Enter invitation" and paste the copied text) and scan the code.
 > 4. Device B shows a pairing request with a code; confirm it matches the code shown on device A and tap "Connect".
 > 5. On device A open "Send", tap "Photos & videos" or "Files", choose a file, select device B and tap "Send files".
-> 6. Device B shows the incoming files — tap "Accept". When the transfer finishes, open the file from "History", or use "Share" / "Save a copy…".
+> 6. Device B shows the incoming files — tap "Accept files". When the transfer finishes, open the file from "History", or use "Share" / "Save a copy…".
 >
 > A screen recording of this flow is available here: <ВСТАВЬТЕ ССЫЛКУ НА ВИДЕО>
 >

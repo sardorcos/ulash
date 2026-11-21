@@ -1,6 +1,6 @@
 # Working on File Transfer
 
-Read `docs/IMPLEMENTATION_STATUS_RU.md` and the relevant part of
+Read `README.md`, `docs/TEST_REPORT_RU.md` and the relevant part of
 `docs/SPECIFICATION_v1_0_RU.md` before extending the implementation.
 
 - Keep UI and native adapters separate from `packages/transfer_core`.
