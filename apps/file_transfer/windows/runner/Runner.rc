@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "uz.sardor" "\0"
-            VALUE "FileDescription", "file_transfer" "\0"
+            VALUE "CompanyName", "Ulash" "\0"
+            VALUE "FileDescription", "Ulash" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "file_transfer" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 uz.sardor. All rights reserved." "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Ulash. All rights reserved." "\0"
             VALUE "OriginalFilename", "file_transfer.exe" "\0"
-            VALUE "ProductName", "file_transfer" "\0"
+            VALUE "ProductName", "Ulash" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

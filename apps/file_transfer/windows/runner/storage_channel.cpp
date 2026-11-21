@@ -62,7 +62,7 @@ std::wstring ManagedRoot() {
   ::CoTaskMemFree(known);
   // These are the CompanyName/ProductName values in Runner.rc, which
   // path_provider_windows uses for getApplicationSupportDirectory.
-  result += L"\\uz.sardor\\file_transfer\\file-transfer-v1";
+  result += L"\\Ulash\\Ulash\\file-transfer-v1";
   return AbsolutePath(result);
 }
 

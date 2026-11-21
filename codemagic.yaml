@@ -1,0 +1,156 @@
+# Codemagic CI/CD for Ulash. Setup steps: docs/RELEASE.md.
+#
+# Before the first run (once, in the Codemagic UI):
+#   1. Teams → Integrations → Developer Portal → add an App Store Connect API
+#      key (role "App Manager") and name it exactly "Ulash App Store Connect"
+#      (or change `integrations.app_store_connect` below).
+#   2. App → Environment variables → group "ios_signing_key" with the secret
+#      CERTIFICATE_PRIVATE_KEY (an RSA private key in PEM format; see
+#      docs/RELEASE.md). Reusing one key prevents a new distribution
+#      certificate from being created on every build.
+#   3. Replace APP_STORE_APPLE_ID with the numeric "Apple ID" of the app
+#      (App Store Connect → App Information).
+#
+# Both workflows start manually (no `triggering` section).
+
+definitions:
+  flutter_version: &flutter_version
+    # Pinned to the version in the lockfiles. If Codemagic does not list this
+    # version yet, use `stable` temporarily and re-run the analyzer and tests.
+    flutter: 3.50.1
+  core_tests: &core_tests
+    name: Core — analyze and test
+    script: |
+      set -euo pipefail
+      cd "$CM_BUILD_DIR/packages/transfer_core"
+      dart pub get --enforce-lockfile
+      dart analyze --fatal-infos
+      dart test
+  app_tests: &app_tests
+    name: App — analyze and test
+    script: |
+      set -euo pipefail
+      cd "$CM_BUILD_DIR/apps/file_transfer"
+      flutter --no-version-check pub get --enforce-lockfile
+      flutter --no-version-check analyze --no-pub
+      flutter --no-version-check test --no-pub
+
+workflows:
+  ios-testflight:
+    name: iOS → TestFlight
+    instance_type: mac_mini_m2
+    max_build_duration: 75
+    integrations:
+      app_store_connect: Ulash App Store Connect
+    environment:
+      <<: *flutter_version
+      xcode: latest
+      cocoapods: default
+      groups:
+        - ios_signing_key # CERTIFICATE_PRIVATE_KEY
+      vars:
+        BUNDLE_ID: uz.ulash.app
+        # Numeric Apple ID of the app from App Store Connect (placeholder).
+        APP_STORE_APPLE_ID: "0000000000"
+    cache:
+      cache_paths:
+        - $HOME/.pub-cache
+        - $HOME/Library/Caches/CocoaPods
+    scripts:
+      - *core_tests
+      - *app_tests
+      - name: Check placeholders
+        script: |
+          if [ "$APP_STORE_APPLE_ID" = "0000000000" ]; then
+            echo "Set APP_STORE_APPLE_ID in codemagic.yaml (see docs/RELEASE.md)." >&2
+            exit 1
+          fi
+      - name: Set up keychain
+        script: keychain initialize
+      - name: Fetch App Store signing files
+        script: |
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --create
+      - name: Install certificates and profiles
+        script: |
+          keychain add-certificates
+          xcode-project use-profiles
+      - name: Build IPA
+        script: |
+          set -euo pipefail
+          cd "$CM_BUILD_DIR/apps/file_transfer"
+          # Marketing version comes from pubspec.yaml (version: X.Y.Z+N).
+          BUILD_NAME=$(grep -E '^version:' pubspec.yaml | sed -E 's/^version:[[:space:]]*([^+[:space:]]+).*/\1/')
+          LATEST=$(app-store-connect get-latest-build-number "$APP_STORE_APPLE_ID" 2>/dev/null || echo 0)
+          case "$LATEST" in ''|*[!0-9]*) LATEST=0 ;; esac
+          BUILD_NUMBER=$((LATEST + 1))
+          echo "Building $BUILD_NAME ($BUILD_NUMBER)"
+          flutter --no-version-check build ipa --release \
+            --build-name="$BUILD_NAME" \
+            --build-number="$BUILD_NUMBER" \
+            --export-options-plist=/Users/builder/export_options.plist
+    artifacts:
+      - apps/file_transfer/build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+      - apps/file_transfer/build/ios/archive/Runner.xcarchive/dSYMs/*.dSYM
+    publishing:
+      email:
+        recipients:
+          - release@example.com # replace with your address
+        notify:
+          success: true
+          failure: true
+      app_store_connect:
+        auth: integration
+        # Upload only: the build appears in TestFlight for INTERNAL testers
+        # after Apple finishes processing (no Beta App Review needed).
+        # For external testers, fill in "Test Information" in App Store
+        # Connect first, then set submit_to_testflight: true and list groups.
+        submit_to_testflight: false
+        # beta_groups:
+        #   - External testers
+        submit_to_app_store: false
+
+  android-internal:
+    name: Android → Google Play (internal)
+    instance_type: linux_x2
+    max_build_duration: 60
+    environment:
+      <<: *flutter_version
+      # Upload keystore added in Codemagic → Code signing identities → Android
+      # keystores. Codemagic exports CM_KEYSTORE_PATH, CM_KEYSTORE_PASSWORD,
+      # CM_KEY_ALIAS and CM_KEY_PASSWORD, which android/app/build.gradle.kts reads.
+      android_signing:
+        - ulash_upload_keystore
+      groups:
+        - google_play # GCLOUD_SERVICE_ACCOUNT_CREDENTIALS (service account JSON)
+      vars:
+        PACKAGE_NAME: uz.ulash.app
+    cache:
+      cache_paths:
+        - $HOME/.pub-cache
+        - $HOME/.gradle/caches
+    scripts:
+      - *core_tests
+      - *app_tests
+      - name: Build App Bundle
+        script: |
+          set -euo pipefail
+          cd "$CM_BUILD_DIR/apps/file_transfer"
+          BUILD_NAME=$(grep -E '^version:' pubspec.yaml | sed -E 's/^version:[[:space:]]*([^+[:space:]]+).*/\1/')
+          LATEST=$(google-play get-latest-build-number --package-name "$PACKAGE_NAME" 2>/dev/null || echo 0)
+          case "$LATEST" in ''|*[!0-9]*) LATEST=0 ;; esac
+          flutter --no-version-check build appbundle --release \
+            --build-name="$BUILD_NAME" \
+            --build-number="$((LATEST + 1))"
+    artifacts:
+      - apps/file_transfer/build/app/outputs/bundle/release/*.aab
+      - apps/file_transfer/build/app/outputs/mapping/release/mapping.txt
+    publishing:
+      google_play:
+        credentials: $GCLOUD_SERVICE_ACCOUNT_CREDENTIALS
+        track: internal
+        # The first upload of a new app must be done manually in Play Console;
+        # keep drafts until the store listing and Data safety form are complete.
+        submit_as_draft: true

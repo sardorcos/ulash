@@ -1,6 +1,7 @@
 package uz.sardor.file_transfer
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -26,6 +27,7 @@ class MainActivity : FlutterActivity() {
     private var pendingNetworkPermission: MethodChannel.Result? = null
     private val permissionCode = 8752
     private val lanPermission = "android.permission.ACCESS_LOCAL_NETWORK"
+    private val lanAskedKey = "local_network_permission_requested"
     private val exportCode = 8753
     private val exportExecutor = Executors.newSingleThreadExecutor()
     private var pendingExport: ExportRequest? = null
@@ -41,16 +43,11 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
             "uz.sardor.file_transfer/permissions").setMethodCallHandler { call, result ->
-            if (call.method != "ensureLocalNetwork") {
-                result.notImplemented()
-            } else if (Build.VERSION.SDK_INT < 37 ||
-                checkSelfPermission(lanPermission) == PackageManager.PERMISSION_GRANTED) {
-                result.success(true)
-            } else if (pendingNetworkPermission != null) {
-                result.error("REQUEST_IN_PROGRESS", "A permission request is active.", null)
-            } else {
-                pendingNetworkPermission = result
-                requestPermissions(arrayOf(lanPermission), permissionCode)
+            when (call.method) {
+                "ensureLocalNetwork" -> ensureLocalNetwork(result)
+                "localNetworkStatus" -> result.success(localNetworkStatus())
+                "openSettings" -> openAppSettings(result)
+                else -> result.notImplemented()
             }
         }
         storageChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
@@ -62,6 +59,45 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+        }
+    }
+
+    private fun lanPermissionGranted(): Boolean = Build.VERSION.SDK_INT < 37 ||
+        checkSelfPermission(lanPermission) == PackageManager.PERMISSION_GRANTED
+
+    private fun ensureLocalNetwork(result: MethodChannel.Result) {
+        if (lanPermissionGranted()) {
+            result.success(true)
+        } else if (pendingNetworkPermission != null) {
+            result.error("REQUEST_IN_PROGRESS", "A permission request is active.", null)
+        } else {
+            pendingNetworkPermission = result
+            getPreferences(Context.MODE_PRIVATE).edit().putBoolean(lanAskedKey, true).apply()
+            requestPermissions(arrayOf(lanPermission), permissionCode)
+        }
+    }
+
+    /** "denied" only after the user answered and Android will not ask again;
+     * an un-asked or re-askable permission is "unknown" so the app may request it. */
+    private fun localNetworkStatus(): String {
+        if (lanPermissionGranted()) return "granted"
+        val asked = getPreferences(Context.MODE_PRIVATE).getBoolean(lanAskedKey, false)
+        return if (asked && !shouldShowRequestPermissionRationale(lanPermission)) {
+            "denied"
+        } else {
+            "unknown"
+        }
+    }
+
+    private fun openAppSettings(result: MethodChannel.Result) {
+        try {
+            val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", packageName, null))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(intent)
+            result.success(true)
+        } catch (error: Exception) {
+            result.success(false)
         }
     }
 

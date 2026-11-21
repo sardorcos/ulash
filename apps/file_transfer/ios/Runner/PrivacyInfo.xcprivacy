@@ -4,17 +4,33 @@
 <dict>
   <key>NSPrivacyTracking</key>
   <false/>
+  <key>NSPrivacyTrackingDomains</key>
+  <array/>
   <key>NSPrivacyCollectedDataTypes</key>
   <array/>
   <key>NSPrivacyAccessedAPITypes</key>
   <array>
     <dict>
+      <!-- Free-space checks before receiving/preparing files and the storage
+           screen that shows remaining space to the user. -->
       <key>NSPrivacyAccessedAPIType</key>
       <string>NSPrivacyAccessedAPICategoryDiskSpace</string>
       <key>NSPrivacyAccessedAPITypeReasons</key>
       <array>
         <string>E174.1</string>
         <string>85F4.1</string>
+      </array>
+    </dict>
+    <dict>
+      <!-- The Dart runtime stats files (stat/fstat): C617.1 for staged,
+           received and journal files inside the app container; 3B52.1 for
+           files the user explicitly picked to send. -->
+      <key>NSPrivacyAccessedAPIType</key>
+      <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+      <key>NSPrivacyAccessedAPITypeReasons</key>
+      <array>
+        <string>C617.1</string>
+        <string>3B52.1</string>
       </array>
     </dict>
   </array>

@@ -1,9 +1,11 @@
 import Flutter
+import Network
 import UIKit
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var storageBridge: StorageBridge?
+  private var networkBridge: NetworkBridge?
 
   override func application(
     _ application: UIApplication,
@@ -14,7 +16,9 @@ import UIKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
-    storageBridge = StorageBridge(messenger: engineBridge.applicationRegistrar.messenger())
+    let messenger = engineBridge.applicationRegistrar.messenger()
+    storageBridge = StorageBridge(messenger: messenger)
+    networkBridge = NetworkBridge(messenger: messenger)
   }
 }
 
@@ -24,6 +28,7 @@ private final class StorageBridge: NSObject, UIDocumentPickerDelegate,
   UIAdaptivePresentationControllerDelegate {
   private let channel: FlutterMethodChannel
   private var pendingExport: FlutterResult?
+  private var backgroundTasks: [Int: UIBackgroundTaskIdentifier] = [:]
   private weak var exportPicker: UIDocumentPickerViewController?
 
   init(messenger: FlutterBinaryMessenger) {
@@ -37,6 +42,9 @@ private final class StorageBridge: NSObject, UIDocumentPickerDelegate,
       switch call.method {
       case "freeBytes": self.freeBytes(call, result: result)
       case "exportFile": self.exportFile(call, result: result)
+      case "excludeFromBackup": self.excludeFromBackup(call, result: result)
+      case "beginBackgroundTask": self.beginBackgroundTask(result: result)
+      case "endBackgroundTask": self.endBackgroundTask(call, result: result)
       default: result(FlutterMethodNotImplemented)
       }
     }
@@ -75,6 +83,76 @@ private final class StorageBridge: NSObject, UIDocumentPickerDelegate,
     } catch {
       result(nil)
     }
+  }
+
+  /// Marks a managed directory (staging, prepared copies, received files) as
+  /// not to be included in iCloud/iTunes backups. Only directories inside
+  /// Application Support are accepted. Returns false when nothing was changed.
+  private func excludeFromBackup(_ call: FlutterMethodCall, result: FlutterResult) {
+    guard let arguments = call.arguments as? [String: Any],
+      let path = arguments["path"] as? String, !path.isEmpty else {
+      result(FlutterError(code: "INVALID_ARGUMENT", message: "A directory is required.", details: nil))
+      return
+    }
+    do {
+      var directory = URL(fileURLWithPath: path, isDirectory: true)
+        .resolvingSymlinksInPath().standardizedFileURL
+      let root = try appSupport()
+      guard contained(directory, in: root), directory.path != root.path else {
+        result(false)
+        return
+      }
+      var isDirectory: ObjCBool = false
+      guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+        isDirectory.boolValue else {
+        result(false)
+        return
+      }
+      var values = URLResourceValues()
+      values.isExcludedFromBackup = true
+      try directory.setResourceValues(values)
+      result(true)
+    } catch {
+      result(false)
+    }
+  }
+
+  /// Extra time after the app leaves the foreground, so the current chunk and
+  /// its journal entry can be flushed. It never keeps a transfer running in
+  /// the background; Dart ends it as soon as the checkpoint is durable.
+  private func beginBackgroundTask(result: FlutterResult) {
+    var identifier = UIBackgroundTaskIdentifier.invalid
+    identifier = UIApplication.shared.beginBackgroundTask(withName: "Ulash.checkpoint") { [weak self] in
+      guard let self = self else {
+        UIApplication.shared.endBackgroundTask(identifier)
+        return
+      }
+      self.finishBackgroundTask(identifier.rawValue, expired: true)
+    }
+    guard identifier != .invalid else {
+      result(nil)
+      return
+    }
+    backgroundTasks[identifier.rawValue] = identifier
+    result(identifier.rawValue)
+  }
+
+  private func endBackgroundTask(_ call: FlutterMethodCall, result: FlutterResult) {
+    guard let arguments = call.arguments as? [String: Any],
+      let id = arguments["id"] as? Int else {
+      result(FlutterError(code: "INVALID_ARGUMENT", message: "A task id is required.", details: nil))
+      return
+    }
+    finishBackgroundTask(id, expired: false)
+    result(nil)
+  }
+
+  private func finishBackgroundTask(_ id: Int, expired: Bool) {
+    guard let task = backgroundTasks.removeValue(forKey: id) else { return }
+    if expired {
+      channel.invokeMethod("backgroundTaskExpired", arguments: id)
+    }
+    UIApplication.shared.endBackgroundTask(task)
   }
 
   private func sourceURL(_ path: String) throws -> URL {
@@ -178,5 +256,98 @@ private final class StorageBridge: NSObject, UIDocumentPickerDelegate,
     pendingExport = nil
     exportPicker = nil
     result?(nil)
+  }
+}
+
+/// Local Network privacy state. iOS has no API that reads the decision, so a
+/// short Bonjour browse is used: PolicyDenied (-65570) while browsing means
+/// the user declined; a browse result or a ready browser means access works.
+/// Anything else is "unknown" and must not be shown as a denial.
+private final class NetworkBridge: NSObject {
+  private static let policyDenied = -65570
+  private let channel: FlutterMethodChannel
+  private var browser: NWBrowser?
+  private var waiting: [FlutterResult] = []
+  private var lastState: String = "unknown"
+  private var timeout: DispatchWorkItem?
+
+  init(messenger: FlutterBinaryMessenger) {
+    channel = FlutterMethodChannel(name: "file_transfer/network", binaryMessenger: messenger)
+    super.init()
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self = self else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      switch call.method {
+      case "localNetworkStatus": self.localNetworkStatus(result)
+      case "openSettings": self.openSettings(result)
+      default: result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
+  private func localNetworkStatus(_ result: @escaping FlutterResult) {
+    waiting.append(result)
+    // Concurrent calls share one probe.
+    guard browser == nil else { return }
+    lastState = "unknown"
+    let browser = NWBrowser(
+      for: .bonjour(type: "_xferapp._tcp", domain: nil), using: NWParameters())
+    self.browser = browser
+    browser.stateUpdateHandler = { [weak self] state in
+      DispatchQueue.main.async { self?.observe(state) }
+    }
+    browser.browseResultsChangedHandler = { [weak self] results, _ in
+      guard !results.isEmpty else { return }
+      DispatchQueue.main.async { self?.finish("granted") }
+    }
+    let work = DispatchWorkItem { [weak self] in
+      guard let self = self else { return }
+      self.finish(self.lastState)
+    }
+    timeout = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+    browser.start(queue: .main)
+  }
+
+  private func observe(_ state: NWBrowser.State) {
+    switch state {
+    case .ready:
+      lastState = "granted"
+    case .waiting(let error):
+      // While the system prompt is visible the browser can also wait with
+      // PolicyDenied, so the final answer is taken when the probe ends.
+      lastState = Self.isPolicyDenied(error) ? "denied" : "unknown"
+    case .failed(let error):
+      finish(Self.isPolicyDenied(error) ? "denied" : "unknown")
+    default:
+      break
+    }
+  }
+
+  private static func isPolicyDenied(_ error: NWError) -> Bool {
+    if case .dns(let code) = error { return Int(code) == policyDenied }
+    return false
+  }
+
+  private func finish(_ status: String) {
+    timeout?.cancel()
+    timeout = nil
+    browser?.stateUpdateHandler = nil
+    browser?.browseResultsChangedHandler = nil
+    browser?.cancel()
+    browser = nil
+    let results = waiting
+    waiting = []
+    for result in results { result(status) }
+  }
+
+  private func openSettings(_ result: @escaping FlutterResult) {
+    guard let url = URL(string: UIApplication.openSettingsURLString) else {
+      result(false)
+      return
+    }
+    UIApplication.shared.open(url, options: [:]) { opened in result(opened) }
   }
 }

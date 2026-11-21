@@ -1,0 +1,6 @@
+/* Название под иконкой. */
+"CFBundleDisplayName" = "Ulash";
+"CFBundleName" = "Ulash";
+"NSLocalNetworkUsageDescription" = "Ulash находит ваши устройства в общей сети Wi-Fi и передаёт выбранные файлы напрямую, без интернета и облака.";
+"NSCameraUsageDescription" = "Камера нужна только для сканирования QR-кода, чтобы подключить ваше устройство.";
+"NSPhotoLibraryUsageDescription" = "Доступ нужен, чтобы выбрать фото и видео для отправки на ваше устройство.";

@@ -5,17 +5,23 @@
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
-	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<string>ru</string>
 	<key>CFBundleDisplayName</key>
-	<string>File Transfer</string>
+	<string>Ulash</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>ru</string>
+		<string>uz</string>
+		<string>en</string>
+	</array>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>file_transfer</string>
+	<string>Ulash</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -24,6 +30,10 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>
@@ -67,16 +77,14 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Приложение находит ваши устройства в общей сети и передаёт выбранные файлы напрямую.</string>
+	<string>Ulash находит ваши устройства в общей сети Wi-Fi и передаёт выбранные файлы напрямую, без интернета и облака.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_xferapp._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>Камера нужна только для сканирования QR-кода доверенного устройства.</string>
-	<key>UIFileSharingEnabled</key>
-	<true/>
-	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<true/>
+	<string>Камера нужна только для сканирования QR-кода, чтобы подключить ваше устройство.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Доступ нужен, чтобы выбрать фото и видео для отправки на ваше устройство.</string>
 </dict>
 </plist>

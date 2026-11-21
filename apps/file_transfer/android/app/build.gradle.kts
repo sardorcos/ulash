@@ -1,10 +1,34 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Release signing comes from CI environment variables (Codemagic sets CM_* when a
+// keystore reference is attached) or a local, never-committed key.properties.
+// When neither exists the release build stays UNSIGNED: the debug key is never
+// used for a release artifact.
+val keyProperties = Properties().apply {
+    val file = rootProject.file("key.properties")
+    if (file.exists()) FileInputStream(file).use { load(it) }
+}
+fun signingValue(env: String, property: String): String? =
+    System.getenv(env)?.takeIf { it.isNotBlank() }
+        ?: keyProperties.getProperty(property)?.takeIf { it.isNotBlank() }
+val releaseStoreFile = signingValue("CM_KEYSTORE_PATH", "storeFile")
+val releaseStorePassword = signingValue("CM_KEYSTORE_PASSWORD", "storePassword")
+val releaseKeyAlias = signingValue("CM_KEY_ALIAS", "keyAlias")
+val releaseKeyPassword = signingValue("CM_KEY_PASSWORD", "keyPassword")
+val hasReleaseSigning = listOf(
+    releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword,
+).all { it != null }
+
 android {
+    // The Kotlin package and method-channel names keep the historical
+    // namespace; the store identity is the applicationId below.
     namespace = "uz.sardor.file_transfer"
     compileSdk = 37
     ndkVersion = flutter.ndkVersion
@@ -15,8 +39,8 @@ android {
     }
 
     defaultConfig {
-        // Development identifier. Confirm the production identifier before store release.
-        applicationId = "uz.sardor.file_transfer"
+        // Permanent store identity. It must match Google Play and never change.
+        applicationId = "uz.ulash.app"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 29
@@ -29,16 +53,31 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         getByName("debug") {
-            // The 0.1 debug signer differed. Keep the 0.2 installation ID and
-            // signer for subsequent development updates without erasing data.
-            // This never changes the release application ID or signing policy.
-            applicationIdSuffix = ".alpha02"
+            // Side-by-side with the store build; debug data never mixes with it.
+            applicationIdSuffix = ".debug"
         }
         release {
-            // Production signing is intentionally not configured in the source archive.
-            // Use a private upload keystore and CI secrets before publishing.
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+            // R8 code shrinking stays off until the release build is verified on
+            // devices with every plugin (Keystore, ML Kit scanner, SAF). Turning
+            // it on is a separate, tested change.
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }
