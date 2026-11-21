@@ -13,11 +13,12 @@
 | Сквозная проба HTTPS 256 МиБ | пройдена: сопряжение с подтверждением, запрет без согласия, обрыв после 4,5 МиБ, перезапуск хранилищ, докачка, SHA-256 совпал, временные данные и резервы = 0 (`verification/loopback_v1_256m.json`) |
 | Скриншоты виджетов ru/uz/en (390×844 и 1280×860) | без исключений и переполнений |
 | Валидация Info.plist (plistlib), codemagic.yaml (PyYAML), структуры project.pbxproj, размеров и отсутствия альфа-канала у иконок | пройдена |
+| GitHub Actions (чистые раннеры), `Verify source` с `build_ios` и `build_android` | пройдено: анализ и все тесты (Ubuntu), `flutter build ios --release --no-codesign` (macOS, Xcode, Swift), `flutter build apk --debug` arm64 (Ubuntu, JDK 21, Kotlin/Gradle) |
 | Независимое ревью нативного кода (Swift, Kotlin, pbxproj, каналы) и Dart-диффа | замечания исправлены (коммит «Fix issues found by independent review») |
 
 ## Не выполнялось в этой среде
 
-- Компиляция iOS (Swift/Xcode) и Android (Kotlin/Gradle): нет macOS и Android SDK. Первая сборка iOS выполняется в Codemagic.
+- Подписанная сборка и загрузка в TestFlight: ждёт API-ключа App Store Connect (`.github/workflows/testflight.yml`).
 - Установка на физические iPhone/iPad/Android/Windows и межплатформенная матрица DIR-01…06.
 - Поведение запроса «Локальная сеть» на iPhone, фоновое время iOS, системный выбор медиа, «Поделиться».
 
