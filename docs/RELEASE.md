@@ -32,8 +32,8 @@ Workflow `.github/workflows/testflight.yml` собирает подписанн�
    - `ASC_KEY_ID` — Key ID;
    - `ASC_ISSUER_ID` — Issuer ID;
    - `ASC_PRIVATE_KEY` — всё содержимое файла `.p8` вместе со строками `BEGIN/END PRIVATE KEY`.
-3. **App Store Connect → Apps → «+» → New App**: iOS, имя `Ulash`, основной язык Russian, Bundle ID `uz.ulash.app` (если его ещё нет в списке — сначала запустите workflow с галочкой `register_only`, он зарегистрирует Bundle ID), SKU `ulash-ios`.
-4. **Actions → «iOS → TestFlight» → Run workflow.** Через 20–40 минут сборка появится в TestFlight (после обработки Apple).
+3. **App Store Connect → Apps → «+» → New App**: iOS, имя `Ulash`, основной язык Russian, Bundle ID `uz.ulash.app` (если его ещё нет в списке — запустите workflow в режиме `check`, он зарегистрирует Bundle ID), SKU `ulash-ios`.
+4. **Actions → «iOS → TestFlight» → Run workflow** (режим `upload`). Режим `check` за минуту на Linux проверяет секреты, ключ и карточку приложения; `dry_run` собирает архив без подписи. Через 20–40 минут сборка появится в TestFlight (после обработки Apple).
 
 Минуты macOS для приватного репозитория расходуются из квоты GitHub (у бесплатного плана — 200 минут macOS в месяц, одна сборка ≈ 25–35 минут).
 
