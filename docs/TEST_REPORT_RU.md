@@ -14,6 +14,7 @@
 | Скриншоты виджетов ru/uz/en (390×844 и 1280×860) | без исключений и переполнений |
 | Валидация Info.plist (plistlib), codemagic.yaml (PyYAML), структуры project.pbxproj, размеров и отсутствия альфа-канала у иконок | пройдена |
 | GitHub Actions (чистые раннеры), `Verify source` с `build_ios` и `build_android` | пройдено: анализ и все тесты (Ubuntu), `flutter build ios --release --no-codesign` (macOS, Xcode, Swift), `flutter build apk --debug` arm64 (Ubuntu, JDK 21, Kotlin/Gradle) |
+| GitHub Actions `iOS → TestFlight` в режиме `dry_run` | пройдено: тесты на Linux, затем на macOS (Xcode 26.6) `xcodebuild archive` без подписи — `** ARCHIVE SUCCEEDED **`, `uz.ulash.app` 1.0.0 |
 | Независимое ревью нативного кода (Swift, Kotlin, pbxproj, каналы) и Dart-диффа | замечания исправлены (коммит «Fix issues found by independent review») |
 
 ## Не выполнялось в этой среде
