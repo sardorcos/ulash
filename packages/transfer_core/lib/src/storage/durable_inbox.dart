@@ -25,7 +25,15 @@ class DurableInbox {
     this.offerLifetime,
     this._wallClock,
     this._monotonicClock,
+    this.maxOffersPerWindow,
+    this.offerRateWindow,
+    this.maxRetainedUnacceptedOffersPerPeer,
   );
+
+  /// Current journal schema. 1 = 0.1–0.3 layout with offer deadlines,
+  /// 2 = store-relative payload paths.
+  static const int schemaVersion = 2;
+  static const _managed = {'.staging', 'received'};
 
   final Directory root;
   final Database _db;
@@ -37,6 +45,15 @@ class DurableInbox {
   final Duration offerLifetime;
   final DateTime Function() _wallClock;
   final Duration Function() _monotonicClock;
+
+  /// Per-peer admission limit for new offers (idempotent replays not counted).
+  final int maxOffersPerWindow;
+  final Duration offerRateWindow;
+
+  /// Rejected/expired/cancelled offers that never received data are history
+  /// only. Older ones beyond this count are removed per peer.
+  final int maxRetainedUnacceptedOffersPerPeer;
+  final _offerHistory = <String, List<Duration>>{};
   final _offerDeadlines = <String, Duration>{};
   Timer? _offerTimer;
   final _controls = _ControlQueue();
@@ -47,6 +64,11 @@ class DurableInbox {
 
   Stream<TransferSnapshot> get changes => _events.stream;
 
+  /// Testing seam only: awaited at internal race points ('afterFinalClose',
+  /// 'beforeVerifying') so tests can interleave cancel/pause deterministically.
+  /// Must stay null in production.
+  Future<void> Function(String stage)? debugStageHook;
+
   static Future<DurableInbox> open(
     Directory directory, {
     int checkpointBytes = 4 * 1024 * 1024,
@@ -55,7 +77,15 @@ class DurableInbox {
     Duration offerLifetime = const Duration(seconds: 120),
     DateTime Function()? wallClock,
     Duration Function()? monotonicClock,
+    int maxOffersPerWindow = 20,
+    Duration offerRateWindow = const Duration(minutes: 10),
+    int maxRetainedUnacceptedOffersPerPeer = 50,
   }) async {
+    if (maxOffersPerWindow < 1 ||
+        offerRateWindow <= Duration.zero ||
+        maxRetainedUnacceptedOffersPerPeer < 0) {
+      throw ArgumentError('Invalid offer admission limits.');
+    }
     if (checkpointBytes < 1 || checkpointInterval <= Duration.zero) {
       throw ArgumentError('Positive checkpoint parameters required.');
     }
@@ -75,46 +105,12 @@ class DurableInbox {
     final lease = await StorageLease.acquire(root, 'inbox');
     Database? opened;
     try {
-      final db = openJournal(File(p.join(root.path, 'inbox.sqlite')));
+      final db = openJournal(
+        File(p.join(root.path, 'inbox.sqlite')),
+        version: schemaVersion,
+        migrate: (db, from) => _migrate(db, from, offerLifetime),
+      );
       opened = db;
-      db.execute('''
-        CREATE TABLE IF NOT EXISTS inbox_transfers (
-          id TEXT PRIMARY KEY, peer_id TEXT NOT NULL, request_id TEXT NOT NULL,
-          manifest TEXT NOT NULL, state TEXT NOT NULL,
-          paused_source INTEGER NOT NULL DEFAULT 0,
-          paused_sink INTEGER NOT NULL DEFAULT 0,
-          created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-          offer_expires_at TEXT,
-          UNIQUE(peer_id, request_id)
-        );
-        CREATE TABLE IF NOT EXISTS inbox_files (
-          transfer_id TEXT NOT NULL REFERENCES inbox_transfers(id),
-          file_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
-          manifest TEXT NOT NULL, durable_offset INTEGER NOT NULL DEFAULT 0,
-          state TEXT NOT NULL, incarnation TEXT NOT NULL,
-          temporary_path TEXT NOT NULL, final_path TEXT,
-          error_code TEXT, PRIMARY KEY(transfer_id, file_id)
-        );
-      ''');
-      // Alpha 0.1/0.2 journals did not have offer deadlines. Use their original
-      // creation time, never the recovery-refreshed updated_at value.
-      journalTransaction(db, () {
-        final columns = db.select('PRAGMA table_info(inbox_transfers)');
-        if (!columns.any((column) => column['name'] == 'offer_expires_at')) {
-          db.execute(
-            'ALTER TABLE inbox_transfers ADD COLUMN offer_expires_at TEXT',
-          );
-        }
-        for (final row in db.select(
-          'SELECT id,created_at FROM inbox_transfers WHERE offer_expires_at IS NULL',
-        )) {
-          final created = DateTime.parse(row['created_at'] as String).toUtc();
-          db.execute(
-            'UPDATE inbox_transfers SET offer_expires_at=? WHERE id=?',
-            [created.add(offerLifetime).toIso8601String(), row['id']],
-          );
-        }
-      });
       final store = DurableInbox._(
         root,
         db,
@@ -125,6 +121,9 @@ class DurableInbox {
         offerLifetime,
         now,
         elapsed,
+        maxOffersPerWindow,
+        offerRateWindow,
+        maxRetainedUnacceptedOffersPerPeer,
       );
       await store._recover();
       await store._restoreBudget();
@@ -137,6 +136,94 @@ class DurableInbox {
       rethrow;
     }
   }
+
+  /// Idempotent schema steps. They run on every open inside one transaction so
+  /// that a journal edited by an older build is normalised again.
+  static void _migrate(Database db, int from, Duration offerLifetime) {
+    // Step 1 (0.1–0.3): base tables and offer deadlines.
+    db.execute('''
+      CREATE TABLE IF NOT EXISTS inbox_transfers (
+        id TEXT PRIMARY KEY, peer_id TEXT NOT NULL, request_id TEXT NOT NULL,
+        manifest TEXT NOT NULL, state TEXT NOT NULL,
+        paused_source INTEGER NOT NULL DEFAULT 0,
+        paused_sink INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        offer_expires_at TEXT,
+        UNIQUE(peer_id, request_id)
+      );
+      CREATE TABLE IF NOT EXISTS inbox_files (
+        transfer_id TEXT NOT NULL REFERENCES inbox_transfers(id),
+        file_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+        manifest TEXT NOT NULL, durable_offset INTEGER NOT NULL DEFAULT 0,
+        state TEXT NOT NULL, incarnation TEXT NOT NULL,
+        temporary_path TEXT NOT NULL, final_path TEXT,
+        error_code TEXT, PRIMARY KEY(transfer_id, file_id)
+      );
+      CREATE INDEX IF NOT EXISTS inbox_transfers_peer
+        ON inbox_transfers(peer_id, created_at);
+      CREATE INDEX IF NOT EXISTS inbox_transfers_state
+        ON inbox_transfers(state);
+    ''');
+    // Alpha 0.1/0.2 journals did not have offer deadlines. Use their original
+    // creation time, never the recovery-refreshed updated_at value.
+    final columns = db.select('PRAGMA table_info(inbox_transfers)');
+    if (!columns.any((column) => column['name'] == 'offer_expires_at')) {
+      db.execute(
+        'ALTER TABLE inbox_transfers ADD COLUMN offer_expires_at TEXT',
+      );
+    }
+    for (final row in db.select(
+      'SELECT id,created_at FROM inbox_transfers WHERE offer_expires_at IS NULL',
+    )) {
+      final created = DateTime.parse(row['created_at'] as String).toUtc();
+      db.execute('UPDATE inbox_transfers SET offer_expires_at=? WHERE id=?', [
+        created.add(offerLifetime).toIso8601String(),
+        row['id'],
+      ]);
+    }
+    // Step 2: store-relative paths. Earlier builds persisted absolute paths,
+    // which break when the app container moves (iOS update/restore).
+    for (final row in db.select(
+      "SELECT transfer_id,file_id,incarnation,temporary_path,final_path FROM inbox_files "
+      "WHERE temporary_path NOT LIKE '.staging/%' "
+      "OR (final_path IS NOT NULL AND final_path NOT LIKE 'received/%')",
+    )) {
+      final finalPath = row['final_path'] as String?;
+      final rebased = finalPath == null
+          ? null
+          : (rebaseLegacyPath(finalPath, managedTopLevel: const {'received'}) ??
+                finalPath);
+      db.execute(
+        'UPDATE inbox_files SET temporary_path=?,final_path=? WHERE transfer_id=? AND file_id=?',
+        [
+          '.staging/${row['incarnation']}.part',
+          rebased,
+          row['transfer_id'],
+          row['file_id'],
+        ],
+      );
+    }
+  }
+
+  /// Moves a damaged `inbox.sqlite` (and WAL/SHM) aside after
+  /// [StorageException] `JOURNAL_CORRUPT`. Received files stay on disk; the
+  /// next [open] starts a new journal and removes unreferenced staging parts.
+  static Future<List<String>> quarantineJournal(Directory directory) async {
+    final root = await prepareStorageDirectory(directory);
+    final lease = await StorageLease.acquire(root, 'inbox');
+    try {
+      return await quarantineJournalFiles(
+        File(p.join(root.path, 'inbox.sqlite')),
+      );
+    } finally {
+      await lease.release();
+    }
+  }
+
+  String _abs(String stored) =>
+      resolveStoredPath(root, stored, managedTopLevel: _managed);
+
+  String _temporaryOf(Row row) => _abs(row['temporary_path'] as String);
 
   void _restoreOfferDeadlines() {
     final wall = _wallClock().toUtc();
@@ -232,7 +319,7 @@ class DurableInbox {
     if (_budget == null) return;
     final rows = _db.select('SELECT * FROM inbox_files');
     final rowsByPath = <String, Row>{
-      for (final row in rows) row['temporary_path'] as String: row,
+      for (final row in rows) _temporaryOf(row): row,
     };
     final lengths = <String, int>{};
     final claims = <StorageBudgetClaim>[];
@@ -253,7 +340,7 @@ class DurableInbox {
       }
     }
     for (final row in rows) {
-      final length = lengths[row['temporary_path']] ?? 0;
+      final length = lengths[_temporaryOf(row)] ?? 0;
       if (row['state'] == 'committed' && length == 0) continue;
       claims.add(_budgetClaim(row, length));
     }
@@ -262,7 +349,7 @@ class DurableInbox {
 
   Future<void> _reconcileBudgetRow(Row row) async {
     if (_budget == null) return;
-    final file = File(row['temporary_path'] as String);
+    final file = File(_temporaryOf(row));
     requireContainedPath(root, file.path);
     await validateManagedDirectory(root, file.parent);
     final kind = await FileSystemEntity.type(file.path, followLinks: false);
@@ -313,6 +400,22 @@ class DurableInbox {
       }
       return status(prior.first['id'] as String);
     }
+    final quota = _budget?.temporaryQuotaBytes;
+    if (quota != null && manifest.totalBytes > quota) {
+      throw const StorageException(
+        'QUOTA_EXCEEDED',
+        'The package is larger than the receiver storage limit.',
+      );
+    }
+    final admittedAt = _monotonicClock();
+    final history = _offerHistory.putIfAbsent(peerId, () => [])
+      ..removeWhere((time) => admittedAt - time >= offerRateWindow);
+    if (history.length >= maxOffersPerWindow) {
+      throw const StorageException(
+        'RATE_LIMITED',
+        'Too many offers from this device. Try again later.',
+      );
+    }
     final pending =
         _db
                 .select(
@@ -354,15 +457,136 @@ class DurableInbox {
             jsonEncode(file.toJson()),
             'offered',
             incarnation,
-            p.join(root.path, '.staging', '$incarnation.part'),
+            '.staging/$incarnation.part',
           ],
         );
       }
     });
+    history.add(admittedAt);
     _offerDeadlines[id] = createdMonotonic + offerLifetime;
     _scheduleOfferExpiry();
+    await _pruneUnacceptedOffers(peerId);
     return _emit(id);
   }
+
+  static const _unacceptedTerminal = "('rejected','expired','cancelled')";
+
+  /// Removes the oldest terminal offers that never stored a byte, beyond
+  /// [maxRetainedUnacceptedOffersPerPeer]. Prevents a paired peer from growing
+  /// the journal without bound by repeatedly offering and cancelling.
+  Future<void> _pruneUnacceptedOffers(String peerId) async {
+    final candidates = _db.select(
+      'SELECT t.id FROM inbox_transfers t WHERE t.peer_id=? AND t.state IN $_unacceptedTerminal '
+      'AND NOT EXISTS (SELECT 1 FROM inbox_files f WHERE f.transfer_id=t.id '
+      "AND (f.durable_offset>0 OR f.state='committed' OR f.final_path IS NOT NULL)) "
+      'ORDER BY t.created_at DESC LIMIT -1 OFFSET ?',
+      [peerId, maxRetainedUnacceptedOffersPerPeer],
+    );
+    for (final candidate in candidates) {
+      await _removeTransferRows(candidate['id'] as String);
+    }
+  }
+
+  /// Deletes staging parts, the received directory and journal rows of one
+  /// transfer and forgets its storage claims. Caller checked it is terminal.
+  Future<int> _removeTransferRows(String id) async {
+    final rows = _db.select('SELECT * FROM inbox_files WHERE transfer_id=?', [
+      id,
+    ]);
+    var removedBytes = 0;
+    for (final row in rows) {
+      removedBytes += await _deleteTemporary(row) ?? 0;
+    }
+    final directory = Directory(p.join(root.path, 'received', id));
+    final kind = await FileSystemEntity.type(
+      directory.path,
+      followLinks: false,
+    );
+    if (kind == FileSystemEntityType.directory) {
+      await validateManagedDirectory(root, directory);
+      await for (final entity in directory.list(
+        recursive: true,
+        followLinks: false,
+      )) {
+        if (entity is File) removedBytes += await entity.length();
+      }
+      // Directory.delete never follows links; a planted link is removed only.
+      await directory.delete(recursive: true);
+    } else if (kind != FileSystemEntityType.notFound) {
+      throw const StorageException(
+        'UNSAFE_PATH',
+        'Received transfer path is not a directory.',
+      );
+    }
+    journalTransaction(_db, () {
+      _db.execute('DELETE FROM inbox_files WHERE transfer_id=?', [id]);
+      _db.execute('DELETE FROM inbox_transfers WHERE id=?', [id]);
+    });
+    _offerDeadlines.remove(id);
+    for (final row in rows) {
+      await _budget?.forget(_budgetScope, row['incarnation'] as String);
+    }
+    return removedBytes;
+  }
+
+  /// Removes a finished transfer from history together with its received files
+  /// and any leftover partial data. Active transfers must be cancelled first.
+  /// Returns the number of bytes removed from disk.
+  Future<int> deleteTransfer(String id) => _controls.run(() async {
+    final snapshot = status(id);
+    if (!_terminal(snapshot.state) ||
+        _writer?.transferId == id ||
+        snapshot.files.any((file) => file.state == FileState.committing)) {
+      throw const StorageException(
+        'TRANSFER_ACTIVE',
+        'Only finished transfers can be deleted.',
+      );
+    }
+    try {
+      return await _removeTransferRows(id);
+    } catch (error) {
+      throw storageIoError(error);
+    }
+  });
+
+  /// Retention: removes terminal transfers last updated before now-[olderThan].
+  /// By default transfers that still own received files are kept (only failed,
+  /// rejected, expired and cancelled history disappears); pass
+  /// [includeReceivedFiles] to also delete completed transfers and their files.
+  /// Returns the number of transfers removed.
+  Future<int> pruneTerminal({
+    required Duration olderThan,
+    bool includeReceivedFiles = false,
+  }) => _controls.run(() async {
+    _checkOpen();
+    expireOffers();
+    final cutoff = _wallClock().toUtc().subtract(olderThan).toIso8601String();
+    final rows = _db.select(
+      'SELECT id FROM inbox_transfers WHERE updated_at < ? AND state IN '
+      "('completed','partially_completed','rejected','cancelled','failed','expired')",
+      [cutoff],
+    );
+    var removed = 0;
+    for (final row in rows) {
+      final id = row['id'] as String;
+      if (_writer?.transferId == id) continue;
+      final snapshot = _readStatus(id);
+      if (snapshot.files.any((file) => file.state == FileState.committing)) {
+        continue;
+      }
+      if (!includeReceivedFiles &&
+          snapshot.files.any((file) => file.state == FileState.committed)) {
+        continue;
+      }
+      try {
+        await _removeTransferRows(id);
+      } catch (error) {
+        throw storageIoError(error);
+      }
+      removed++;
+    }
+    return removed;
+  });
 
   TransferSnapshot status(String id) {
     _checkOpen();
@@ -416,9 +640,20 @@ class DurableInbox {
     offset: row['durable_offset'] as int,
     state: FileState.fromWire(row['state'] as String),
     storageIncarnationId: row['incarnation'] as String,
-    finalPath: row['final_path'] as String?,
+    finalPath: _resolvedFinalPath(row['final_path'] as String?),
     errorCode: row['error_code'] as String?,
   );
+
+  String? _resolvedFinalPath(String? stored) {
+    if (stored == null) return null;
+    try {
+      return _abs(stored);
+    } on StorageException {
+      // An unrecognised legacy value is reported as unavailable, never as a
+      // path outside managed storage.
+      return null;
+    }
+  }
 
   Row _fileRow(String transferId, String fileId) {
     final rows = _db.select(
@@ -467,7 +702,7 @@ class DurableInbox {
           ),
       ]);
       for (final row in rows) {
-        final file = File(row['temporary_path'] as String);
+        final file = File(_temporaryOf(row));
         requireContainedPath(root, file.path);
         await validateManagedDirectory(root, file.parent);
         if (await FileSystemEntity.type(file.path, followLinks: false) ==
@@ -748,7 +983,7 @@ class DurableInbox {
       });
 
   Future<File> _checkedTemporary(Row row) async {
-    final file = File(row['temporary_path'] as String);
+    final file = File(_temporaryOf(row));
     final staging = Directory(p.join(root.path, '.staging'));
     final expected = p.join(staging.path, '${row['incarnation']}.part');
     requireContainedPath(staging, file.path);
@@ -860,7 +1095,7 @@ class DurableInbox {
     var checkpointOffset = offset;
     final timer = Stopwatch()..start();
     try {
-      final temporary = File(row['temporary_path'] as String);
+      final temporary = File(_temporaryOf(row));
       requireContainedPath(root, temporary.path);
       await validateManagedDirectory(root, temporary.parent);
       await ensurePlainFile(temporary);
@@ -923,11 +1158,14 @@ class DurableInbox {
       await _checkpoint(writer, handle, written);
       await handle.close();
       handle = null;
+      await debugStageHook?.call('afterFinalClose');
+      // Cancel/pause may have run during the awaits above. They own the state.
+      writer.check();
       if (written == initial.manifest.sizeBytes) {
         return await _finishInternal(writer);
       }
       _db.execute(
-        "UPDATE inbox_files SET state='paused' WHERE transfer_id=? AND file_id=?",
+        "UPDATE inbox_files SET state='paused' WHERE transfer_id=? AND file_id=? AND state IN ('accepted','transferring')",
         [transferId, fileId],
       );
       _refreshTransfer(transferId);
@@ -946,7 +1184,15 @@ class DurableInbox {
           /* Keep last committed offset. */
         }
       }
-      _recordFailure(writer, mapped);
+      if (_recordFailure(writer, mapped)) {
+        try {
+          await handle?.close();
+        } catch (_) {
+          /* Closing before deletion; failure is already journaled. */
+        }
+        handle = null;
+        await _discardFailedPayload(writer);
+      }
       throw mapped;
     } finally {
       try {
@@ -1025,7 +1271,7 @@ class DurableInbox {
       final mapped = writer.stopCode == null
           ? storageIoError(error)
           : StorageException(writer.stopCode!, 'Transfer stopped.');
-      _recordFailure(writer, mapped);
+      if (_recordFailure(writer, mapped)) await _discardFailedPayload(writer);
       throw mapped;
     } finally {
       try {
@@ -1048,7 +1294,7 @@ class DurableInbox {
         offset: file.offset,
       );
     }
-    final temporary = File(row['temporary_path'] as String);
+    final temporary = File(_temporaryOf(row));
     await ensurePlainFile(temporary);
     if (await temporary.length() != file.manifest.sizeBytes) {
       throw const StorageException(
@@ -1056,10 +1302,21 @@ class DurableInbox {
         'Stored length differs from manifest.',
       );
     }
+    await debugStageHook?.call('beforeVerifying');
+    writer.check();
+    // Never overwrite a concurrent cancel/pause decision with 'verifying'.
     _db.execute(
-      "UPDATE inbox_files SET state='verifying' WHERE transfer_id=? AND file_id=?",
-      [writer.transferId, writer.fileId],
+      "UPDATE inbox_files SET state='verifying' WHERE transfer_id=? AND file_id=? "
+      "AND state IN ('accepted','transferring','paused') "
+      'AND (SELECT paused_source+paused_sink FROM inbox_transfers WHERE id=?)=0',
+      [writer.transferId, writer.fileId, writer.transferId],
     );
+    if (_db.updatedRows == 0) {
+      throw StorageException(
+        writer.stopCode ?? 'TRANSFER_CANCELLED',
+        'Transfer stopped.',
+      );
+    }
     _refreshTransfer(writer.transferId);
     _emit(writer.transferId);
     final hash = await hashStoredFile(temporary, check: writer.check);
@@ -1097,7 +1354,7 @@ class DurableInbox {
     journalTransaction(_db, () {
       _db.execute(
         "UPDATE inbox_files SET state='committing',final_path=? WHERE transfer_id=? AND file_id=?",
-        [finalPath, writer.transferId, writer.fileId],
+        [toStoredPath(root, finalPath), writer.transferId, writer.fileId],
       );
       _refreshTransfer(writer.transferId);
     });
@@ -1113,21 +1370,25 @@ class DurableInbox {
     return _fileSnapshot(_fileRow(writer.transferId, writer.fileId));
   }
 
-  void _recordFailure(_Writer writer, StorageException error) {
+  /// Returns true when the file became terminally `failed` (its partial
+  /// payload can no longer be resumed and should be discarded).
+  bool _recordFailure(_Writer writer, StorageException error) {
     final row = _fileRow(writer.transferId, writer.fileId);
     if ({
       'committed',
       'cancelled',
       'rejected',
       'expired',
+      'failed',
     }.contains(row['state'])) {
-      return;
+      return false;
     }
     // Preserve commit intent after an interrupted rename/DB operation. Recovery
     // decides whether the old temporary file or the final file is authoritative.
-    if (row['state'] == 'committing') return;
+    if (row['state'] == 'committing') return false;
     final recoverable = {
       'TRANSFER_INTERRUPTED',
+      'TRANSFER_TOO_SLOW',
       'TRANSFER_PAUSED',
       'INCOMPLETE_FILE',
       'DISK_FULL',
@@ -1146,9 +1407,22 @@ class DurableInbox {
     );
     _refreshTransfer(writer.transferId);
     if (!_closing) _emit(writer.transferId);
+    return !recoverable;
   }
 
-  void _refreshTransfer(String id) {
+  /// Deletes the partial payload of a terminally failed file (for example an
+  /// integrity mismatch) so it does not hold temporary quota indefinitely.
+  Future<void> _discardFailedPayload(_Writer writer) async {
+    try {
+      final row = _fileRow(writer.transferId, writer.fileId);
+      if (row['state'] != 'failed') return;
+      await _deleteTemporary(row);
+    } catch (_) {
+      // Best effort: the row is already failed; explicit cleanup still works.
+    }
+  }
+
+  void _refreshTransfer(String id, {bool touch = true}) {
     final transfer = _db.select(
       'SELECT paused_source,paused_sink FROM inbox_transfers WHERE id=?',
       [id],
@@ -1192,6 +1466,13 @@ class DurableInbox {
     } else {
       state = 'accepted';
     }
+    if (!touch) {
+      final current = _db.select(
+        'SELECT state FROM inbox_transfers WHERE id=?',
+        [id],
+      ).first['state'];
+      if (current == state) return;
+    }
     _db.execute('UPDATE inbox_transfers SET state=?,updated_at=? WHERE id=?', [
       state,
       _wallClock().toUtc().toIso8601String(),
@@ -1206,35 +1487,37 @@ class DurableInbox {
     return result;
   }
 
+  /// Startup recovery. Only non-terminal files are inspected; journal updates
+  /// are applied in one transaction and `updated_at` changes only when a
+  /// transfer state actually changes, so history order is preserved.
   Future<void> _recover() async {
-    for (final row in _db.select('SELECT * FROM inbox_files')) {
+    final updates = <(String, List<Object?>)>[];
+    final touched = <String>{};
+    void update(String transferId, String sql, List<Object?> parameters) {
+      updates.add((sql, parameters));
+      touched.add(transferId);
+    }
+
+    for (final row in _db.select(
+      "SELECT * FROM inbox_files WHERE state NOT IN ('offered','rejected','cancelled','failed','committed','expired')",
+    )) {
       final state = row['state'] as String;
-      if ({
-        'offered',
-        'rejected',
-        'cancelled',
-        'failed',
-        'committed',
-        'expired',
-      }.contains(state)) {
-        continue;
-      }
       final transferId = row['transfer_id'] as String;
       final fileId = row['file_id'] as String;
       try {
         final file = _fileSnapshot(row);
-        final temporary = File(row['temporary_path'] as String);
+        final temporary = File(_temporaryOf(row));
         requireContainedPath(root, temporary.path);
         await validateManagedDirectory(root, temporary.parent);
         if (state == 'committing') {
-          final finalPath = row['final_path'] as String?;
-          if (finalPath == null) {
+          final stored = row['final_path'] as String?;
+          if (stored == null) {
             throw const StorageException(
               'RECOVERY_INCONSISTENT',
               'Commit target missing.',
             );
           }
-          requireContainedPath(root, finalPath);
+          final finalPath = _abs(stored);
           final target = File(finalPath);
           await validateManagedDirectory(root, target.parent);
           final targetKind = await FileSystemEntity.type(
@@ -1255,7 +1538,8 @@ class DurableInbox {
           if (targetKind == FileSystemEntityType.notFound) {
             await temporary.rename(finalPath);
           }
-          _db.execute(
+          update(
+            transferId,
             "UPDATE inbox_files SET state='committed',error_code=NULL WHERE transfer_id=? AND file_id=?",
             [transferId, fileId],
           );
@@ -1286,7 +1570,8 @@ class DurableInbox {
           final cause = state == 'paused' && file.errorCode?.isNotEmpty == true
               ? file.errorCode!
               : 'TRANSFER_INTERRUPTED';
-          _db.execute(
+          update(
+            transferId,
             "UPDATE inbox_files SET state='paused',error_code=? WHERE transfer_id=? AND file_id=?",
             [cause, transferId, fileId],
           );
@@ -1295,14 +1580,71 @@ class DurableInbox {
         final code = error is StorageException
             ? error.code
             : 'RECOVERY_INCONSISTENT';
-        _db.execute(
+        update(
+          transferId,
           "UPDATE inbox_files SET state='failed',error_code=? WHERE transfer_id=? AND file_id=?",
           [code, transferId, fileId],
         );
       }
     }
-    for (final row in _db.select('SELECT id FROM inbox_transfers')) {
-      _refreshTransfer(row['id'] as String);
+    // Committed results can disappear (manual deletion, interrupted restore,
+    // power loss before the directory entry reached disk). Report, never crash.
+    for (final row in _db.select(
+      "SELECT transfer_id,file_id,final_path,error_code FROM inbox_files WHERE state='committed'",
+    )) {
+      final path = _resolvedFinalPath(row['final_path'] as String?);
+      final present =
+          path != null &&
+          await FileSystemEntity.type(path, followLinks: false) ==
+              FileSystemEntityType.file;
+      final flagged = row['error_code'] == 'FILE_MISSING';
+      if (present == !flagged) continue;
+      updates.add((
+        'UPDATE inbox_files SET error_code=? WHERE transfer_id=? AND file_id=?',
+        [present ? null : 'FILE_MISSING', row['transfer_id'], row['file_id']],
+      ));
+    }
+    await _deleteOrphanStaging();
+    journalTransaction(_db, () {
+      for (final (sql, parameters) in updates) {
+        _db.execute(sql, parameters);
+      }
+      final pending = _db
+          .select(
+            "SELECT id FROM inbox_transfers WHERE state NOT IN ('completed','partially_completed','rejected','cancelled','failed','expired')",
+          )
+          .map((row) => row['id'] as String);
+      for (final id in {...touched, ...pending}) {
+        _refreshTransfer(id, touch: false);
+      }
+    });
+  }
+
+  static final _stagingName = RegExp(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.part$',
+  );
+
+  /// A staging part without a journal row cannot be resumed (its durable
+  /// offset is unknown), for example after a journal was quarantined. Only
+  /// files with the store's own `<uuid>.part` name are removed.
+  Future<void> _deleteOrphanStaging() async {
+    final referenced = {
+      for (final row in _db.select('SELECT incarnation FROM inbox_files'))
+        '${row['incarnation']}.part',
+    };
+    final staging = Directory(p.join(root.path, '.staging'));
+    await for (final entity in staging.list(followLinks: false)) {
+      final name = p.basename(entity.path);
+      if (entity is! File ||
+          !_stagingName.hasMatch(name) ||
+          referenced.contains(name)) {
+        continue;
+      }
+      try {
+        await entity.delete();
+      } on FileSystemException {
+        // Left for the budget to account as an orphan claim.
+      }
     }
   }
 

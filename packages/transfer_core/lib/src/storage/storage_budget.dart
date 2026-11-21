@@ -33,6 +33,9 @@ class StorageBudget {
   final int recheckBytes;
   final Duration recheckInterval;
   int? _temporaryQuotaBytes;
+
+  /// The configured temporary-data quota (null = unlimited).
+  int? get temporaryQuotaBytes => _temporaryQuotaBytes;
   final _queue = _BudgetQueue();
   final _scopes = <String, Map<String, StorageBudgetClaim>>{};
   final _sinceCheck = Stopwatch();

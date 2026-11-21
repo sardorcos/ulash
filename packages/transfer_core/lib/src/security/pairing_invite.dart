@@ -11,8 +11,10 @@ final class PairingInvite {
     required this.hostPin,
     required this.displayName,
     required Uri endpoint,
+    List<Uri>? endpoints,
     this.ttlSeconds = 120,
-  }) : endpoint = validateEndpoint(endpoint) {
+  }) : endpoint = validateEndpoint(endpoint),
+       endpoints = _endpointList(endpoint, endpoints) {
     if (!RegExp(r'^[A-Za-z0-9_-]{1,100}$').hasMatch(inviteId) ||
         !isCanonicalToken(inviteSecret) ||
         !isCanonicalPin(hostPin) ||
@@ -29,8 +31,28 @@ final class PairingInvite {
   final String hostPin;
   String get serverPin => hostPin;
   final String displayName;
+
+  /// The preferred address (the first of [endpoints]).
   final Uri endpoint;
+
+  /// All candidate addresses of the host, preferred first (1–[maxEndpoints]).
+  /// A client tries them in order; the pinned key, not the address, is trust.
+  final List<Uri> endpoints;
   final int ttlSeconds;
+
+  static const int maxEndpoints = 4;
+
+  static List<Uri> _endpointList(Uri first, List<Uri>? extra) {
+    final result = <Uri>[validateEndpoint(first)];
+    for (final candidate in extra ?? const <Uri>[]) {
+      final valid = validateEndpoint(candidate);
+      if (!result.contains(valid)) result.add(valid);
+    }
+    if (result.length > maxEndpoints) {
+      throw const FormatException('Too many invitation endpoints');
+    }
+    return List.unmodifiable(result);
+  }
 
   String encode() {
     final payload = base64UrlEncode(
@@ -42,7 +64,8 @@ final class PairingInvite {
           'hostPin': hostPin,
           'displayName': displayName,
           'endpoints': [
-            {'host': endpoint.host, 'port': endpoint.port},
+            for (final item in endpoints)
+              {'host': item.host, 'port': item.port},
           ],
           'ttlSeconds': ttlSeconds,
         }),
@@ -101,23 +124,30 @@ final class PairingInvite {
       throw const FormatException('Unsupported invitation fields');
     }
     final addresses = json['endpoints'] as List;
-    if (addresses.length != 1) {
-      throw const FormatException('One endpoint is required in alpha');
+    if (addresses.isEmpty || addresses.length > maxEndpoints) {
+      throw const FormatException('Invalid number of endpoints');
     }
-    final address = addresses.single as Map<String, dynamic>;
-    if (address.keys.any((key) => key != 'host' && key != 'port')) {
-      throw const FormatException('Invalid endpoint fields');
+    final parsed = <Uri>[];
+    for (final item in addresses) {
+      final address = item as Map<String, dynamic>;
+      if (address.keys.any((key) => key != 'host' && key != 'port')) {
+        throw const FormatException('Invalid endpoint fields');
+      }
+      parsed.add(
+        Uri(
+          scheme: 'https',
+          host: address['host'] as String,
+          port: address['port'] as int,
+        ),
+      );
     }
     return PairingInvite(
       inviteId: json['inviteId'] as String,
       inviteSecret: json['inviteSecret'] as String,
       hostPin: json['hostPin'] as String,
       displayName: json['displayName'] as String,
-      endpoint: Uri(
-        scheme: 'https',
-        host: address['host'] as String,
-        port: address['port'] as int,
-      ),
+      endpoint: parsed.first,
+      endpoints: parsed,
       ttlSeconds: json['ttlSeconds'] as int,
     );
   }

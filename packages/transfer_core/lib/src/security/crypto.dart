@@ -74,6 +74,19 @@ String spkiPinFromCertificateDer(List<int> certificateDer) {
   return base64Encode(sha256.convert(spki.encodedBytes).bytes);
 }
 
+/// A short, stable verification code derived from a peer ID (the SHA-256 of
+/// its public key), e.g. `3FA2-91C0`. Shown on both devices during pairing so
+/// users can confirm they approve the device they are holding. It is a human
+/// check, not a cryptographic identifier: always pin the full key.
+String shortFingerprint(String peerId) {
+  final hex = peerId.toLowerCase();
+  if (!RegExp(r'^[0-9a-f]{8,}$').hasMatch(hex)) {
+    throw const FormatException('Invalid peer identifier');
+  }
+  final code = hex.substring(0, 8).toUpperCase();
+  return '${code.substring(0, 4)}-${code.substring(4)}';
+}
+
 String peerIdFromPin(String pin) {
   if (!isCanonicalPin(pin)) throw const FormatException('Invalid SPKI pin');
   return base64Decode(pin)

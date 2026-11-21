@@ -48,6 +48,26 @@ final class DeviceIdentity {
     return result;
   }
 
+  /// Persists a new display name while keeping the same device ID, TLS key,
+  /// certificate and pin, so existing pairings stay valid. Returns the renamed
+  /// identity; the current instance is unchanged. Peers see the new name the
+  /// next time it is exchanged (pairing, discovery, hello).
+  Future<DeviceIdentity> rename(
+    SecretStore store,
+    String newDisplayName, {
+    String storageKey = 'transfer.identity.v1',
+  }) async {
+    final renamed = DeviceIdentity._(
+      _privateKeyPem,
+      deviceId: deviceId,
+      displayName: _validName(newDisplayName),
+      certificatePem: certificatePem,
+      serverPin: serverPin,
+    );
+    await store.write(storageKey, jsonEncode(renamed._toSecretJson()));
+    return renamed;
+  }
+
   SecurityContext serverContext() {
     return SecurityContext(withTrustedRoots: false)
       ..minimumTlsProtocolVersion = TlsProtocolVersion.tls1_2

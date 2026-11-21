@@ -189,7 +189,7 @@ void main() {
     final (source, offered) = await offerBytes([1, 2, 3]);
     expect(offered.offerExpiresAt, DateTime.utc(2026, 11, 21, 0, 2));
     mono = const Duration(seconds: 120);
-      final expired = await client.transferStatus(offered.id);
+    final expired = await client.transferStatus(offered.id);
     expect(expired.state, TransferState.expired);
     expect(expired.files.single.errorCode, 'OFFER_EXPIRED');
     final repeated = await client.offer(offered.manifest);

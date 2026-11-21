@@ -6,6 +6,7 @@ export 'src/storage/durable_inbox.dart';
 export 'src/storage/durable_outbox.dart';
 export 'src/storage/storage_budget.dart'
     show StorageBudget, StorageBudgetSnapshot;
+export 'src/security/crypto.dart' show shortFingerprint;
 export 'src/security/secret_store.dart';
 export 'src/security/device_identity.dart';
 export 'src/security/trusted_peer_store.dart';

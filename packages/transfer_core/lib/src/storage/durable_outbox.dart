@@ -24,6 +24,13 @@ class DurableOutbox {
   bool _closed = false;
   int _preparing = 0;
 
+  /// 1 = 0.1–0.3 layout, 2 = store-relative snapshot paths.
+  static const int schemaVersion = 2;
+  static const _managed = {'files'};
+  static final _blobName = RegExp(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.blob$',
+  );
+
   static Future<DurableOutbox> open(
     Directory directory, {
     StorageBudget? budget,
@@ -34,19 +41,12 @@ class DurableOutbox {
     final lease = await StorageLease.acquire(root, 'outbox');
     Database? opened;
     try {
-      final db = openJournal(File(p.join(root.path, 'outbox.sqlite')));
+      final db = openJournal(
+        File(p.join(root.path, 'outbox.sqlite')),
+        version: schemaVersion,
+        migrate: _migrate,
+      );
       opened = db;
-      db.execute('''
-        CREATE TABLE IF NOT EXISTS outbox_files (
-          file_id TEXT PRIMARY KEY, manifest TEXT NOT NULL,
-          path TEXT NOT NULL, created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS outbox_transfers (
-          request_id TEXT PRIMARY KEY, peer_id TEXT NOT NULL,
-          manifest TEXT NOT NULL, remote_transfer_id TEXT,
-          state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-        );
-      ''');
       // An interrupted preparation has no published manifest and cannot be
       // resumed under an existing fileId. Retain no misleading partial source.
       await for (final entity in Directory(
@@ -57,6 +57,7 @@ class DurableOutbox {
         }
       }
       final store = DurableOutbox._(root, db, lease, budget);
+      await store._deleteOrphanBlobs();
       await store._restoreBudget();
       return store;
     } catch (_) {
@@ -66,15 +67,77 @@ class DurableOutbox {
     }
   }
 
+  static void _migrate(Database db, int from) {
+    db.execute('''
+      CREATE TABLE IF NOT EXISTS outbox_files (
+        file_id TEXT PRIMARY KEY, manifest TEXT NOT NULL,
+        path TEXT NOT NULL, created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS outbox_transfers (
+        request_id TEXT PRIMARY KEY, peer_id TEXT NOT NULL,
+        manifest TEXT NOT NULL, remote_transfer_id TEXT,
+        state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+    ''');
+    // Step 2: earlier builds stored absolute paths; the snapshot location is
+    // fully determined by its fileId, so rewrite it relative to the root.
+    db.execute(
+      "UPDATE outbox_files SET path='files/' || file_id || '.blob' "
+      "WHERE path != 'files/' || file_id || '.blob'",
+    );
+  }
+
+  /// Moves a damaged `outbox.sqlite` (and WAL/SHM) aside after
+  /// `JOURNAL_CORRUPT`. Unreferenced snapshots are removed on the next [open].
+  static Future<List<String>> quarantineJournal(Directory directory) async {
+    final root = await prepareStorageDirectory(directory);
+    final lease = await StorageLease.acquire(root, 'outbox');
+    try {
+      return await quarantineJournalFiles(
+        File(p.join(root.path, 'outbox.sqlite')),
+      );
+    } finally {
+      await lease.release();
+    }
+  }
+
+  String _abs(String stored) =>
+      resolveStoredPath(root, stored, managedTopLevel: _managed);
+
+  /// A crash between publishing a snapshot (rename) and inserting its row
+  /// leaves a blob that nothing references and that can never be sent. Only
+  /// the store's own `<uuid>.blob` files are removed.
+  Future<void> _deleteOrphanBlobs() async {
+    final referenced = {
+      for (final row in _db.select('SELECT file_id FROM outbox_files'))
+        '${row['file_id']}.blob',
+    };
+    await for (final entity in Directory(
+      p.join(root.path, 'files'),
+    ).list(followLinks: false)) {
+      final name = p.basename(entity.path);
+      if (entity is! File ||
+          !_blobName.hasMatch(name) ||
+          referenced.contains(name)) {
+        continue;
+      }
+      try {
+        await entity.delete();
+      } on FileSystemException {
+        // Accounted below as an orphan claim.
+      }
+    }
+  }
+
   Future<void> _restoreBudget() async {
     if (_budget == null) return;
     final idsByPath = <String, String>{
       for (final row in _db.select('SELECT file_id,path FROM outbox_files'))
-        row['path'] as String: row['file_id'] as String,
+        _abs(row['path'] as String): row['file_id'] as String,
     };
     final claims = <StorageBudgetClaim>[];
-    // Include orphaned payloads left between rename and journal publication.
-    // They consume quota, but recovery does not silently delete them.
+    // Unknown files that are not store snapshots consume quota but are never
+    // deleted automatically.
     await for (final entity in Directory(
       p.join(root.path, 'files'),
     ).list(followLinks: false)) {
@@ -249,7 +312,7 @@ class DurableOutbox {
           [
             fileId,
             jsonEncode(manifest.toJson()),
-            ready.path,
+            toStoredPath(root, ready.path),
             created.toIso8601String(),
           ],
         );
@@ -389,7 +452,7 @@ class DurableOutbox {
         [
           fileId,
           jsonEncode(manifest.toJson()),
-          ready.path,
+          toStoredPath(root, ready.path),
           created.toIso8601String(),
         ],
       );
@@ -434,7 +497,7 @@ class DurableOutbox {
     manifest: FileManifest.fromJson(
       jsonDecode(row['manifest'] as String) as Map<String, dynamic>,
     ),
-    path: row['path'] as String,
+    path: _abs(row['path'] as String),
     createdAt: DateTime.parse(row['created_at'] as String),
   );
 
@@ -611,6 +674,19 @@ class DurableOutbox {
     }
     _db.execute('DELETE FROM outbox_files WHERE file_id=?', [fileId]);
     await _budget?.forget(_budgetScope, fileId);
+  }
+
+  /// Retention for outgoing request records. Only terminal requests last
+  /// updated before now-[olderThan] are removed; prepared snapshots are not.
+  Future<int> pruneTerminalTransfers({required Duration olderThan}) async {
+    _checkOpen();
+    final cutoff = DateTime.now().toUtc().subtract(olderThan).toIso8601String();
+    _db.execute(
+      'DELETE FROM outbox_transfers WHERE updated_at < ? AND state IN '
+      "('completed','partially_completed','rejected','cancelled','failed')",
+      [cutoff],
+    );
+    return _db.updatedRows;
   }
 
   Future<void> close() async {

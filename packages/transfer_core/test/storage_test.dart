@@ -320,11 +320,13 @@ void main() {
     await write(transfer, data.sublist(0, 8));
     await inbox.close();
     var db = sqlite3.open(p.join(inboxDirectory.path, 'inbox.sqlite'));
-    final path =
+    final stored =
         db
                 .select('SELECT temporary_path FROM inbox_files')
                 .single['temporary_path']
             as String;
+    expect(p.isRelative(stored), isTrue);
+    final path = p.join(inboxDirectory.path, stored);
     db.execute("UPDATE inbox_files SET state='transferring'");
     db.close();
     await File(path).writeAsBytes([90, 91, 92], mode: FileMode.append);
@@ -375,11 +377,13 @@ void main() {
       final committed = await write(transfer, data);
       await inbox.close();
       final db = sqlite3.open(p.join(inboxDirectory.path, 'inbox.sqlite'));
-      final temporaryPath =
-          db
-                  .select('SELECT temporary_path FROM inbox_files')
-                  .single['temporary_path']
-              as String;
+      final temporaryPath = p.join(
+        inboxDirectory.path,
+        db
+                .select('SELECT temporary_path FROM inbox_files')
+                .single['temporary_path']
+            as String,
+      );
       db.execute("UPDATE inbox_files SET state='committing'");
       db.close();
       await File(committed.finalPath!).rename(temporaryPath);

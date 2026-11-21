@@ -84,7 +84,7 @@ final class CoreClient {
     required TrustedPeerStore peers,
     Uri? localEndpoint,
   }) async {
-    if (invite.endpoint != endpoint ||
+    if (!invite.endpoints.contains(endpoint) ||
         !constantTimeEqual(invite.hostPin, serverPin)) {
       throw const NetworkException(
         'INVITATION_MISMATCH',

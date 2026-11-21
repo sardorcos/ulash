@@ -10,6 +10,17 @@ abstract final class TransferLimits {
   static const int maxSignedInt64 = 9223372036854775807;
 }
 
+/// Bidirectional overrides, isolates, marks and zero-width characters can make
+/// `invoice\u202Efdp.exe` look like `invoiceexe.pdf`. They are never needed
+/// in a stored or displayed file name.
+final RegExp invisibleNameCharacters = RegExp(
+  '[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\u061C\uFEFF]',
+);
+
+/// Removes invisible/bidirectional formatting characters from a display name.
+String stripInvisibleNameCharacters(String input) =>
+    input.replaceAll(invisibleNameCharacters, '');
+
 class StorageException implements Exception {
   const StorageException(this.code, this.message, {this.offset});
 
@@ -86,6 +97,14 @@ class FileManifest {
 
   final String fileId;
   final String displayName;
+
+  /// The name to show in UI and use for local files: the wire name without
+  /// invisible bidirectional/zero-width characters (never empty).
+  String get visibleName {
+    final cleaned = stripInvisibleNameCharacters(displayName).trim();
+    return cleaned.isEmpty ? 'file' : cleaned;
+  }
+
   final int sizeBytes;
   final String sha256;
   final String? mimeType;

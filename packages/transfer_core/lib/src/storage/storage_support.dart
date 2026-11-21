@@ -134,11 +134,18 @@ void requireContainedPath(Directory root, String target) {
 /// never used as directory paths. This is not a replacement for native
 /// no-follow/no-replace filesystem primitives on hostile shared directories.
 String safeDisplayName(String input) {
-  var name = input.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1f\x7f]'), '_');
+  var name = stripInvisibleNameCharacters(input).trim();
+  name = name.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1f\x7f]'), '_');
   name = name.replaceAll(RegExp(r'[. ]+$'), '');
   if (name.isEmpty || name == '.' || name == '..') name = 'file';
-  final stem = name.split('.').first.toUpperCase();
-  if (RegExp(r'^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])$').hasMatch(stem)) {
+  // Windows ignores trailing spaces before the extension: `CON .txt` is CON.
+  final stem = name
+      .split('.')
+      .first
+      .replaceAll(RegExp(r' +$'), '')
+      .toUpperCase();
+  if (RegExp(r'^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[0-9¹²³]|LPT[0-9¹²³])$')
+      .hasMatch(stem)) {
     name = '_$name';
   }
   // Keep names short enough for common Windows application data paths. The
@@ -160,21 +167,94 @@ String safeDisplayName(String input) {
       bytes += length;
     }
     name = '${result.toString().replaceAll(RegExp(r'[. ]+$'), '')}$suffix';
+    if (name.isEmpty) name = 'file';
   }
   return name;
 }
 
-Database openJournal(File file) {
+/// Stored journal paths are relative to the store root and always use `/`.
+/// The application container path can change between launches (iOS updates,
+/// device restore), so an absolute path must never be persisted.
+String toStoredPath(Directory root, String absolute) {
+  final normalized = p.normalize(p.absolute(absolute));
+  requireContainedPath(root, normalized);
+  return p.split(p.relative(normalized, from: root.path)).join('/');
+}
+
+/// Resolves a stored relative path. A legacy absolute path from an older
+/// journal is rebased by its managed suffix (see [rebaseLegacyPath]).
+String resolveStoredPath(
+  Directory root,
+  String stored, {
+  required Set<String> managedTopLevel,
+}) {
+  final relative = p.isAbsolute(stored) || stored.startsWith('/')
+      ? rebaseLegacyPath(stored, managedTopLevel: managedTopLevel)
+      : stored;
+  if (relative == null) {
+    throw const StorageException('UNSAFE_PATH', 'Unrecognised stored path.');
+  }
+  final parts = relative.split('/');
+  if (parts.isEmpty ||
+      !managedTopLevel.contains(parts.first) ||
+      parts.any((part) => part.isEmpty || part == '.' || part == '..')) {
+    throw const StorageException('UNSAFE_PATH', 'Unsafe stored path.');
+  }
+  final absolute = p.joinAll([root.path, ...parts]);
+  requireContainedPath(root, absolute);
+  return absolute;
+}
+
+/// Converts `/old/container/…/inbox/received/t/i/name` into
+/// `received/t/i/name` by locating the last managed top-level component.
+/// Returns null when no managed component is present.
+String? rebaseLegacyPath(
+  String absolute, {
+  required Set<String> managedTopLevel,
+}) {
+  // Old journals may come from another platform style only in tests; accept
+  // both separators but never `..` components.
+  final parts = absolute
+      .split(RegExp(r'[/\\]'))
+      .where((part) => part.isNotEmpty)
+      .toList();
+  for (var index = parts.length - 2; index >= 0; index--) {
+    if (managedTopLevel.contains(parts[index])) {
+      final suffix = parts.sublist(index);
+      if (suffix.any((part) => part == '.' || part == '..')) return null;
+      return suffix.join('/');
+    }
+  }
+  return null;
+}
+
+/// Opens a durable WAL journal and applies numbered, idempotent migrations.
+///
+/// `PRAGMA user_version` stores the applied schema level. Every migration step
+/// must be safe to re-run because 0.1–0.3 journals have version 0. A database
+/// from a newer app version fails with `JOURNAL_TOO_NEW`; a damaged file fails
+/// with `JOURNAL_CORRUPT` so the application can offer an explicit recovery
+/// (see [quarantineJournalFiles]) instead of silently recreating state.
+Database openJournal(
+  File file, {
+  int version = 0,
+  void Function(Database db, int fromVersion)? migrate,
+}) {
   if (FileSystemEntity.typeSync(file.path, followLinks: false) ==
       FileSystemEntityType.link) {
     throw const StorageException('UNSAFE_PATH', 'Journal cannot be a link.');
   }
-  final db = sqlite3.open(file.path);
+  final Database db;
   try {
+    db = sqlite3.open(file.path);
+  } on SqliteException catch (error) {
+    throw _journalOpenError(error);
+  }
+  try {
+    db.execute('PRAGMA busy_timeout=5000');
     db.execute('PRAGMA journal_mode=WAL');
     db.execute('PRAGMA synchronous=FULL');
     db.execute('PRAGMA foreign_keys=ON');
-    db.execute('PRAGMA busy_timeout=5000');
     final mode = db.select('PRAGMA journal_mode').first.values.first;
     final sync = db.select('PRAGMA synchronous').first.values.first;
     if (mode.toString().toLowerCase() != 'wal' || sync != 2) {
@@ -183,11 +263,77 @@ Database openJournal(File file) {
         'Durability settings unavailable.',
       );
     }
+    final check = db.select('PRAGMA quick_check');
+    if (check.length != 1 || check.first.values.first != 'ok') {
+      throw const StorageException(
+        'JOURNAL_CORRUPT',
+        'The local journal is damaged.',
+      );
+    }
+    final current = db.select('PRAGMA user_version').first.values.first as int;
+    if (current > version) {
+      throw const StorageException(
+        'JOURNAL_TOO_NEW',
+        'The local journal was created by a newer version of the app.',
+      );
+    }
+    if (migrate != null) {
+      journalTransaction(db, () {
+        migrate(db, current);
+        if (current != version) db.execute('PRAGMA user_version=$version');
+      });
+    }
     return db;
+  } on SqliteException catch (error) {
+    db.close();
+    throw _journalOpenError(error);
   } catch (_) {
     db.close();
     rethrow;
   }
+}
+
+StorageException _journalOpenError(SqliteException error) {
+  // SQLITE_CORRUPT (11) and SQLITE_NOTADB (26).
+  if (error.resultCode == 11 || error.resultCode == 26) {
+    return const StorageException(
+      'JOURNAL_CORRUPT',
+      'The local journal is damaged.',
+    );
+  }
+  if (error.resultCode == 13) {
+    return const StorageException('DISK_FULL', 'Storage is full.');
+  }
+  return const StorageException(
+    'STORAGE_FAILURE',
+    'Journal could not be opened.',
+  );
+}
+
+/// Moves a damaged journal and its WAL/SHM side files aside, keeping them for
+/// diagnosis. Payload files are not touched. The caller must have closed the
+/// store (a failed open has already released it). Returns the moved paths.
+Future<List<String>> quarantineJournalFiles(File journal) async {
+  final stamp = DateTime.now().toUtc().toIso8601String().replaceAll(
+    RegExp(r'[^0-9TZ]'),
+    '',
+  );
+  final moved = <String>[];
+  for (final suffix in ['', '-wal', '-shm']) {
+    final source = '${journal.path}$suffix';
+    final type = await FileSystemEntity.type(source, followLinks: false);
+    if (type == FileSystemEntityType.notFound) continue;
+    if (type != FileSystemEntityType.file) {
+      throw const StorageException(
+        'UNSAFE_PATH',
+        'Journal side file is not a plain file.',
+      );
+    }
+    final target = '${journal.path}.corrupt-$stamp$suffix';
+    await File(source).rename(target);
+    moved.add(target);
+  }
+  return moved;
 }
 
 T journalTransaction<T>(Database db, T Function() body) {
@@ -222,17 +368,34 @@ Future<String> hashStoredFile(File file, {void Function()? check}) async {
   return result.value!.toString();
 }
 
+/// OS error numbers that mean "no space" (or per-user quota) differ per OS.
+/// Linux/Android: ENOSPC 28, EDQUOT 122. Apple: ENOSPC 28, EDQUOT 69.
+/// Windows: ERROR_HANDLE_DISK_FULL 39, ERROR_DISK_FULL 112.
+bool isDiskFullErrorCode(int? code, {String? operatingSystem}) {
+  if (code == null) return false;
+  final os = operatingSystem ?? Platform.operatingSystem;
+  return switch (os) {
+    'windows' => code == 39 || code == 112,
+    'macos' || 'ios' => code == 28 || code == 69,
+    _ => code == 28 || code == 122,
+  };
+}
+
 StorageException storageIoError(Object error) {
   if (error is StorageException) return error;
   if (error is FileSystemException) {
     return StorageException(
-      error.osError?.errorCode == 28 || error.osError?.errorCode == 112
+      isDiskFullErrorCode(error.osError?.errorCode)
           ? 'DISK_FULL'
           : 'STORAGE_FAILURE',
       'File operation failed.',
     );
   }
   if (error is SqliteException) {
+    // SQLITE_FULL (13): the journal could not grow.
+    if (error.resultCode == 13) {
+      return const StorageException('DISK_FULL', 'Storage is full.');
+    }
     return const StorageException(
       'STORAGE_FAILURE',
       'Journal operation failed.',

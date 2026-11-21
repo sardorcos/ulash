@@ -116,10 +116,15 @@ void main() {
       final budget = StorageBudget(
         availableBytes: () async => 100,
         safetyReserveBytes: 0,
-        temporaryQuotaBytes: 10,
+        temporaryQuotaBytes: 12,
       );
       inbox = await DurableInbox.open(incomingRoot, budget: budget);
       outbox = await DurableOutbox.open(outgoingRoot, budget: budget);
+      await outbox!.stageStream(
+        Stream.value(List.filled(2, 3)),
+        displayName: 'small.bin',
+        expectedSizeBytes: 2,
+      );
       final pending = await offer([List.filled(6, 1), List.filled(6, 2)]);
       await expectLater(
         inbox!.accept(pending.transferId),

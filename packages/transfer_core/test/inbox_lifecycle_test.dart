@@ -332,7 +332,7 @@ void main() {
   });
 
   test(
-    'failed terminal partials remain cleanable and preserve failure receipt',
+    'failed terminal partials are discarded and preserve failure receipt',
     () async {
       final budget = StorageBudget(
         availableBytes: () async => 1000,
@@ -345,15 +345,19 @@ void main() {
         write(accepted, [9, 9, 9, 9]),
         throwsA(errorCode('INTEGRITY_MISMATCH')),
       );
-      expect(inbox!.status(accepted.transferId).state, TransferState.failed);
-      final preview = (await inbox!.previewIncompleteCleanup()).single;
-      expect(preview.temporaryBytes, 4);
-      expect(preview.reservedBytes, 0);
-      final result = await inbox!.discardIncomplete(preview.transferId);
-      expect(result.removedBytes, 4);
-      expect(result.snapshot.state, TransferState.failed);
-      expect(result.snapshot.files.single.errorCode, 'INTEGRITY_MISMATCH');
-      expect((await budget.inspect()).temporaryBytes, 0);
+      final failed = inbox!.status(accepted.transferId);
+      expect(failed.state, TransferState.failed);
+      expect(failed.files.single.errorCode, 'INTEGRITY_MISMATCH');
+      expect(failed.files.single.offset, 0);
+      // A non-resumable payload no longer holds temporary quota.
+      expect(await inbox!.previewIncompleteCleanup(), isEmpty);
+      final usage = await budget.inspect();
+      expect(usage.temporaryBytes, 0);
+      expect(usage.reservedBytes, 0);
+      expect(
+        await Directory(p.join(incoming.path, '.staging')).list().toList(),
+        isEmpty,
+      );
       expect((await offer()).transferId, accepted.transferId);
     },
   );

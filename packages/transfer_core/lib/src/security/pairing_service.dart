@@ -75,11 +75,70 @@ final class PairingService {
           _clock.elapsed +
           Duration(milliseconds: remaining.inMilliseconds.clamp(0, 120000));
     }
+    if (_prune()) await _persist();
+  }
+
+  /// Terminal requests are kept only as long as a client may still retry the
+  /// final poll/commit. Older entries would otherwise grow the secure-store
+  /// item without bound.
+  static const terminalRetention = Duration(minutes: 10);
+  static const maxJournalEntries = 64;
+  static const _terminalStates = {'rejected', 'expired', 'revoked', 'active'};
+
+  bool _prune() {
+    final now = DateTime.now().toUtc();
+    var changed = false;
+    for (final request in _requests.values) {
+      if ((request['state'] == 'waiting' || request['state'] == 'approved') &&
+          _expired(request)) {
+        request['state'] = 'expired';
+        request['issuedToken'] = null;
+        request['reverseToken'] = null;
+        changed = true;
+      }
+    }
+    final stale = _requests.values
+        .where(
+          (request) =>
+              _terminalStates.contains(request['state']) &&
+              now
+                      .difference(
+                        DateTime.parse(request['expiresAt'] as String),
+                      )
+                      .compareTo(terminalRetention) >=
+                  0,
+        )
+        .map((request) => request['requestId'] as String)
+        .toList();
+    for (final id in stale) {
+      _requests.remove(id);
+      _deadlines.remove(id);
+      changed = true;
+    }
+    if (_requests.length > maxJournalEntries) {
+      final terminal =
+          _requests.values
+              .where((request) => _terminalStates.contains(request['state']))
+              .toList()
+            ..sort(
+              (a, b) => (a['expiresAt'] as String).compareTo(
+                b['expiresAt'] as String,
+              ),
+            );
+      for (final request in terminal) {
+        if (_requests.length <= maxJournalEntries) break;
+        _requests.remove(request['requestId']);
+        _deadlines.remove(request['requestId']);
+        changed = true;
+      }
+    }
+    return changed;
   }
 
   PairingInvite createInvite(
     Uri endpoint, {
     Duration ttl = const Duration(seconds: 120),
+    List<Uri>? additionalEndpoints,
   }) {
     if (ttl.inSeconds < 1 || ttl.inSeconds > 120) {
       throw ArgumentError('Invitation lifetime must be 1–120 seconds');
@@ -103,6 +162,7 @@ final class PairingService {
       hostPin: identity.serverPin,
       displayName: identity.displayName,
       endpoint: endpoint,
+      endpoints: [endpoint, ...?additionalEndpoints],
       ttlSeconds: ttl.inSeconds,
     );
   }
@@ -336,6 +396,9 @@ final class PairingService {
     if (request['state'] == 'waiting' || request['state'] == 'approved') {
       _checkPending(request);
     }
+    if (request['state'] == 'expired') {
+      throw const PairingException('INVITE_EXPIRED', 'Pairing window expired');
+    }
     return {
       'requestId': request['requestId'],
       'pairingId': request['pairingId'],
@@ -396,10 +459,13 @@ final class PairingService {
     return value;
   }
 
-  Future<void> _persist() => peers.secretStore.write(
-    _storageKey,
-    jsonEncode({'version': 1, 'requests': _requests.values.toList()}),
-  );
+  Future<void> _persist() {
+    _prune();
+    return peers.secretStore.write(
+      _storageKey,
+      jsonEncode({'version': 1, 'requests': _requests.values.toList()}),
+    );
+  }
 
   Future<T> _serial<T>(Future<T> Function() action) {
     final result = _tail.then((_) => action());

@@ -13,8 +13,33 @@ import 'network_error.dart';
 /// Foreground alpha host: encrypted manual pairing and consent-gated resumable
 /// push. Pull/background transports are deliberately not advertised as ready.
 final class CoreHost {
-  CoreHost({required this.identity, required this.peers, required this.inbox})
-    : pairing = PairingService(identity: identity, peers: peers);
+  CoreHost({
+    required this.identity,
+    required this.peers,
+    required this.inbox,
+    this.uploadIdleTimeout = const Duration(seconds: 30),
+    this.uploadGracePeriod = const Duration(seconds: 30),
+    this.uploadThroughputWindow = const Duration(seconds: 60),
+    this.minUploadBytesPerWindow = 16 * 1024,
+    Duration Function()? clock,
+  }) : pairing = PairingService(identity: identity, peers: peers),
+       _clock = clock ?? _defaultClock;
+
+  static final Stopwatch _stopwatch = Stopwatch()..start();
+  static Duration _defaultClock() => _stopwatch.elapsed;
+
+  /// Maximum gap between two upload chunks.
+  final Duration uploadIdleTimeout;
+
+  /// No throughput requirement during the first part of an upload request.
+  final Duration uploadGracePeriod;
+
+  /// A single upload holds the receiver's only writer. A peer that keeps the
+  /// connection alive with a trickle of bytes is stopped (retryably) when it
+  /// delivers fewer than [minUploadBytesPerWindow] in a window.
+  final Duration uploadThroughputWindow;
+  final int minUploadBytesPerWindow;
+  final Duration Function() _clock;
 
   final DeviceIdentity identity;
   final TrustedPeerStore peers;
@@ -67,15 +92,26 @@ final class CoreHost {
     return endpoint;
   }
 
+  /// [hostAddresses] lists candidate LAN addresses, preferred first (at most
+  /// [PairingInvite.maxEndpoints]); [hostAddress] is the single-address form.
   PairingInvite createInvite({
     String? hostAddress,
+    List<String>? hostAddresses,
     Duration ttl = const Duration(seconds: 120),
-  }) => pairing.createInvite(
-    hostAddress == null
-        ? endpoint
-        : Uri(scheme: 'https', host: hostAddress, port: port),
-    ttl: ttl,
-  );
+  }) {
+    final hosts = [?hostAddress, ...?hostAddresses];
+    final uris = hosts.isEmpty
+        ? [endpoint]
+        : [
+            for (final host in hosts.toSet())
+              Uri(scheme: 'https', host: host, port: port),
+          ];
+    return pairing.createInvite(
+      uris.first,
+      ttl: ttl,
+      additionalEndpoints: uris.skip(1).toList(),
+    );
+  }
 
   PairingInvite invite({String? hostAddress}) =>
       createInvite(hostAddress: hostAddress);
@@ -400,15 +436,33 @@ final class CoreHost {
     int maximum,
   ) {
     var count = 0;
+    final started = _clock();
+    var windowStart = started + uploadGracePeriod;
+    var windowBytes = 0;
     // Keep cancellation directly connected to HttpRequest. An async* wrapper
     // can strand its inner moveNext future when storage cancels a live body.
-    return request.timeout(const Duration(seconds: 30)).map((chunk) {
+    return request.timeout(uploadIdleTimeout).map((chunk) {
       if (_closed || peers.authenticate(token)?.peerId != peerId) {
         throw const StorageException('PEER_REVOKED', 'Pairing was revoked');
       }
       count += chunk.length;
       if (count > maximum) {
         throw const StorageException('BODY_TOO_LARGE', 'Too many upload bytes');
+      }
+      final elapsedNow = _clock();
+      if (elapsedNow >= windowStart) {
+        windowBytes += chunk.length;
+        if (elapsedNow - windowStart >= uploadThroughputWindow) {
+          if (windowBytes < minUploadBytesPerWindow) {
+            // Retryable: the durable offset is kept and the writer released.
+            throw const StorageException(
+              'TRANSFER_TOO_SLOW',
+              'Upload is too slow; reconnect and resume.',
+            );
+          }
+          windowStart = elapsedNow;
+          windowBytes = 0;
+        }
       }
       final now = DateTime.now();
       if (now.difference(_lastProgressEvent) >
@@ -515,7 +569,12 @@ final class CoreHost {
     'NOT_FOUND' => 404,
     'METHOD_NOT_ALLOWED' => 405,
     'INVITE_EXPIRED' || 'EXPIRED' => 410,
-    'BODY_TOO_LARGE' || 'FILE_TOO_LARGE' || 'TRANSFER_TOO_LARGE' => 413,
+    'BODY_TOO_LARGE' ||
+    'FILE_TOO_LARGE' ||
+    'TRANSFER_TOO_LARGE' ||
+    'QUOTA_EXCEEDED' => 413,
+    'RATE_LIMITED' => 429,
+    'TRANSFER_TOO_SLOW' => 408,
     'UNSUPPORTED_MEDIA_TYPE' => 415,
     'CHECKSUM_MISMATCH' || 'HASH_MISMATCH' || 'INTEGRITY_MISMATCH' => 422,
     'BUSY' => 423,
