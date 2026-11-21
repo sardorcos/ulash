@@ -34,6 +34,7 @@ class OutgoingJob {
       localState == 'completed' ||
       localState == 'cancelled' ||
       localState == 'rejected' ||
+      localState == 'expired' ||
       localState == 'failed' ||
       localState == 'partially_completed';
 

@@ -4,6 +4,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:transfer_core/transfer_core.dart';
 
 import 'lan_discovery.dart';
+import 'network_retry_policy.dart';
 import 'os_secret_store.dart';
 import 'platform_permissions.dart';
 import 'platform_storage.dart';
@@ -30,6 +31,8 @@ class AppRuntime {
     this.availableBytes,
     this.exportFile,
     this.exportSupported = false,
+    this.retryPolicy,
+    this.retryDelay,
   });
 
   factory AppRuntime.native() => AppRuntime(
@@ -58,4 +61,9 @@ class AppRuntime {
   final Future<int?> Function(Directory directory)? availableBytes;
   final ExportFileCallback? exportFile;
   final bool exportSupported;
+  final NetworkRetryPolicy? retryPolicy;
+
+  /// Deterministic scheduler boundary for tests. Native operation leaves this
+  /// null and uses cancellable monotonic timers, never a persisted wall clock.
+  final Future<void> Function(Duration duration)? retryDelay;
 }

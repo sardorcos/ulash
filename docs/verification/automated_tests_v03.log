@@ -1,0 +1,155 @@
+
+[packages/transfer_core] dart pub get --enforce-lockfile
+Resolving dependencies...
+Downloading packages...
+  cli_util 0.6.0 (0.6.1 available)
+Got dependencies!
+1 package has newer versions incompatible with dependency constraints.
+Try `dart pub outdated` for more information.
+
+[packages/transfer_core] dart analyze --fatal-infos
+Analyzing transfer_core...
+No issues found!
+
+[packages/transfer_core] dart test --reporter expanded
+Running build hooks...
+00:00 +0: loading test/storage_budget_test.dart
+00:00 +0: test/storage_budget_test.dart: low disk rejects consent before creating payloads or accepting offer
+00:00 +1: test/storage_budget_test.dart: batch quota admission is atomic and leaves other preparation possible
+00:00 +2: test/network_test.dart: (setUpAll)
+00:00 +3: test/network_test.dart: (setUpAll)
+00:00 +4: test/network_test.dart: (setUpAll)
+00:00 +5: test/network_test.dart: (setUpAll)
+00:00 +6: test/network_test.dart: (setUpAll)
+00:00 +7: test/network_test.dart: (setUpAll)
+00:00 +8: test/network_test.dart: (setUpAll)
+00:00 +9: test/network_test.dart: (setUpAll)
+00:00 +10: test/network_test.dart: (setUpAll)
+00:00 +11: test/network_test.dart: (setUpAll)
+00:00 +12: test/network_test.dart: (setUpAll)
+00:00 +13: test/network_test.dart: (setUpAll)
+00:00 +14: test/network_test.dart: (setUpAll)
+00:00 +15: test/network_test.dart: (setUpAll)
+00:00 +16: test/network_test.dart: (setUpAll)
+00:00 +17: test/network_test.dart: (setUpAll)
+00:00 +18: test/network_test.dart: (setUpAll)
+00:00 +19: test/network_test.dart: (setUpAll)
+00:00 +20: test/network_test.dart: (setUpAll)
+00:00 +21: test/network_test.dart: (setUpAll)
+00:00 +21: test/inbox_lifecycle_test.dart: foreground timer emits expiry without a status poll
+00:00 +22: test/inbox_lifecycle_test.dart: foreground timer emits expiry without a status poll
+00:00 +23: test/inbox_lifecycle_test.dart: foreground timer emits expiry without a status poll
+00:00 +24: test/inbox_lifecycle_test.dart: foreground timer emits expiry without a status poll
+00:00 +25: test/network_test.dart: real TLS rejects the wrong pinned identity before any authenticated operation
+00:00 +26: test/network_test.dart: real TLS rejects the wrong pinned identity before any authenticated operation
+00:00 +27: test/network_test.dart: real TLS rejects the wrong pinned identity before any authenticated operation
+00:00 +28: test/network_test.dart: real TLS rejects the wrong pinned identity before any authenticated operation
+00:00 +29: test/network_test.dart: real TLS rejects the wrong pinned identity before any authenticated operation
+00:00 +30: test/storage_test.dart: body longer than manifest is rejected without committing
+00:00 +31: test/inbox_lifecycle_test.dart: late cleanup confirmation never removes a newly committed result
+00:00 +32: test/network_test.dart: pairing retry survives client restart and requires manual acceptance
+00:00 +33: test/network_test.dart: pairing retry survives client restart and requires manual acceptance
+00:00 +34: test/network_test.dart: pairing retry survives client restart and requires manual acceptance
+00:00 +35: test/network_test.dart: pairing retry survives client restart and requires manual acceptance
+00:00 +36: test/network_test.dart: pairing retry survives client restart and requires manual acceptance
+00:00 +37: test/network_test.dart: pairing retry survives client restart and requires manual acceptance
+00:00 +38: test/network_test.dart: pairing retry survives client restart and requires manual acceptance
+00:00 +39: test/network_test.dart: pairing retry survives client restart and requires manual acceptance
+00:01 +40: test/network_test.dart: pairing retry survives client restart and requires manual acceptance
+00:01 +41: test/network_test.dart: pairing retry survives client restart and requires manual acceptance
+00:01 +42: test/network_test.dart: pairing retry survives client restart and requires manual acceptance
+00:01 +43: test/network_test.dart: pairing retry survives client restart and requires manual acceptance
+00:01 +44: test/security_test.dart: (setUpAll)
+00:01 +45: test/security_test.dart: (setUpAll)
+00:01 +46: test/security_test.dart: (setUpAll)
+00:01 +47: test/security_test.dart: (setUpAll)
+00:01 +48: test/security_test.dart: (setUpAll)
+00:01 +48: test/network_test.dart: consent gates streaming, full transfer is verified and retry does not duplicate files
+00:01 +49: test/network_test.dart: consent gates streaming, full transfer is verified and retry does not duplicate files
+00:01 +50: test/network_test.dart: consent gates streaming, full transfer is verified and retry does not duplicate files
+00:01 +51: test/network_test.dart: consent gates streaming, full transfer is verified and retry does not duplicate files
+00:01 +52: test/network_test.dart: consent gates streaming, full transfer is verified and retry does not duplicate files
+00:01 +53: test/network_test.dart: consent gates streaming, full transfer is verified and retry does not duplicate files
+00:01 +54: test/network_test.dart: truncated HTTPS stream recovers its durable prefix across host restart
+00:01 +55: test/network_test.dart: bad offset cannot overwrite data and revoked credentials cannot resume
+00:01 +56: test/network_test.dart: source cannot clear a pause explicitly owned by the receiver
+00:01 +57: test/network_test.dart: HTTP redirect never forwards credentials to another origin
+00:02 +58: test/network_test.dart: oversized JSON is refused before creating pairing state
+00:02 +59: test/network_test.dart: empty file still requires acceptance and reaches verified commit
+00:02 +60: test/network_test.dart: revoking a peer stops an in-flight writer without waiting for more bytes
+00:02 +61: test/network_test.dart: (tearDownAll)
+00:02 +61: All tests passed!
+
+[apps/file_transfer] flutter --no-version-check pub get --enforce-lockfile
+Resolving dependencies...
+Downloading packages...
+  cross_file 0.3.5+5 (0.4.0 available)
+  desktop_drop 0.8.0 (0.9.2 available)
+  material_color_utilities 0.13.0 (0.13.1 available)
+  qr 3.0.3 (4.0.1 available)
+  test_api 0.7.14 (0.7.15 available)
+  vector_math 2.4.3 (2.4.4 available)
+Got dependencies!
+6 packages have newer versions incompatible with dependency constraints.
+Try `flutter pub outdated` for more information.
+
+[apps/file_transfer] flutter --no-version-check analyze --no-pub
+Analyzing file_transfer...                                      
+No issues found! (ran in 1.3s)
+
+[apps/file_transfer] flutter --no-version-check test --reporter expanded
+00:00 +0: loading /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/storage_export_integration_test.dart
+00:00 +0: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/storage_export_integration_test.dart: export keeps network receipt independent, bounds native calls, and remembers success after cancellation
+00:00 +1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/storage_export_integration_test.dart: export keeps network receipt independent, bounds native calls, and remembers success after cancellation
+00:00 +2: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/storage_export_integration_test.dart: export keeps network receipt independent, bounds native calls, and remembers success after cancellation
+00:00 +3: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/storage_export_integration_test.dart: export keeps network receipt independent, bounds native calls, and remembers success after cancellation
+00:00 +4: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/storage_export_integration_test.dart: export keeps network receipt independent, bounds native calls, and remembers success after cancellation
+00:00 +5: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/storage_export_integration_test.dart: export keeps network receipt independent, bounds native calls, and remembers success after cancellation
+00:00 +6: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/storage_export_integration_test.dart: export keeps network receipt independent, bounds native calls, and remembers success after cancellation
+00:00 +7: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/storage_export_integration_test.dart: export keeps network receipt independent, bounds native calls, and remembers success after cancellation
+00:00 +8: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/storage_export_integration_test.dart: export keeps network receipt independent, bounds native calls, and remembers success after cancellation
+00:00 +9: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/storage_export_integration_test.dart: export keeps network receipt independent, bounds native calls, and remembers success after cancellation
+00:00 +10: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/storage_export_integration_test.dart: export keeps network receipt independent, bounds native calls, and remembers success after cancellation
+00:00 +11: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/storage_export_integration_test.dart: export keeps network receipt independent, bounds native calls, and remembers success after cancellation
+00:00 +12: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:00 +13: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:00 +14: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:00 +15: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:01 +16: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:01 +17: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:01 +18: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:01 +19: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:01 +20: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:01 +21: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:01 +22: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:02 +23: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:02 +24: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:03 +25: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:03 +26: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:03 +27: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:03 +28: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:03 +29: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:03 +30: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:04 +31: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:04 +32: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:04 +33: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:04 +34: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:04 +35: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:04 +36: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:04 +37: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:04 +38: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:05 +39: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:05 +40: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:05 +40 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:05 +41 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:05 +42 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:05 +43 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:06 +44 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:06 +45 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:06 +46 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:06 +47 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+00:06 +48 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/network_resume_integration_test.dart: a real TLS socket interruption automatically resumes the same transfer and exact bytes
+NETWORK_RETRY_PROBE {"bytes":16777353,"durableOffsetAtRetry":7782394,"socketInterruptions":1,"automaticRetries":1,"outgoingWireBytesAfterCut":9051910,"retryDelaysMs":[1000],"sha256":"e359e4f20be97fccaf872546d5029086560fa3d7d238889ca468ffbef0f12e68","elapsedMilliseconds":5546,"requestIdPreserved":true,"transferIdPreserved":true}
+00:07 +49 ~1: All tests passed!
+
+Validation passed. Native device acceptance remains a separate gate.

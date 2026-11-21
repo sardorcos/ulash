@@ -866,6 +866,16 @@ class _TransferShellState extends State<_TransferShell> {
             'И ещё ${fileCountLabel(request.fileNames.length - 3)}',
             style: Theme.of(context).textTheme.bodySmall,
           ),
+        if (request.expiresAt != null) ...[
+          const SizedBox(height: 10),
+          Text(
+            'Предложение действует до '
+            '${formatDate(request.expiresAt!, includeSeconds: true)}. '
+            'Без ответа отправителю понадобится создать новое предложение.',
+            key: Key('offer-deadline-${request.id}'),
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
         const SizedBox(height: 18),
         Wrap(
           spacing: 12,
@@ -1235,6 +1245,7 @@ class _TransferShellState extends State<_TransferShell> {
           if (item.canPause ||
               item.canResume ||
               item.canCancel ||
+              item.canRetry ||
               item.canOpen ||
               item.canExport) ...[
             const SizedBox(height: 12),
@@ -1261,6 +1272,13 @@ class _TransferShellState extends State<_TransferShell> {
                     key: Key('cancel-${item.id}'),
                     onPressed: () => _run(() => c.cancelTransfer(item.id)),
                     child: const Text('Отменить'),
+                  ),
+                if (item.canRetry)
+                  TextButton.icon(
+                    key: Key('retry-${item.id}'),
+                    onPressed: c.isBusy ? null : () => _confirmRetry(item),
+                    icon: const Icon(Icons.replay_rounded),
+                    label: const Text('Отправить снова'),
                   ),
                 if (item.canOpen)
                   TextButton.icon(
@@ -1512,6 +1530,34 @@ class _TransferShellState extends State<_TransferShell> {
                 label: const Text('Очистить неиспользуемые копии'),
               ),
             ),
+            const Divider(height: 28),
+            _SettingRow(
+              icon: Icons.downloading_rounded,
+              title: 'Незавершённый приём',
+              subtitle:
+                  '${storage.incompleteIncoming.length} передач · '
+                  '${formatBytes(storage.incompleteTemporaryBytes)} уже занято; '
+                  '${formatBytes(storage.incompleteReservedBytes)} предусмотрено для продолжения.',
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Очистка остановит выбранные входящие передачи и удалит их '
+              'незавершённые части. Для них потребуется новая отправка. '
+              'Уже полученные готовые файлы останутся на месте.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                key: const Key('cleanup-incoming'),
+                onPressed: enabled && storage.incompleteIncoming.isNotEmpty
+                    ? _confirmIncomingCleanup
+                    : null,
+                icon: const Icon(Icons.delete_outline_rounded),
+                label: const Text('Очистить незавершённый приём'),
+              ),
+            ),
           ],
         ],
       ),
@@ -1572,6 +1618,108 @@ class _TransferShellState extends State<_TransferShell> {
       await _run(
         () => c.clearUnusedTemporary(files.map((file) => file.id).toList()),
       );
+    }
+  }
+
+  Future<void> _confirmIncomingCleanup() async {
+    final transfers = List<IncomingCleanupItem>.of(
+      c.storageOverview?.incompleteIncoming ?? [],
+    );
+    if (transfers.isEmpty) return;
+    final bytes = transfers.fold<int>(
+      0,
+      (sum, item) => sum + item.temporaryBytes,
+    );
+    final reserved = transfers.fold<int>(
+      0,
+      (sum, item) => sum + item.reservedBytes,
+    );
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Остановить приём и удалить части файлов?'),
+        content: SizedBox(
+          width: 440,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Будут остановлены перечисленные передачи: ${transfers.length}. '
+                  'Их незавершённые части сейчас занимают ${formatBytes(bytes)}, '
+                  'ещё ${formatBytes(reserved)} предусмотрено для продолжения. '
+                  'Объём может измениться, если приём ещё идёт. '
+                  'Продолжить эти передачи после очистки нельзя: '
+                  'отправителю потребуется создать новые. '
+                  'Готовые полученные файлы и история сохранятся.',
+                ),
+                const SizedBox(height: 14),
+                for (final item in transfers)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Text(
+                      '${item.title}\n${item.peerName} · '
+                      '${fileCountLabel(item.pendingFileCount)} не завершено · '
+                      '${formatBytes(item.temporaryBytes)}\n'
+                      'Готовых файлов останется: ${item.completedFileCount}',
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Оставить'),
+          ),
+          FilledButton(
+            key: const Key('confirm-cleanup-incoming'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Остановить и очистить'),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true && mounted) {
+      await _run(
+        () => c.clearIncompleteIncoming(
+          transfers.map((item) => item.id).toList(),
+        ),
+      );
+    }
+  }
+
+  Future<void> _confirmRetry(TransferItem item) async {
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Создать новую отправку?'),
+        content: SingleChildScrollView(
+          child: Text(
+            '${item.title}\nПолучатель: ${item.peerName}\n\n'
+            'Приложение использует сохранённые подготовленные копии '
+            '(${formatBytes(item.totalBytes)}). Выбирать исходные файлы заново '
+            'не потребуется. Получателю придёт новый запрос, который нужно '
+            'подтвердить. Результат прежней попытки останется в истории.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Оставить'),
+          ),
+          FilledButton(
+            key: Key('confirm-retry-${item.id}'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Отправить новый запрос'),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true && mounted) {
+      await _run(() => c.retryTransfer(item.id));
     }
   }
 

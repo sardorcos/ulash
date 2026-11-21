@@ -40,6 +40,8 @@ abstract class AppController extends ChangeNotifier {
   Future<void> pauseTransfer(String transferId);
   Future<void> resumeTransfer(String transferId);
   Future<void> cancelTransfer(String transferId);
+  Future<void> retryTransfer(String transferId) =>
+      Future.error(UnsupportedError('Повторная отправка пока недоступна.'));
   Future<void> revokePeer(String peerId);
   Future<void> renameDevice(String name);
   Future<void> setThemeMode(ThemeMode mode);
@@ -63,6 +65,10 @@ abstract class AppController extends ChangeNotifier {
       Future.error(UnsupportedError('Изменение лимита пока недоступно.'));
   Future<void> clearUnusedTemporary(List<String> fileIds) =>
       Future.error(UnsupportedError('Очистка пока недоступна.'));
+  Future<void> clearIncompleteIncoming(List<String> transferIds) =>
+      Future.error(
+        UnsupportedError('Очистка входящих передач пока недоступна.'),
+      );
 }
 
 enum NetworkState { starting, ready, unavailable, permissionRequired }
@@ -76,6 +82,7 @@ enum TransferDirection { outgoing, incoming }
 enum TransferPhase {
   preparing,
   queued,
+  retrying,
   waitingForConsent,
   transferring,
   verifying,
@@ -83,6 +90,7 @@ enum TransferPhase {
   paused,
   failed,
   cancelled,
+  expired,
 }
 
 @immutable
@@ -166,6 +174,7 @@ class TransferItem {
     this.canPause = false,
     this.canResume = false,
     this.canCancel = false,
+    this.canRetry = false,
     this.canOpen = false,
     this.canExport = false,
     this.receivedFiles = const [],
@@ -186,6 +195,7 @@ class TransferItem {
   final bool canPause;
   final bool canResume;
   final bool canCancel;
+  final bool canRetry;
   final bool canOpen;
   final bool canExport;
 
@@ -195,7 +205,8 @@ class TransferItem {
   bool get isTerminal =>
       phase == TransferPhase.completed ||
       phase == TransferPhase.failed ||
-      phase == TransferPhase.cancelled;
+      phase == TransferPhase.cancelled ||
+      phase == TransferPhase.expired;
 }
 
 @immutable
@@ -248,6 +259,7 @@ class StorageOverview {
     required this.temporaryQuotaBytes,
     required this.unusedFiles,
     required this.checkedAt,
+    this.incompleteIncoming = const [],
   });
   final int? availableBytes;
   final int temporaryBytes;
@@ -255,8 +267,36 @@ class StorageOverview {
   final int safetyReserveBytes;
   final int? temporaryQuotaBytes;
   final List<TemporaryFileItem> unusedFiles;
+  final List<IncomingCleanupItem> incompleteIncoming;
   final DateTime checkedAt;
   int get unusedBytes => unusedFiles.fold(0, (sum, file) => sum + file.bytes);
+  int get incompleteTemporaryBytes =>
+      incompleteIncoming.fold(0, (sum, item) => sum + item.temporaryBytes);
+  int get incompleteReservedBytes =>
+      incompleteIncoming.fold(0, (sum, item) => sum + item.reservedBytes);
+}
+
+/// A confirmed cleanup acts on these exact transfer IDs, never on a later
+/// refreshed list. The native/core adapter rechecks committed files at deletion.
+@immutable
+class IncomingCleanupItem {
+  const IncomingCleanupItem({
+    required this.id,
+    required this.title,
+    required this.peerName,
+    required this.temporaryBytes,
+    required this.reservedBytes,
+    required this.pendingFileCount,
+    required this.completedFileCount,
+  });
+
+  final String id;
+  final String title;
+  final String peerName;
+  final int temporaryBytes;
+  final int reservedBytes;
+  final int pendingFileCount;
+  final int completedFileCount;
 }
 
 @immutable
@@ -266,12 +306,14 @@ class IncomingTransfer {
     required this.peerName,
     required this.fileNames,
     required this.totalBytes,
+    this.expiresAt,
   });
 
   final String id;
   final String peerName;
   final List<String> fileNames;
   final int totalBytes;
+  final DateTime? expiresAt;
 }
 
 @immutable

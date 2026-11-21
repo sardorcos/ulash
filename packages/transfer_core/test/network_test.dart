@@ -165,6 +165,58 @@ void main() {
     },
   );
 
+  test('expired offer survives TLS serialization and never authorizes payload bytes', () async {
+    client.close();
+    await host.close();
+    await inbox.close();
+    var mono = Duration.zero;
+    inbox = await DurableInbox.open(
+      Directory('${temp.path}/inbox'),
+      wallClock: () => DateTime.utc(2026, 11, 21),
+      monotonicClock: () => mono,
+    );
+    host = CoreHost(
+      identity: receiverIdentity,
+      peers: receiverPeers,
+      inbox: inbox,
+    );
+    endpoint = await host.start();
+    client = CoreClient(
+      endpoint: endpoint,
+      serverPin: receiverIdentity.serverPin,
+    );
+    await pair();
+    final (source, offered) = await offerBytes([1, 2, 3]);
+    expect(offered.offerExpiresAt, DateTime.utc(2026, 11, 21, 0, 2));
+    mono = const Duration(seconds: 120);
+      final expired = await client.transferStatus(offered.id);
+    expect(expired.state, TransferState.expired);
+    expect(expired.files.single.errorCode, 'OFFER_EXPIRED');
+    final repeated = await client.offer(offered.manifest);
+    expect(repeated.id, offered.id);
+    expect(repeated.state, TransferState.expired);
+    await expectLater(
+      client.uploadFile(
+        transferId: offered.id,
+        fileId: 'file-1',
+        source: source,
+      ),
+      throwsA(
+        isA<NetworkException>().having(
+          (error) => error.statusCode,
+          'status',
+          403,
+        ),
+      ),
+    );
+    expect(inbox.status(offered.id).durableBytes, 0);
+    expect(await source.readAsBytes(), [1, 2, 3]);
+    expect(
+      await Directory('${temp.path}/inbox/.staging').list().toList(),
+      isEmpty,
+    );
+  });
+
   test('consent gates streaming, full transfer is verified and retry does not duplicate files', () async {
     await pair();
     final bytes = List<int>.generate(1024 * 1024 + 137, (i) => i % 251);

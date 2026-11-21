@@ -35,6 +35,7 @@ String platformLabel(DevicePlatform platform) => switch (platform) {
 String phaseLabel(TransferPhase phase) => switch (phase) {
   TransferPhase.preparing => 'Подготавливаем файлы',
   TransferPhase.queued => 'В очереди',
+  TransferPhase.retrying => 'Повторяем подключение',
   TransferPhase.waitingForConsent => 'Ждём подтверждения',
   TransferPhase.transferring => 'Передаём файлы',
   TransferPhase.verifying => 'Проверяем файл',
@@ -42,11 +43,13 @@ String phaseLabel(TransferPhase phase) => switch (phase) {
   TransferPhase.paused => 'Передача приостановлена',
   TransferPhase.failed => 'Не удалось завершить',
   TransferPhase.cancelled => 'Передача отменена',
+  TransferPhase.expired => 'Время ожидания истекло',
 };
 
-String formatDate(DateTime date) {
+String formatDate(DateTime date, {bool includeSeconds = false}) {
   final local = date.toLocal();
   String pad(int value) => value.toString().padLeft(2, '0');
   return '${pad(local.day)}.${pad(local.month)}.${local.year} · '
-      '${pad(local.hour)}:${pad(local.minute)}';
+      '${pad(local.hour)}:${pad(local.minute)}'
+      '${includeSeconds ? ':${pad(local.second)}' : ''}';
 }

@@ -1,5 +1,20 @@
 # Android debug APK
 
+## Alpha 0.3 updates alpha 0.2
+
+The 0.3 package retains `uz.sardor.file_transfer.alpha02` and the exact 0.2
+debug certificate below. Its launcher label is **Передача файлов α0.3**,
+versionName is `0.3.0`, and the ARM64 split versionCode is `2003` (the prior
+ARM64 split was `2002`). These are checked against the final APK metadata.
+The package is prepared as an in-place update of the delivered 0.2 app.
+Physical update installation and retained-pair/device testing remain unexecuted.
+Do not clear app data or uninstall an older version as an update workaround.
+
+The old incoming SQLite schema is migrated transactionally by adding the
+original offer deadline. Regression tests reopen a previous schema containing
+offered, accepted, paused and committed transfers. No production signing key
+is configured or included in the archive.
+
 ## Alpha 0.2 installs alongside alpha 0.1
 
 The 0.2 debug variant uses application ID
@@ -14,7 +29,7 @@ environment, and the digests differ:
 | Certificate | SHA-256 |
 |---|---|
 | Delivered alpha 0.1 APK | `d22f63f220a458b4d5734f5f983aa5c2fcfccd8dffac9b8ca0998fc8142be662` |
-| Current alpha 0.2 debug key | `1106f42aa8cc0cf9b558233af7cc3e70169b7ec7537a90dc858d6d09395f5f8e` |
+| Alpha 0.2 / 0.3 debug key | `1106f42aa8cc0cf9b558233af7cc3e70169b7ec7537a90dc858d6d09395f5f8e` |
 
 Android cannot install a differently signed package as an update with the
 same application ID. The debug suffix avoids that conflict and preserves the

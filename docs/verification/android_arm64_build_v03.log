@@ -1,0 +1,4 @@
+Running Gradle task 'assembleDebug'...                          
+Picked up JAVA_TOOL_OPTIONS: -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=36863 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=36863
+Running Gradle task 'assembleDebug'...                             56.1s
+✓ Built build/app/outputs/flutter-apk/app-arm64-v8a-debug.apk

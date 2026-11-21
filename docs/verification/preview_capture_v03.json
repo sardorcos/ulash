@@ -1,0 +1,45 @@
+{
+  "harness": "apps/file_transfer/test/capture_previews_test.dart",
+  "mode": "CAPTURE_UI=true; real TransferAppController, ephemeral files/SQLite/TLS host; bundled Flutter fonts",
+  "passed_tests": 1,
+  "exit_code": 0,
+  "shutdown_observed": true,
+  "physical_device_screenshots": false,
+  "credential_dialog_images_saved": false,
+  "visual_review": [
+    "desktop-storage.png",
+    "mobile-storage.png"
+  ],
+  "files": [
+    {
+      "path": "docs/previews/desktop-receive.png",
+      "size_bytes": 148248,
+      "sha256": "c1601b2558e4dad3ce507aabc3b299480f137250c6016b4a7af8bc8704e65ea4"
+    },
+    {
+      "path": "docs/previews/desktop-send.png",
+      "size_bytes": 182859,
+      "sha256": "abd04d4cd73d8caa80425a33ff3ae3748d503c0fe62fd20332cedf11b5c7d700"
+    },
+    {
+      "path": "docs/previews/desktop-storage.png",
+      "size_bytes": 201730,
+      "sha256": "39e4602d34a00ac8321e78b15c155e57c641c794bce184ecf2d75fff3f417786"
+    },
+    {
+      "path": "docs/previews/mobile-receive.png",
+      "size_bytes": 91207,
+      "sha256": "3b16f7ebedcfaa70b347a0d9d20ddd6ffa772d2e671c6198088c814e5d33a994"
+    },
+    {
+      "path": "docs/previews/mobile-send.png",
+      "size_bytes": 93931,
+      "sha256": "ff0185f38de1ac542bfb9aa23d0534f70a3feb6b19fd3116591d438e7984a7d4"
+    },
+    {
+      "path": "docs/previews/mobile-storage.png",
+      "size_bytes": 127325,
+      "sha256": "820bd091064eb789770834765679affa1de367e94117b8a12ce8db5ccb0781c5"
+    }
+  ]
+}

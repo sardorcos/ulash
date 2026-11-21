@@ -1,0 +1,23 @@
+{
+  "bytes": 16777353,
+  "durableOffsetAtRetry": 7782394,
+  "socketInterruptions": 1,
+  "automaticRetries": 1,
+  "outgoingWireBytesAfterCut": 9051910,
+  "retryDelaysMs": [
+    1000
+  ],
+  "sha256": "e359e4f20be97fccaf872546d5029086560fa3d7d238889ca468ffbef0f12e68",
+  "elapsedMilliseconds": 5546,
+  "requestIdPreserved": true,
+  "transferIdPreserved": true,
+  "recorded_at_utc": "2026-11-21T02:20:04.566122+00:00",
+  "scenario": "Two real Flutter controllers; actual pinned TLS through opaque TCP relay; one deliberate socket interruption after receiver durable checkpoint; automatic reconnect using durable offset; original file deleted after staging.",
+  "environment": "Linux; no physical iOS/Android/Windows device",
+  "test_file": "apps/file_transfer/test/network_resume_integration_test.dart",
+  "evidence_log": "docs/verification/automated_tests_v03.log",
+  "evidence_log_sha256": "a6dae01f4f5bd32f484b47c1eae76b978c2e0e36325d8940e37e87b45266eb1d",
+  "retry_delay_controlled_by_test": true,
+  "hash_verifier": "Dart crypto SHA-256 over saved output; compared against hash of original deterministic payload",
+  "physical_network_benchmark": false
+}

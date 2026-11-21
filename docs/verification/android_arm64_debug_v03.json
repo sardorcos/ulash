@@ -1,0 +1,41 @@
+{
+  "verified_at_utc": "2026-11-21T02:19:58.563598+00:00",
+  "artifact_path": "apps/file_transfer/build/app/outputs/flutter-apk/app-arm64-v8a-debug.apk",
+  "artifact_size_bytes": 119714962,
+  "artifact_sha256": "50500b9bfdb17e2a76acba62e23718b5ddd24a4703f754f1c3997d89dac4cceb",
+  "application_id": "uz.sardor.file_transfer.alpha02",
+  "application_label": "Передача файлов α0.3",
+  "version_name": "0.3.0",
+  "version_code": 2003,
+  "min_sdk": 29,
+  "target_sdk": 37,
+  "abis": [
+    "arm64-v8a"
+  ],
+  "signer_sha256": "1106f42aa8cc0cf9b558233af7cc3e70169b7ec7537a90dc858d6d09395f5f8e",
+  "same_signer_as_delivered_v02": true,
+  "signature_verification_exit_code": 0,
+  "signature_scheme_v2": true,
+  "zip_crc_verified": true,
+  "permissions": [
+    "android.permission.INTERNET",
+    "android.permission.ACCESS_NETWORK_STATE",
+    "android.permission.ACCESS_WIFI_STATE",
+    "android.permission.CHANGE_WIFI_MULTICAST_STATE",
+    "android.permission.ACCESS_LOCAL_NETWORK",
+    "android.permission.CAMERA",
+    "uz.sardor.file_transfer.alpha02.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+  ],
+  "provider_authorities": [
+    "uz.sardor.file_transfer.alpha02.fileProvider.com.crazecoder.openfile",
+    "uz.sardor.file_transfer.alpha02.mlkitinitprovider",
+    "uz.sardor.file_transfer.alpha02.androidx-startup"
+  ],
+  "source_input_count": 130,
+  "source_input_sha256_before": "ce502808d9ae59f91f1485d29d3fa26905bd27e84ff51e4459553f528697725b",
+  "source_input_sha256_after": "ce502808d9ae59f91f1485d29d3fa26905bd27e84ff51e4459553f528697725b",
+  "source_inputs_unchanged_during_build": true,
+  "production_dart_count": 31,
+  "production_dart_sha256": "d3beeba2b4abaf6606dcf6495fd975e007c40f3f0f33fd7e783eca94448f756f",
+  "physical_installation_tested": false
+}

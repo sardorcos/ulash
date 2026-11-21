@@ -321,6 +321,7 @@ final class CoreHost {
       FileState.rejected,
       FileState.cancelled,
       FileState.failed,
+      FileState.expired,
     }.contains(file.state)) {
       throw const NetworkException(
         'CONSENT_REQUIRED',

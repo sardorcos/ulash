@@ -22,6 +22,9 @@ class DurableInbox {
     this.checkpointInterval,
     this._lease,
     this._budget,
+    this.offerLifetime,
+    this._wallClock,
+    this._monotonicClock,
   );
 
   final Directory root;
@@ -31,6 +34,11 @@ class DurableInbox {
   String get _budgetScope => 'inbox:${root.path}';
   final int checkpointBytes;
   final Duration checkpointInterval;
+  final Duration offerLifetime;
+  final DateTime Function() _wallClock;
+  final Duration Function() _monotonicClock;
+  final _offerDeadlines = <String, Duration>{};
+  Timer? _offerTimer;
   final _controls = _ControlQueue();
   final _events = StreamController<TransferSnapshot>.broadcast();
   _Writer? _writer;
@@ -44,10 +52,23 @@ class DurableInbox {
     int checkpointBytes = 4 * 1024 * 1024,
     Duration checkpointInterval = const Duration(seconds: 2),
     StorageBudget? budget,
+    Duration offerLifetime = const Duration(seconds: 120),
+    DateTime Function()? wallClock,
+    Duration Function()? monotonicClock,
   }) async {
     if (checkpointBytes < 1 || checkpointInterval <= Duration.zero) {
       throw ArgumentError('Positive checkpoint parameters required.');
     }
+    if (offerLifetime <= Duration.zero) {
+      throw ArgumentError.value(
+        offerLifetime,
+        'offerLifetime',
+        'Must be positive.',
+      );
+    }
+    final stopwatch = Stopwatch()..start();
+    final now = wallClock ?? DateTime.now;
+    final elapsed = monotonicClock ?? () => stopwatch.elapsed;
     final root = await prepareStorageDirectory(directory);
     await ensurePlainDirectory(Directory(p.join(root.path, '.staging')));
     await ensurePlainDirectory(Directory(p.join(root.path, 'received')));
@@ -63,6 +84,7 @@ class DurableInbox {
           paused_source INTEGER NOT NULL DEFAULT 0,
           paused_sink INTEGER NOT NULL DEFAULT 0,
           created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          offer_expires_at TEXT,
           UNIQUE(peer_id, request_id)
         );
         CREATE TABLE IF NOT EXISTS inbox_files (
@@ -74,6 +96,25 @@ class DurableInbox {
           error_code TEXT, PRIMARY KEY(transfer_id, file_id)
         );
       ''');
+      // Alpha 0.1/0.2 journals did not have offer deadlines. Use their original
+      // creation time, never the recovery-refreshed updated_at value.
+      journalTransaction(db, () {
+        final columns = db.select('PRAGMA table_info(inbox_transfers)');
+        if (!columns.any((column) => column['name'] == 'offer_expires_at')) {
+          db.execute(
+            'ALTER TABLE inbox_transfers ADD COLUMN offer_expires_at TEXT',
+          );
+        }
+        for (final row in db.select(
+          'SELECT id,created_at FROM inbox_transfers WHERE offer_expires_at IS NULL',
+        )) {
+          final created = DateTime.parse(row['created_at'] as String).toUtc();
+          db.execute(
+            'UPDATE inbox_transfers SET offer_expires_at=? WHERE id=?',
+            [created.add(offerLifetime).toIso8601String(), row['id']],
+          );
+        }
+      });
       final store = DurableInbox._(
         root,
         db,
@@ -81,15 +122,91 @@ class DurableInbox {
         checkpointInterval,
         lease,
         budget,
+        offerLifetime,
+        now,
+        elapsed,
       );
       await store._recover();
       await store._restoreBudget();
+      store._restoreOfferDeadlines();
+      store.expireOffers();
       return store;
     } catch (_) {
       opened?.close();
       await lease.release();
       rethrow;
     }
+  }
+
+  void _restoreOfferDeadlines() {
+    final wall = _wallClock().toUtc();
+    final mono = _monotonicClock();
+    for (final row in _db.select(
+      "SELECT id,created_at,offer_expires_at FROM inbox_transfers WHERE state='offered'",
+    )) {
+      final created = DateTime.parse(row['created_at'] as String).toUtc();
+      final expires = DateTime.parse(row['offer_expires_at'] as String).toUtc();
+      // A restarted process cannot recover a previous monotonic clock. An
+      // observed wall-clock rollback fails closed rather than extending consent.
+      var remaining = wall.isBefore(created)
+          ? Duration.zero
+          : expires.difference(wall);
+      if (remaining < Duration.zero) remaining = Duration.zero;
+      if (remaining > offerLifetime) remaining = offerLifetime;
+      _offerDeadlines[row['id'] as String] = mono + remaining;
+    }
+  }
+
+  /// Persists terminal expiry and keeps the original idempotency record. Reads
+  /// call this too, so a delayed event loop cannot permit late consent.
+  List<TransferSnapshot> expireOffers() {
+    _checkOpen();
+    final mono = _monotonicClock();
+    final expired = <String>[];
+    for (final entry in _offerDeadlines.entries.toList()) {
+      if (mono < entry.value) continue;
+      journalTransaction(_db, () {
+        final row = _db.select('SELECT state FROM inbox_transfers WHERE id=?', [
+          entry.key,
+        ]);
+        if (row.isNotEmpty && row.first['state'] == 'offered') {
+          _db.execute(
+            "UPDATE inbox_files SET state='expired',error_code='OFFER_EXPIRED' WHERE transfer_id=? AND state='offered'",
+            [entry.key],
+          );
+          _refreshTransfer(entry.key);
+          expired.add(entry.key);
+        }
+      });
+      _offerDeadlines.remove(entry.key);
+    }
+    _scheduleOfferExpiry();
+    final snapshots = expired.map(_readStatus).toList();
+    for (final snapshot in snapshots) {
+      if (!_events.isClosed) _events.add(snapshot);
+    }
+    return List.unmodifiable(snapshots);
+  }
+
+  void _scheduleOfferExpiry() {
+    _offerTimer?.cancel();
+    _offerTimer = null;
+    if (_closed || _closing || _offerDeadlines.isEmpty) return;
+    final next = _offerDeadlines.values.reduce((a, b) => a < b ? a : b);
+    final wait = next - _monotonicClock();
+    _offerTimer = Timer(wait > Duration.zero ? wait : Duration.zero, () {
+      _offerTimer = null;
+      if (_closed || _closing) return;
+      try {
+        expireOffers();
+      } catch (_) {
+        // A transient journal error must not crash the isolate. Any attempted
+        // status/consent still rechecks the deadline and fails closed on error.
+        _offerTimer = Timer(const Duration(seconds: 5), () {
+          if (!_closed && !_closing) _scheduleOfferExpiry();
+        });
+      }
+    });
   }
 
   static const _reservedStates = {
@@ -178,6 +295,7 @@ class DurableInbox {
     required String peerId,
   }) async {
     _checkOpen();
+    expireOffers();
     if (peerId.isEmpty || peerId.length > 512) {
       throw const StorageException('INVALID_PEER', 'Invalid peer identity.');
     }
@@ -206,11 +324,23 @@ class DurableInbox {
       throw const StorageException('BUSY', 'Incoming queue is full.');
     }
     final id = const Uuid().v4();
-    final now = DateTime.now().toUtc().toIso8601String();
+    final created = _wallClock().toUtc();
+    final createdMonotonic = _monotonicClock();
+    final now = created.toIso8601String();
+    final deadline = created.add(offerLifetime).toIso8601String();
     journalTransaction(_db, () {
       _db.execute(
-        'INSERT INTO inbox_transfers(id,peer_id,request_id,manifest,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',
-        [id, peerId, manifest.requestId, normalized, 'offered', now, now],
+        'INSERT INTO inbox_transfers(id,peer_id,request_id,manifest,state,created_at,updated_at,offer_expires_at) VALUES(?,?,?,?,?,?,?,?)',
+        [
+          id,
+          peerId,
+          manifest.requestId,
+          normalized,
+          'offered',
+          now,
+          now,
+          deadline,
+        ],
       );
       for (var index = 0; index < manifest.files.length; index++) {
         final file = manifest.files[index];
@@ -229,11 +359,18 @@ class DurableInbox {
         );
       }
     });
+    _offerDeadlines[id] = createdMonotonic + offerLifetime;
+    _scheduleOfferExpiry();
     return _emit(id);
   }
 
   TransferSnapshot status(String id) {
     _checkOpen();
+    expireOffers();
+    return _readStatus(id);
+  }
+
+  TransferSnapshot _readStatus(String id) {
     final records = _db.select('SELECT * FROM inbox_transfers WHERE id=?', [
       id,
     ]);
@@ -257,6 +394,9 @@ class DurableInbox {
       updatedAt: DateTime.parse(record['updated_at'] as String),
       pausedBySource: record['paused_source'] == 1,
       pausedBySink: record['paused_sink'] == 1,
+      offerExpiresAt: record['offer_expires_at'] == null
+          ? null
+          : DateTime.parse(record['offer_expires_at'] as String).toUtc(),
     );
   }
 
@@ -293,6 +433,12 @@ class DurableInbox {
 
   Future<TransferSnapshot> accept(String id) => _controls.run(() async {
     final snapshot = status(id);
+    if (snapshot.state == TransferState.expired) {
+      throw const StorageException(
+        'OFFER_EXPIRED',
+        'Offer consent deadline expired.',
+      );
+    }
     if (snapshot.state != TransferState.offered) {
       if ({
         TransferState.accepted,
@@ -337,6 +483,14 @@ class DurableInbox {
           }
         }
       }
+      // Capacity and filesystem checks await external work. The lifetime may
+      // end during those awaits; commit consent only after one final check.
+      if (status(id).state == TransferState.expired) {
+        throw const StorageException(
+          'OFFER_EXPIRED',
+          'Offer consent deadline expired.',
+        );
+      }
       journalTransaction(_db, () {
         _db.execute(
           "UPDATE inbox_files SET state='accepted' WHERE transfer_id=? AND state='offered'",
@@ -345,7 +499,15 @@ class DurableInbox {
         _refreshTransfer(id);
       });
     } catch (error) {
-      await _reconcileBudgetTransfer(id);
+      try {
+        if (_readStatus(id).state == TransferState.expired) {
+          for (final row in rows) {
+            await _deleteTemporary(row);
+          }
+        }
+      } finally {
+        await _reconcileBudgetTransfer(id);
+      }
       throw storageIoError(error);
     }
     return _emit(id);
@@ -435,25 +597,195 @@ class DurableInbox {
     }
     journalTransaction(_db, () {
       _db.execute(
-        "UPDATE inbox_files SET state='cancelled',error_code=NULL WHERE transfer_id=? AND state NOT IN ('committed','rejected','failed')",
+        "UPDATE inbox_files SET state='cancelled',error_code=NULL WHERE transfer_id=? AND state NOT IN ('committed','rejected','failed','expired')",
         [id],
       );
       _refreshTransfer(id);
     });
     await _stopWriter(id, 'TRANSFER_CANCELLED');
-    for (final row in _db.select(
-      "SELECT temporary_path FROM inbox_files WHERE transfer_id=? AND state='cancelled'",
-      [id],
-    )) {
-      final file = File(row['temporary_path'] as String);
-      if (await FileSystemEntity.type(file.path, followLinks: false) ==
-          FileSystemEntityType.file) {
-        await file.delete();
+    try {
+      for (final row in _db.select(
+        "SELECT * FROM inbox_files WHERE transfer_id=? AND state='cancelled'",
+        [id],
+      )) {
+        await _deleteTemporary(row);
       }
+    } finally {
+      await _reconcileBudgetTransfer(id);
     }
-    await _reconcileBudgetTransfer(id);
     return _emit(id);
   });
+
+  /// A preview describes only journal-owned temporary files and future payload
+  /// allocations. It never scans arbitrary orphan files or completed results.
+  Future<List<IncomingCleanupItem>> previewIncompleteCleanup() => _controls.run(
+    () async {
+      _checkOpen();
+      expireOffers();
+      final preview = <IncomingCleanupItem>[];
+      for (final snapshot in list()) {
+        // A durable commit intent with no live writer is indeterminate until
+        // recovery verifies its temporary/final candidate. Protect the whole
+        // batch rather than turning cleanup into destructive recovery.
+        if (snapshot.files.any((file) => file.state == FileState.committing)) {
+          continue;
+        }
+        var temporaryBytes = 0;
+        var reservedBytes = 0;
+        var incompleteFileCount = 0;
+        var committedFileCount = 0;
+        for (final original in _db.select(
+          'SELECT * FROM inbox_files WHERE transfer_id=?',
+          [snapshot.transferId],
+        )) {
+          if (original['state'] == 'committed') {
+            committedFileCount++;
+            continue;
+          }
+          // Commit can progress while filesystem I/O is awaited. Re-read its
+          // state afterwards before including a possibly stale candidate.
+          final file = await _checkedTemporary(original);
+          var length = 0;
+          try {
+            if (await FileSystemEntity.type(file.path, followLinks: false) ==
+                FileSystemEntityType.file) {
+              length = await file.length();
+            }
+          } on FileSystemException {
+            if (_fileRow(
+                  snapshot.transferId,
+                  original['file_id'] as String,
+                )['state'] !=
+                'committed') {
+              rethrow;
+            }
+          }
+          final row = _fileRow(
+            snapshot.transferId,
+            original['file_id'] as String,
+          );
+          if (row['state'] == 'committed') {
+            committedFileCount++;
+            continue;
+          }
+          temporaryBytes += length;
+          if (_reservedStates.contains(row['state'])) {
+            reservedBytes += math.max(
+              0,
+              _fileSnapshot(row).manifest.sizeBytes - length,
+            );
+          }
+          if (_reservedStates.contains(row['state']) || length > 0) {
+            incompleteFileCount++;
+          }
+        }
+        if (temporaryBytes > 0 || reservedBytes > 0) {
+          preview.add(
+            IncomingCleanupItem(
+              transferId: snapshot.transferId,
+              temporaryBytes: temporaryBytes,
+              reservedBytes: reservedBytes,
+              incompleteFileCount: incompleteFileCount,
+              committedFileCount: committedFileCount,
+            ),
+          );
+        }
+      }
+      return List.unmodifiable(preview);
+    },
+  );
+
+  /// Explicitly stops a previously previewed batch and removes only its
+  /// unfinished private payloads. The committed files and receipt rows survive.
+  /// A late confirmation after commit safely returns a zero-removal result.
+  Future<IncomingCleanupResult> discardIncomplete(String id) =>
+      _controls.run(() async {
+        var snapshot = status(id);
+        if (_writer?.transferId == id && _writer!.commitLocked) {
+          await _writer!.done.future;
+          snapshot = status(id);
+        }
+        if (snapshot.files.any((file) => file.state == FileState.committing)) {
+          return IncomingCleanupResult(
+            snapshot: snapshot,
+            removedFileCount: 0,
+            removedBytes: 0,
+          );
+        }
+        journalTransaction(_db, () {
+          _db.execute(
+            "UPDATE inbox_files SET state='cancelled',error_code=NULL WHERE transfer_id=? AND state IN ('offered','accepted','transferring','paused','verifying')",
+            [id],
+          );
+          _refreshTransfer(id);
+        });
+        await _stopWriter(id, 'TRANSFER_CANCELLED');
+        var removedFiles = 0;
+        var removedBytes = 0;
+        try {
+          for (final row in _db.select(
+            "SELECT * FROM inbox_files WHERE transfer_id=? AND state != 'committed'",
+            [id],
+          )) {
+            final deleted = await _deleteTemporary(row);
+            if (deleted != null) {
+              removedFiles++;
+              removedBytes += deleted;
+            }
+          }
+        } catch (error) {
+          throw storageIoError(error);
+        } finally {
+          await _reconcileBudgetTransfer(id);
+          _emit(id);
+        }
+        snapshot = status(id);
+        return IncomingCleanupResult(
+          snapshot: snapshot,
+          removedFileCount: removedFiles,
+          removedBytes: removedBytes,
+        );
+      });
+
+  Future<File> _checkedTemporary(Row row) async {
+    final file = File(row['temporary_path'] as String);
+    final staging = Directory(p.join(root.path, '.staging'));
+    final expected = p.join(staging.path, '${row['incarnation']}.part');
+    requireContainedPath(staging, file.path);
+    if (p.normalize(p.absolute(file.path)) != expected) {
+      throw const StorageException('UNSAFE_PATH', 'Unexpected temporary path.');
+    }
+    await validateManagedDirectory(root, staging);
+    final kind = await FileSystemEntity.type(file.path, followLinks: false);
+    if (kind != FileSystemEntityType.notFound &&
+        kind != FileSystemEntityType.file) {
+      throw const StorageException(
+        'UNSAFE_PATH',
+        'Temporary payload is not a plain file.',
+      );
+    }
+    return file;
+  }
+
+  Future<int?> _deleteTemporary(Row row) async {
+    final file = await _checkedTemporary(row);
+    if (await FileSystemEntity.type(file.path, followLinks: false) ==
+        FileSystemEntityType.notFound) {
+      _clearDeletedOffset(row);
+      return null;
+    }
+    final length = await file.length();
+    await file.delete();
+    // No byte from the deleted prefix remains resumable; preserve its terminal
+    // record but never advertise an offset that no longer exists.
+    _clearDeletedOffset(row);
+    return length;
+  }
+
+  void _clearDeletedOffset(Row row) => _db.execute(
+    'UPDATE inbox_files SET durable_offset=0 WHERE transfer_id=? AND file_id=?',
+    [row['transfer_id'], row['file_id']],
+  );
 
   bool _terminal(TransferState state) => {
     TransferState.completed,
@@ -461,6 +793,7 @@ class DurableInbox {
     TransferState.rejected,
     TransferState.cancelled,
     TransferState.failed,
+    TransferState.expired,
   }.contains(state);
 
   Future<void> _stopWriter(String id, String code) async {
@@ -782,7 +1115,14 @@ class DurableInbox {
 
   void _recordFailure(_Writer writer, StorageException error) {
     final row = _fileRow(writer.transferId, writer.fileId);
-    if ({'committed', 'cancelled', 'rejected'}.contains(row['state'])) return;
+    if ({
+      'committed',
+      'cancelled',
+      'rejected',
+      'expired',
+    }.contains(row['state'])) {
+      return;
+    }
     // Preserve commit intent after an interrupted rename/DB operation. Recovery
     // decides whether the old temporary file or the final file is authoritative.
     if (row['state'] == 'committing') return;
@@ -819,8 +1159,13 @@ class DurableInbox {
         .toList();
     String state;
     final terminal = states.every(
-      (state) =>
-          {'committed', 'rejected', 'cancelled', 'failed'}.contains(state),
+      (state) => {
+        'committed',
+        'rejected',
+        'cancelled',
+        'failed',
+        'expired',
+      }.contains(state),
     );
     if (states.every((state) => state == 'committed')) {
       state = 'completed';
@@ -828,6 +1173,8 @@ class DurableInbox {
       state = 'offered';
     } else if (states.every((state) => state == 'rejected')) {
       state = 'rejected';
+    } else if (states.every((state) => state == 'expired')) {
+      state = 'expired';
     } else if (terminal) {
       state = states.contains('committed')
           ? 'partially_completed'
@@ -847,9 +1194,10 @@ class DurableInbox {
     }
     _db.execute('UPDATE inbox_transfers SET state=?,updated_at=? WHERE id=?', [
       state,
-      DateTime.now().toUtc().toIso8601String(),
+      _wallClock().toUtc().toIso8601String(),
       id,
     ]);
+    if (state != 'offered') _offerDeadlines.remove(id);
   }
 
   TransferSnapshot _emit(String id) {
@@ -867,6 +1215,7 @@ class DurableInbox {
         'cancelled',
         'failed',
         'committed',
+        'expired',
       }.contains(state)) {
         continue;
       }
@@ -959,17 +1308,51 @@ class DurableInbox {
 
   Future<void> close() async {
     if (_closed) return;
+    _offerTimer?.cancel();
+    _offerTimer = null;
     final writer = _writer;
     if (writer != null) await _stopWriter(writer.transferId, 'TRANSFER_PAUSED');
     await _controls.run(() async {
       if (_closed) return;
       _closing = true;
+      // A writer finishing while close awaited it may have emitted a status
+      // and rearmed the offer timer. Cancel again at the final DB boundary.
+      _offerTimer?.cancel();
+      _offerTimer = null;
       _db.close();
       _closed = true;
       await _lease.release();
       await _events.close();
     });
   }
+}
+
+class IncomingCleanupItem {
+  const IncomingCleanupItem({
+    required this.transferId,
+    required this.temporaryBytes,
+    required this.reservedBytes,
+    required this.incompleteFileCount,
+    required this.committedFileCount,
+  });
+
+  final String transferId;
+  final int temporaryBytes;
+  final int reservedBytes;
+  final int incompleteFileCount;
+  final int committedFileCount;
+}
+
+class IncomingCleanupResult {
+  const IncomingCleanupResult({
+    required this.snapshot,
+    required this.removedFileCount,
+    required this.removedBytes,
+  });
+
+  final TransferSnapshot snapshot;
+  final int removedFileCount;
+  final int removedBytes;
 }
 
 class _Writer {

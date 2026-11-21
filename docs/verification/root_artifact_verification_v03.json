@@ -1,0 +1,12 @@
+{
+  "production_inputs_count": 130,
+  "production_inputs_sha256": "ce502808d9ae59f91f1485d29d3fa26905bd27e84ff51e4459553f528697725b",
+  "apk_sha256": "50500b9bfdb17e2a76acba62e23718b5ddd24a4703f754f1c3997d89dac4cceb",
+  "apk_size_bytes": 119714962,
+  "tests": {
+    "core": 61,
+    "app": 49,
+    "total": 110
+  },
+  "root_reverified": true
+}

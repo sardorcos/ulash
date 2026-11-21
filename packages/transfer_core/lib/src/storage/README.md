@@ -6,12 +6,21 @@ has been completed.
 
 ## Entry points
 
-- `DurableInbox.open(Directory, {checkpointBytes, checkpointInterval, budget})`
+- `DurableInbox.open(Directory, {checkpointBytes, checkpointInterval, budget,
+  offerLifetime, wallClock, monotonicClock})`
 - `createOffer(TransferManifest, {required peerId})`
 - `accept`, `reject`, `cancel`, `pause`, `resume` return `TransferSnapshot`.
 - `pause` and `resume` accept `bySource: true`; the default is the local sink.
   Each participant can clear only its own pause flag.
-- `status(id)` and `list({peerId})` are synchronous journal reads.
+- `status(id)` and `list({peerId})` synchronously enforce pending-offer expiry
+  before reading the journal.
+- `expireOffers()` returns the snapshots expired by that invocation; an internal
+  foreground timer also emits expiry without a network/UI poll.
+- `previewIncompleteCleanup()` returns immutable `IncomingCleanupItem` entries
+  with actual temporary bytes, future reservation bytes and file counts.
+- `discardIncomplete(transferId)` returns an `IncomingCleanupResult` with the
+  snapshot and actual removed file/byte counts. Call it only for IDs explicitly
+  previewed and confirmed by the user; it stops the selected batch first.
 - `changes` is a broadcast stream of committed snapshots; it is not the
   authoritative persistence mechanism.
 - `writeFile(transferId, fileId, {offset, incarnation, bytes})` consumes a stream.
@@ -97,10 +106,44 @@ journal. `DISK_FULL` pauses a receive at its last acknowledged checkpoint and
 does not remove originals or committed results. The per-root filesystem lease
 remains required; all stores for one volume must receive the same budget.
 
+## Offer lifetime and explicit incoming cleanup (0.3)
+
+Pending offers expire after **120 seconds** by default. A process-local
+monotonic clock controls the interval; changing wall time while the store is
+open does not extend it. The journal stores `offer_expires_at` for display and
+restart fallback. On restart, remaining time is bounded by the original UTC
+deadline and configured lifetime; an observed wall time before the offer's
+creation expires it immediately. This fallback cannot establish elapsed time
+across shutdown against every external wall-clock change. Tests inject both
+clocks, while production uses a `Stopwatch` and UTC `DateTime`.
+
+The 0.2 journal migration derives deadlines from original `created_at`, not
+the recovery-updated timestamp. Expiry persists `expired` on transfer and files,
+keeps `(peer_id, request_id)` idempotency, releases queue slots, and accepts no
+data. Repeating an expired request returns the same expired transfer. A new
+attempt requires a new request ID. A final deadline check after asynchronous
+capacity/path preparation prevents late consent; already accepted work does
+not expire under this offer policy.
+
+Explicit incoming cleanup serializes its cancellation decision with other
+controls and waits for its writer to stop before deleting. It can also remove
+payloads retained by failed terminal attempts. Only journal-owned plain files
+under the managed `.staging` directory are eligible. Committed results and
+receipt/idempotency rows remain. If final commit wins before confirmation,
+cleanup reports zero removed bytes. A batch with an unresolved durable
+`committing` intent is protected until normal recovery verifies the candidate.
+Failed deletions remain retryable; accounting is reconciled conservatively.
+
+Cleanup does not sweep unknown orphan files and does not implement the
+specification's seven-day inactivity retention, 30-day history/receipt retention
+or history limit. These remain explicit later tasks. The new `expired` wire
+state is understood by 0.3; an older 0.2 participant fails closed when parsing it
+and may show a generic state error instead of the expiry message.
+
 ## Explicit alpha limitations
 
 - Foreground push storage only; no pull receipts, agreed receive resets,
-  background URLSession journal adapter or automatic expiry.
+  background URLSession journal adapter or automatic seven-day payload retention.
 - Free-space protection depends on the injected native capacity adapter. These
   core tests use deterministic capacity simulators and real local payload files;
   they do not replace physical-device capacity tests.
@@ -140,6 +183,12 @@ no double-counting during writes, retained completed files, late space loss
 with checkpoint recovery, unknown-size provider limits, restart reconstruction,
 quota lowering, empty files at the reserve margin, cancelled preparation,
 orphan accounting and safe deletion refusal through a symlinked parent.
+
+`test/inbox_lifecycle_test.dart` covers 120-second pending expiry, monotonic
+versus wall-clock changes, restart/deadline migration, retained idempotency,
+queue-slot release, slow admission crossing expiry, timer delivery, partial and
+failed-file cleanup, active writer cancellation, late confirmation after commit,
+symlink refusal and protected unresolved commit intent.
 
 Recovery tests deliberately construct the filesystem/journal states that exist
 between write/flush/commit/rename operations. They are not an exhaustive power

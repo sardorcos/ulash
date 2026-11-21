@@ -18,6 +18,7 @@ import 'app_runtime.dart';
 import 'outgoing_journal.dart';
 import 'receipt_validation.dart';
 import 'export_journal.dart';
+import 'network_retry_policy.dart';
 
 /// Bridges the presentation contract to real native storage and HTTPS.
 /// No simulated progress, peers, receipt, or automatic file acceptance.
@@ -44,6 +45,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   final _platforms = <String, DevicePlatform>{};
   final _activeClients = <String, core.CoreClient>{};
   final _running = <String>{};
+  final _outgoingRuns = <String, _OutgoingRun>{};
+  late final _retryPolicy = _runtime.retryPolicy ?? NetworkRetryPolicy();
   final _unconfirmedExports = <(String, String)>{};
   final _discovered = <DiscoveredEndpoint>[];
   NetworkState _network = NetworkState.starting;
@@ -241,7 +244,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   @override
   PairingInvitation? get invitation => _invitation;
   @override
-  String get versionLabel => '0.2.0 · техническая альфа';
+  String get versionLabel => '0.3.0 · техническая альфа';
   @override
   StorageOverview? get storageOverview => _storageOverview;
   @override
@@ -334,6 +337,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
                   .map((file) => file.displayName)
                   .toList(),
               totalBytes: item.manifest.totalBytes,
+              expiresAt: item.offerExpiresAt,
             ),
           )
           .toList();
@@ -384,6 +388,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       final phase = switch (job.localState) {
         'completed' => TransferPhase.completed,
         'cancelled' || 'rejected' => TransferPhase.cancelled,
+        'expired' => TransferPhase.expired,
+        'retry_wait' => TransferPhase.retrying,
         'paused' || 'cancelling' => TransferPhase.paused,
         'failed' || 'partially_completed' => TransferPhase.failed,
         _ =>
@@ -410,14 +416,13 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           canPause:
               !job.isTerminal &&
               _running.contains(job.id) &&
-              job.snapshot != null &&
-              job.snapshot!.state != core.TransferState.offered &&
               job.localState != 'cancelling',
           canResume:
               !job.isTerminal &&
               job.localState != 'failed' &&
               !_running.contains(job.id),
           canCancel: !job.isTerminal && job.localState != 'cancelling',
+          canRetry: _canRetryPrepared(job),
         ),
       );
     }
@@ -566,45 +571,119 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     _launch(_runJob(job));
   });
 
-  Future<void> _runJob(OutgoingJob job) async {
-    if (_closing || _disposed || _running.isNotEmpty || job.isTerminal) return;
-    final peer = _trusted?.byId(job.peerId);
-    if (peer == null || peer.endpoint == null) {
-      job.localState = 'paused';
-      job.detail = 'Устройство недоступно или доверие отозвано.';
-      _save(job);
+  Future<void> _runJob(OutgoingJob job, {bool resumeSource = false}) async {
+    if (_closing ||
+        _disposed ||
+        !_foreground ||
+        _running.isNotEmpty ||
+        job.isTerminal) {
       return;
     }
-    final cancelling = job.localState == 'cancelling';
-    final client = core.CoreClient.forPeer(peer);
-    _activeClients[job.id] = client;
+    final run = _OutgoingRun(resumeSource: resumeSource);
+    _outgoingRuns[job.id] = run;
     _running.add(job.id);
-    if (!cancelling) job.localState = 'sending';
-    job.detail = null;
-    _save(job);
+    var retries = 0;
+    try {
+      while (_canRun(job, run)) {
+        // Re-read trust and the latest verified address for every attempt.
+        // Discovery can update an endpoint but can never replace its pin.
+        final peer = _trusted?.byId(job.peerId);
+        if (peer == null || peer.endpoint == null) {
+          if (job.localState != 'cancelling') job.localState = 'paused';
+          job.detail = 'Устройство недоступно или доверие отозвано.';
+          break;
+        }
+        final client = core.CoreClient.forPeer(peer);
+        _activeClients[job.id] = client;
+        if (job.localState != 'cancelling') job.localState = 'sending';
+        job.detail = null;
+        _save(job);
+        Duration? delay;
+        try {
+          await _runAttempt(job, client, run);
+          break;
+        } catch (error) {
+          // A local action always wins over a transport error caused by closing
+          // its socket. In particular, a delayed retry cannot undo that action.
+          if (!_canRun(job, run) || job.isTerminal) break;
+          if (!_retryPolicy.canRetry(error)) {
+            if (job.localState != 'cancelling') job.localState = 'paused';
+            job.detail = _friendly(error);
+            break;
+          }
+          delay = _retryPolicy.delayBeforeRetry(++retries);
+          if (delay == null) {
+            if (job.localState != 'cancelling') job.localState = 'paused';
+            job.detail = job.localState == 'cancelling'
+                ? 'Автоматические попытки закончились. Отмена ещё не '
+                      'подтверждена; «Продолжить» уточнит результат у получателя.'
+                : 'Связь не восстановилась после ${_retryPolicy.maxRetries} '
+                      'повторных попыток. Подтверждённый прогресс сохранён. '
+                      'Откройте приложение на обоих устройствах и нажмите '
+                      '«Продолжить».';
+            break;
+          }
+          if (job.localState != 'cancelling') job.localState = 'retry_wait';
+          final seconds = (delay.inMilliseconds / 1000).toStringAsFixed(1);
+          job.detail = job.localState == 'cancelling'
+              ? 'Уточняем отмену: повтор $retries из '
+                    '${_retryPolicy.maxRetries} через $seconds с. '
+                    'Результат получателя пока неизвестен.'
+              : 'Связь прервалась. Повтор $retries из '
+                    '${_retryPolicy.maxRetries} через $seconds с. '
+                    'Подтверждённый прогресс сохранён.';
+          _save(job);
+        } finally {
+          client.close();
+          _activeClients.remove(job.id);
+        }
+        if (!await run.wait(delay, injectedDelay: _runtime.retryDelay)) {
+          break;
+        }
+      }
+    } finally {
+      run.cancel();
+      _outgoingRuns.remove(job.id);
+      _activeClients.remove(job.id);
+      _running.remove(job.id);
+      _save(job);
+      if (job.isTerminal) await _cleanupJobSources(job);
+    }
+  }
+
+  bool _canRun(OutgoingJob job, _OutgoingRun run) =>
+      !run.cancelled &&
+      !_closing &&
+      !_disposed &&
+      _foreground &&
+      !job.isTerminal;
+
+  Future<void> _runAttempt(
+    OutgoingJob job,
+    core.CoreClient client,
+    _OutgoingRun run,
+  ) async {
     Timer? poller;
     var pollBusy = false;
+    var attemptActive = true;
     try {
       if (job.remoteId == null) {
+        // The same manifest request ID reconciles a lost offer response.
         final remote = await client.offer(job.manifest);
         job.remoteId = remote.transferId;
         _applySnapshot(job, remote);
       }
-      if (cancelling) {
+      if (!_canRun(job, run)) return;
+      if (job.localState == 'cancelling') {
         _applySnapshot(job, await client.cancel(job.remoteId!));
         return;
       }
       final consentWait = Stopwatch()..start();
       while (true) {
-        if (job.localState == 'paused' ||
-            job.localState == 'cancelling' ||
-            _closing ||
-            _disposed) {
-          return;
-        }
+        if (!_canRun(job, run) || job.localState != 'sending') return;
         final snapshot = await client.transferStatus(job.remoteId!);
         _applySnapshot(job, snapshot);
-        if (_terminal(snapshot)) return;
+        if (_terminal(snapshot) || !_canRun(job, run)) return;
         if (snapshot.state != core.TransferState.offered) break;
         if (consentWait.elapsed > const Duration(seconds: 120)) {
           throw const core.NetworkException(
@@ -612,25 +691,43 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
             'No consent received',
           );
         }
-        await Future<void>.delayed(const Duration(seconds: 1));
+        // This wait is also interruptible by pause/cancel/background/shutdown.
+        if (!await run.wait(const Duration(seconds: 1))) return;
       }
-      // Resume clears this side's intent even if the other side is still paused.
       if (job.snapshot!.pausedBySource) {
+        if (!run.resumeSource) {
+          job.localState = 'paused';
+          job.detail =
+              'Пауза отправителя. Для продолжения нажмите «Продолжить».';
+          return;
+        }
         _applySnapshot(job, await client.resume(job.remoteId!));
       }
+      // Only an explicit resume action grants this once. A later automatic
+      // attempt must not clear a pause that appeared after that action.
+      run.resumeSource = false;
+      if (!_canRun(job, run)) return;
       if (job.snapshot!.pausedBySink) {
         job.localState = 'paused';
         job.detail = 'Получатель поставил передачу на паузу.';
-        _save(job);
         return;
       }
       // Progress shown in the interface comes only from the Sink's journal.
       poller = Timer.periodic(const Duration(seconds: 1), (_) async {
-        if (pollBusy || _disposed || job.localState != 'sending') return;
+        if (pollBusy ||
+            !attemptActive ||
+            !_canRun(job, run) ||
+            job.localState != 'sending') {
+          return;
+        }
         pollBusy = true;
         try {
           final snapshot = await client.transferStatus(job.remoteId!);
-          if (job.localState == 'sending') _applySnapshot(job, snapshot);
+          if (attemptActive &&
+              _canRun(job, run) &&
+              job.localState == 'sending') {
+            _applySnapshot(job, snapshot);
+          }
         } catch (_) {
           /* Main upload resolves a network failure. */
         } finally {
@@ -638,7 +735,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         }
       });
       for (final file in job.manifest.files) {
-        if (job.localState != 'sending' || _closing || _disposed) return;
+        if (!_canRun(job, run) || job.localState != 'sending') return;
         final prepared = _outbox!.get(file.fileId);
         await client.uploadFile(
           transferId: job.remoteId!,
@@ -647,23 +744,17 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         );
         _applySnapshot(job, await client.transferStatus(job.remoteId!));
       }
+      if (!_canRun(job, run)) return;
       _applySnapshot(job, await client.transferStatus(job.remoteId!));
-      if (job.localState != 'completed') {
-        job.localState = 'paused';
-        job.detail = 'Ожидается подтверждение сохранения от получателя.';
-      }
-    } catch (error) {
-      if (!job.isTerminal && job.localState != 'cancelling') {
-        job.localState = 'paused';
-        job.detail = _friendly(error);
+      if (!_terminal(job.snapshot!)) {
+        throw const core.NetworkException(
+          'AWAITING_COMMIT',
+          'Waiting for a verified final receipt',
+        );
       }
     } finally {
+      attemptActive = false;
       poller?.cancel();
-      client.close();
-      _activeClients.remove(job.id);
-      _running.remove(job.id);
-      _save(job);
-      if (job.isTerminal) await _cleanupJobSources(job);
     }
   }
 
@@ -682,6 +773,10 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         job.localState = 'cancelled';
       case core.TransferState.rejected:
         job.localState = 'rejected';
+      case core.TransferState.expired:
+        job.localState = 'expired';
+        job.detail =
+            'Время ожидания согласия истекло. Для передачи нужен новый запрос.';
       case core.TransferState.failed:
         job.localState = 'failed';
         job.detail =
@@ -708,10 +803,11 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   }
 
   Future<void> _cleanupJobSources(OutgoingJob job) async {
-    // Retain the prepared source of an unsuccessful/partial attempt. This alpha
-    // has no automatic retention sweep; only confirmed delivery/cancellation
-    // may release its managed copies here.
-    if (job.localState == 'failed' || job.localState == 'partially_completed') {
+    // A rejection/cancel/expiry is not evidence that another copy exists. Keep
+    // the prepared payload until a complete validated receipt, or a separate
+    // explicit cleanup action with its last-copy warning.
+    if (job.localState != 'completed' ||
+        job.snapshot?.state != core.TransferState.completed) {
       return;
     }
     for (final file in job.manifest.files) {
@@ -726,6 +822,66 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     }
   }
 
+  bool _canRetryPrepared(OutgoingJob job) {
+    if (!job.isTerminal ||
+        job.localState == 'completed' ||
+        _outbox == null ||
+        _trusted?.byId(job.peerId) == null ||
+        (job.snapshot?.files.any(
+              (file) => file.state == core.FileState.committed,
+            ) ??
+            false)) {
+      return false;
+    }
+    final available = {
+      for (final file in _outbox!.list()) file.manifest.fileId: file.manifest,
+    };
+    return job.manifest.files.every((file) {
+      final prepared = available[file.fileId];
+      return prepared != null &&
+          prepared.displayName == file.displayName &&
+          prepared.sizeBytes == file.sizeBytes &&
+          prepared.sha256 == file.sha256 &&
+          prepared.mimeType == file.mimeType;
+    });
+  }
+
+  @override
+  Future<void> retryTransfer(String transferId) => _guard(() async {
+    if (transferId.startsWith('in:') || isBusy || _outbox == null) return;
+    final previous = _job(transferId);
+    if (!_canRetryPrepared(previous)) return;
+    if (_running.isNotEmpty) {
+      _status =
+          'Дождитесь окончания текущей отправки или поставьте её на паузу.';
+      return;
+    }
+    if (_jobs.where((job) => !job.isTerminal).length >= 10) {
+      throw const core.StorageException('QUEUE_FULL', 'Queue is full');
+    }
+    if (!_online.contains(previous.peerId)) {
+      throw const core.NetworkException('PEER_UNAVAILABLE', 'Peer unavailable');
+    }
+    final manifest = core.TransferManifest(
+      requestId: const Uuid().v4(),
+      files: previous.manifest.files,
+    );
+    final job = OutgoingJob(
+      id: manifest.requestId,
+      peerId: previous.peerId,
+      peerName: previous.peerName,
+      manifest: manifest,
+      createdAt: DateTime.now(),
+    );
+    _journal!.save(job);
+    _jobs.insert(0, job);
+    _status =
+        'Создан новый запрос из сохранённых копий. Получатель должен '
+        'подтвердить его заново.';
+    _emit();
+    _launch(_runJob(job));
+  });
+
   @override
   Future<void> pauseTransfer(String transferId) => _guard(() async {
     if (transferId.startsWith('in:')) {
@@ -733,12 +889,16 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       return;
     }
     final job = _job(transferId);
+    if (job.isTerminal || job.localState == 'cancelling') return;
+    _outgoingRuns[job.id]?.cancel();
     job.localState = 'paused';
     job.detail = 'Пауза отправителя';
     _save(job);
     _activeClients[job.id]?.close();
     final peer = _trusted?.byId(job.peerId);
-    if (peer != null && job.remoteId != null) {
+    if (peer != null &&
+        job.remoteId != null &&
+        job.snapshot?.state != core.TransferState.offered) {
       final control = core.CoreClient.forPeer(peer);
       try {
         _applySnapshot(job, await control.pause(job.remoteId!));
@@ -761,7 +921,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       return;
     }
     await _refreshTrusted();
-    _launch(_runJob(job));
+    _launch(_runJob(job, resumeSource: true));
   });
 
   @override
@@ -771,6 +931,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       return;
     }
     final job = _job(transferId);
+    if (job.isTerminal) return;
+    _outgoingRuns[job.id]?.cancel();
     job.localState = 'cancelling';
     job.detail = 'Уточняем результат отмены у получателя.';
     _save(job);
@@ -990,16 +1152,22 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   Future<void> revokePeer(String peerId) => _guard(() async {
     // Local revocation is immediate; a disconnected remote cannot be forced
     // to delete its own record, and it receives no future authorization here.
-    await (_host?.revoke(peerId) ?? _trusted!.revoke(peerId));
     _online.remove(peerId);
     for (final job in _jobs.where(
       (job) => job.peerId == peerId && !job.isTerminal,
     )) {
+      _outgoingRuns[job.id]?.cancel();
       _activeClients[job.id]?.close();
-      job.localState = 'paused';
-      job.detail = 'Доверие отозвано. Передача остановлена.';
+      if (job.localState != 'cancelling') job.localState = 'paused';
+      job.detail = job.localState == 'cancelling'
+          ? 'Доверие отозвано. Удалённый результат отмены не подтверждён.'
+          : 'Доверие отозвано. Передача остановлена.';
       _save(job);
     }
+    // Stop transmission before an OS secret-store write can block. If that
+    // write fails, the user sees a revocation error but the stopped run remains
+    // paused instead of silently completing its pending retry.
+    await (_host?.revoke(peerId) ?? _trusted!.revoke(peerId));
   });
   @override
   Future<void> renameDevice(String name) async {
@@ -1037,6 +1205,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       final unused = _outbox!.list().where(
         (file) => _unusedSource(file.manifest.fileId),
       );
+      final incomplete = await _inbox!.previewIncompleteCleanup();
       _storageOverview = StorageOverview(
         availableBytes: snapshot.availableBytes,
         temporaryBytes: snapshot.temporaryBytes,
@@ -1051,6 +1220,20 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
               bytes: file.manifest.sizeBytes,
             ),
           ),
+        ),
+        incompleteIncoming: List.unmodifiable(
+          incomplete.map((item) {
+            final transfer = _inbox!.status(item.transferId);
+            return IncomingCleanupItem(
+              id: item.transferId,
+              title: _title(transfer.manifest),
+              peerName: _peerName(transfer.peerId),
+              temporaryBytes: item.temporaryBytes,
+              reservedBytes: item.reservedBytes,
+              pendingFileCount: item.incompleteFileCount,
+              completedFileCount: item.committedFileCount,
+            );
+          }),
         ),
         checkedAt: DateTime.now().toUtc(),
       );
@@ -1127,6 +1310,37 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       await _updateStorageOverview();
     }
   });
+
+  @override
+  Future<void> clearIncompleteIncoming(List<String> transferIds) =>
+      _guard(() async {
+        if (isBusy || _inbox == null) return;
+        _cleaning = true;
+        _busy = 'Очистка незавершённого приёма';
+        _emit();
+        var stopped = 0;
+        var removedFiles = 0;
+        try {
+          // Confirmed IDs are the upper bound of this action. Re-read each
+          // candidate; new offers and a batch committed since the preview are
+          // excluded. The core serializes discard with any active writer.
+          for (final id in transferIds.toSet()) {
+            final eligible = await _inbox!.previewIncompleteCleanup();
+            if (!eligible.any((item) => item.transferId == id)) continue;
+            final result = await _inbox!.discardIncomplete(id);
+            stopped++;
+            removedFiles += result.removedFileCount;
+          }
+          _status =
+              'Обработано незавершённых передач: $stopped. '
+              'Удалено временных файлов: $removedFiles. '
+              'Готовые полученные файлы сохранены.';
+        } finally {
+          _cleaning = false;
+          _busy = null;
+          await _updateStorageOverview();
+        }
+      });
 
   ReceivedFile _receivedFile(String transferId, core.FileSnapshot file) {
     final record = _exports?.latest(transferId, file.fileId);
@@ -1331,6 +1545,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     if (state == AppLifecycleState.paused) {
       _foreground = false;
       for (final job in _jobs.where((job) => _running.contains(job.id))) {
+        _outgoingRuns[job.id]?.cancel();
         // Preserve cancellation intent even when backgrounding interrupts it.
         if (job.localState != 'cancelling') job.localState = 'paused';
         job.detail = 'Приложение свёрнуто. Для продолжения откройте его на обоих устройствах.';
@@ -1391,6 +1606,9 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     _storageTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _pairingClient?.close();
+    for (final run in _outgoingRuns.values) {
+      run.cancel();
+    }
     for (final client in _activeClients.values) {
       client.close();
     }
@@ -1423,6 +1641,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     core.TransferState.rejected,
     core.TransferState.cancelled,
     core.TransferState.failed,
+    core.TransferState.expired,
   }.contains(snapshot.state);
   static TransferPhase _snapshotPhase(core.TransferSnapshot value) {
     if (value.state == core.TransferState.completed) {
@@ -1445,12 +1664,16 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       core.TransferState.failed ||
       core.TransferState.partiallyCompleted => TransferPhase.failed,
       core.TransferState.completed => TransferPhase.completed,
+      core.TransferState.expired => TransferPhase.expired,
     };
   }
 
   static String? _snapshotDetail(core.TransferSnapshot value) {
     if (value.state == core.TransferState.completed) {
       return 'SHA-256 проверен · сохранение подтверждено';
+    }
+    if (value.state == core.TransferState.expired) {
+      return 'Согласие не получено за 120 секунд. Для передачи нужен новый запрос.';
     }
     final spaceError = value.files
         .map((file) => file.errorCode)
@@ -1490,6 +1713,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       'SELF_PAIRING' => 'Этот QR-код принадлежит текущему устройству.',
       'UNAUTHORIZED' => 'Доверие отозвано или сопряжение не завершено. Подключите устройства заново.',
       'CONSENT_REQUIRED' || 'CONSENT_TIMEOUT' => 'Получатель ещё не подтвердил приём. Подтвердите запрос и продолжите отправку.',
+      'OFFER_EXPIRED' || 'TRANSFER_EXPIRED' =>
+        'Срок предложения истёк. Выберите файлы и отправьте новый запрос.',
       'TRANSFER_PAUSED' => 'Передача приостановлена. Продолжение доступно после снятия паузы обеими сторонами.',
       'HASH_MISMATCH' || 'INTEGRITY_MISMATCH' =>
         'Контрольная сумма не совпала. Файл не отмечен как готовый.',
@@ -1526,5 +1751,47 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
             ? 'Операция недоступна. Проверьте системные разрешения и повторите.'
             : 'Операция остановлена ($code). Данные не отмечены как успешно переданные.',
     };
+  }
+}
+
+/// One explicit send/resume owns one finite retry sequence and one stop signal.
+/// Cancellation wakes both consent polling and backoff immediately, so closing
+/// the app never waits for a pending 16-second retry timer.
+class _OutgoingRun {
+  _OutgoingRun({required this.resumeSource});
+  bool resumeSource;
+  bool cancelled = false;
+  final _stopped = Completer<void>();
+  Timer? _timer;
+
+  void cancel() {
+    if (cancelled) return;
+    cancelled = true;
+    _timer?.cancel();
+    _stopped.complete();
+  }
+
+  Future<bool> wait(
+    Duration duration, {
+    Future<void> Function(Duration)? injectedDelay,
+  }) async {
+    if (cancelled) return false;
+    final elapsed = Completer<void>();
+    final Future<void> delay;
+    if (injectedDelay != null) {
+      delay = injectedDelay(duration);
+    } else {
+      _timer = Timer(duration, elapsed.complete);
+      delay = elapsed.future;
+    }
+    try {
+      return await Future.any([
+        delay.then((_) => !cancelled),
+        _stopped.future.then((_) => false),
+      ]);
+    } finally {
+      _timer?.cancel();
+      _timer = null;
+    }
   }
 }

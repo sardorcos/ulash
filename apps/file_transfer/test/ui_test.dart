@@ -43,6 +43,8 @@ class TestController extends AppController {
   (String, String)? openedFile;
   (String, String)? exportedFile;
   List<String>? cleanedFiles;
+  List<String>? cleanedIncoming;
+  String? retriedTransfer;
   final responses = <(String, bool)>[];
 
   @override
@@ -107,6 +109,11 @@ class TestController extends AppController {
   @override
   Future<void> cancelTransfer(String transferId) async {}
   @override
+  Future<void> retryTransfer(String transferId) async {
+    retriedTransfer = transferId;
+  }
+
+  @override
   Future<void> openReceivedFile(String transferId, String fileId) async {
     openedFile = (transferId, fileId);
   }
@@ -119,6 +126,16 @@ class TestController extends AppController {
   @override
   Future<void> clearUnusedTemporary(List<String> fileIds) async {
     cleanedFiles = List.of(fileIds);
+  }
+
+  @override
+  Future<void> clearIncompleteIncoming(List<String> transferIds) async {
+    cleanedIncoming = List.of(transferIds);
+  }
+
+  void updateStorage(StorageOverview value) {
+    storageOverview = value;
+    notifyListeners();
   }
 
   @override
@@ -445,4 +462,181 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets(
+    'incoming cleanup confirms consequences and retains the original preview during refresh',
+    (tester) async {
+      await setSize(tester, const Size(360, 800));
+      StorageOverview overview(List<IncomingCleanupItem> incoming) =>
+          StorageOverview(
+            availableBytes: null,
+            temporaryBytes: 128,
+            reservedBytes: 256,
+            safetyReserveBytes: 128 * 1024 * 1024,
+            temporaryQuotaBytes: 20 * 1024 * 1024 * 1024,
+            checkedAt: DateTime(2026, 11, 21),
+            unusedFiles: const [],
+            incompleteIncoming: incoming,
+          );
+      const previewed = IncomingCleanupItem(
+        id: 'previewed-incoming',
+        title: 'Видео.mov',
+        peerName: 'Телефон',
+        temporaryBytes: 128,
+        reservedBytes: 256,
+        pendingFileCount: 1,
+        completedFileCount: 2,
+      );
+      const later = IncomingCleanupItem(
+        id: 'later-incoming',
+        title: 'Новый документ.pdf',
+        peerName: 'Ноутбук',
+        temporaryBytes: 1024,
+        reservedBytes: 0,
+        pendingFileCount: 1,
+        completedFileCount: 0,
+      );
+      final controller = TestController()
+        ..availableCapabilities = const AppCapabilities(storageManagement: true)
+        ..storageOverview = overview([previewed]);
+      await tester.pumpWidget(FileTransferApp(controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('nav-settings')));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('cleanup-incoming')));
+      await tester.tap(find.byKey(const Key('cleanup-incoming')));
+      await tester.pumpAndSettle();
+      expect(controller.cleanedIncoming, isNull);
+      expect(
+        find.textContaining('Готовых файлов останется: 2'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Продолжить эти передачи после очистки нельзя'),
+        findsOneWidget,
+      );
+      await tester.tap(find.widgetWithText(TextButton, 'Оставить'));
+      await tester.pumpAndSettle();
+      expect(controller.cleanedIncoming, isNull);
+      await tester.tap(find.byKey(const Key('cleanup-incoming')));
+      await tester.pumpAndSettle();
+      controller.updateStorage(overview([previewed, later]));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Новый документ.pdf'), findsNothing);
+      await tester.tap(find.byKey(const Key('confirm-cleanup-incoming')));
+      await tester.pumpAndSettle();
+      expect(controller.cleanedIncoming, ['previewed-incoming']);
+      expect(controller.cleanedFiles, isNull);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('offer deadline is visible without implied acceptance', (
+    tester,
+  ) async {
+    await setSize(tester, const Size(390, 844));
+    final controller = TestController()
+      ..pendingTransfers = [
+        IncomingTransfer(
+          id: 'deadline',
+          peerName: 'Отправитель',
+          fileNames: const ['Документ.pdf'],
+          totalBytes: 1024,
+          expiresAt: DateTime(2026, 11, 21, 14, 30, 47),
+        ),
+      ];
+    await tester.pumpWidget(FileTransferApp(controller: controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('nav-receive')));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const Key('offer-deadline-deadline')),
+    );
+    expect(find.textContaining('14:30:47'), findsOneWidget);
+    expect(controller.responses, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('retry and expiry are distinct from verified completion', (
+    tester,
+  ) async {
+    await setSize(tester, const Size(1280, 1000));
+    final controller = TestController()
+      ..transfers = [
+        TransferItem(
+          id: 'retry',
+          title: 'Передача с обрывом',
+          peerName: 'Отправитель',
+          direction: TransferDirection.outgoing,
+          phase: TransferPhase.retrying,
+          totalBytes: 1024,
+          transferredBytes: 512,
+          createdAt: DateTime(2026, 11, 21),
+          canPause: true,
+          canCancel: true,
+          detail: 'Повтор 2 из 5 через 2 секунды.',
+        ),
+        TransferItem(
+          id: 'expired',
+          title: 'Предложение без ответа',
+          peerName: 'Отправитель',
+          direction: TransferDirection.incoming,
+          phase: TransferPhase.expired,
+          totalBytes: 2048,
+          transferredBytes: 0,
+          createdAt: DateTime(2026, 11, 21),
+        ),
+      ];
+    await tester.pumpWidget(FileTransferApp(controller: controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('nav-history')));
+    await tester.pumpAndSettle();
+    expect(find.text('Повторяем подключение'), findsOneWidget);
+    expect(find.text('Время ожидания истекло'), findsOneWidget);
+    expect(find.text('Передача завершена'), findsNothing);
+    expect(find.byKey(const Key('pause-retry')), findsOneWidget);
+    expect(find.byKey(const Key('resume-expired')), findsNothing);
+    expect(find.byType(LinearProgressIndicator), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('sending retained copies again requires an explicit new offer', (
+    tester,
+  ) async {
+    await setSize(tester, const Size(360, 640));
+    final controller = TestController()
+      ..transfers = [
+        TransferItem(
+          id: 'expired-outgoing',
+          title: 'Сохранённая копия.pdf',
+          peerName: 'Ноутбук',
+          direction: TransferDirection.outgoing,
+          phase: TransferPhase.expired,
+          totalBytes: 1024,
+          transferredBytes: 0,
+          createdAt: DateTime(2026, 11, 21),
+          canRetry: true,
+        ),
+      ];
+    await tester.pumpWidget(FileTransferApp(controller: controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('nav-history')));
+    await tester.pumpAndSettle();
+    final retry = find.byKey(const Key('retry-expired-outgoing'));
+    await tester.ensureVisible(retry);
+    await tester.tap(retry);
+    await tester.pumpAndSettle();
+    expect(controller.retriedTransfer, isNull);
+    expect(find.textContaining('нужно подтвердить'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, 'Оставить'));
+    await tester.pumpAndSettle();
+    expect(controller.retriedTransfer, isNull);
+    await tester.tap(retry);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('confirm-retry-expired-outgoing')));
+    await tester.pumpAndSettle();
+    expect(controller.retriedTransfer, 'expired-outgoing');
+    expect(controller.sentPeer, isNull);
+    expect(tester.takeException(), isNull);
+  });
 }

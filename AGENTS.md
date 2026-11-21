@@ -26,5 +26,7 @@ Read `docs/IMPLEMENTATION_STATUS_RU.md` and the relevant part of
 
 - Use one StorageBudget for inbox and outbox on the same volume. Unknown native free space stays null; never convert it into an invented capacity.
 - Keep committed network receipt and native export state separate. Recover an unfinished export as unknown and never automatically repeat it.
-- Explicit cleanup may remove only the previewed, still-unreferenced outgoing copies after the user confirms the documented last-copy consequence. Never sweep completed received files.
-- The delivered 0.2 debug Android ID is .alpha02 because its signer differs from 0.1. Preserve installed user data; never suggest uninstalling a prior app to mask a signing-key mismatch.
+- Explicit outgoing cleanup may remove only the previewed, still-unreferenced copies after the user confirms the documented last-copy consequence. Incoming cleanup may stop only the confirmed batch IDs and remove journal-owned unfinished payloads; preserve completed files, receipts and unresolved commit intents.
+- Rejection, cancellation and expiry do not automatically delete an outgoing prepared copy. Automatic source cleanup requires a complete validated committed receipt. A user-requested new attempt has a new requestId and requires new Sink consent.
+- Network retries are finite and cancellable. Never clear a manual Source or Sink pause automatically, retry trust/integrity failures, or restart work after backgrounding/shutdown without user action.
+- The 0.2 and 0.3 debug Android ID is .alpha02 with the same verified signer, different from 0.1. Preserve installed user data; never suggest uninstalling a prior app to mask a signing-key mismatch.

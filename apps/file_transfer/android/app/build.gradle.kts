@@ -31,8 +31,8 @@ android {
 
     buildTypes {
         getByName("debug") {
-            // The original alpha debug key is not available in a fresh build
-            // environment. Install this alpha alongside it, keeping its data.
+            // The 0.1 debug signer differed. Keep the 0.2 installation ID and
+            // signer for subsequent development updates without erasing data.
             // This never changes the release application ID or signing policy.
             applicationIdSuffix = ".alpha02"
         }

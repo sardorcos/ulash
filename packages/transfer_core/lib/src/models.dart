@@ -190,7 +190,8 @@ enum FileState {
   committed,
   rejected,
   cancelled,
-  failed;
+  failed,
+  expired;
 
   String get wireName => name;
   static FileState fromWire(String value) => values.firstWhere(
@@ -208,7 +209,8 @@ enum TransferState {
   partiallyCompleted,
   rejected,
   cancelled,
-  failed;
+  failed,
+  expired;
 
   String get wireName =>
       this == partiallyCompleted ? 'partially_completed' : name;
@@ -270,6 +272,7 @@ class TransferSnapshot {
     required this.updatedAt,
     this.pausedBySource = false,
     this.pausedBySink = false,
+    this.offerExpiresAt,
   }) : files = List.unmodifiable(files);
 
   final String transferId;
@@ -281,6 +284,10 @@ class TransferSnapshot {
   final DateTime updatedAt;
   final bool pausedBySource;
   final bool pausedBySink;
+
+  /// Sink-authoritative display deadline. Local wall time is not used to
+  /// authorize consent; the store enforces a monotonic lifetime while open.
+  final DateTime? offerExpiresAt;
   String get id => transferId;
   int get durableBytes => files.fold(0, (value, file) => value + file.offset);
 
@@ -296,6 +303,8 @@ class TransferSnapshot {
     'updatedAt': updatedAt.toUtc().toIso8601String(),
     'pausedBySource': pausedBySource,
     'pausedBySink': pausedBySink,
+    if (offerExpiresAt != null)
+      'offerExpiresAt': offerExpiresAt!.toUtc().toIso8601String(),
   };
 
   factory TransferSnapshot.fromJson(Map<String, dynamic> json) =>
@@ -316,6 +325,9 @@ class TransferSnapshot {
         updatedAt: DateTime.parse(_string(json, 'updatedAt')).toUtc(),
         pausedBySource: json['pausedBySource'] == true,
         pausedBySink: json['pausedBySink'] == true,
+        offerExpiresAt: json['offerExpiresAt'] == null
+            ? null
+            : DateTime.parse(_string(json, 'offerExpiresAt')).toUtc(),
       );
 }
 

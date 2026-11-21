@@ -64,6 +64,8 @@ void main() {
     output.createSync(recursive: true);
 
     Future<void> capture(String name) async {
+      // ignore: avoid_print
+      print('CAPTURE_START $name');
       await tester.pump(const Duration(milliseconds: 100));
       final render =
           boundary.currentContext!.findRenderObject() as RenderRepaintBoundary;
@@ -75,6 +77,8 @@ void main() {
         image.dispose();
       });
       expect(tester.takeException(), isNull);
+      // ignore: avoid_print
+      print('CAPTURE_DONE $name');
     }
 
     try {
@@ -91,6 +95,11 @@ void main() {
       await capture('desktop-send');
       await tester.tap(find.byKey(const Key('nav-settings')));
       await tester.pumpAndSettle();
+      await Scrollable.ensureVisible(
+        tester.element(find.byKey(const Key('refresh-storage'))),
+        alignment: 0.04,
+      );
+      await tester.pumpAndSettle();
       await capture('desktop-storage');
       await tester.tap(find.byKey(const Key('nav-receive')));
       await tester.pumpAndSettle();
@@ -99,7 +108,7 @@ void main() {
         find.widgetWithText(OutlinedButton, 'Показать приглашение'),
       );
       await tester.pumpAndSettle();
-      await capture('desktop-invitation');
+      // Exercise the real dialog, but never persist its invitation secret.
       await tester.tap(find.widgetWithText(TextButton, 'Закрыть'));
       await tester.pumpAndSettle();
       tester.view.physicalSize = const Size(390, 844);
@@ -108,7 +117,10 @@ void main() {
       await capture('mobile-receive');
       await tester.tap(find.byKey(const Key('nav-settings')));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.byKey(const Key('refresh-storage')));
+      await Scrollable.ensureVisible(
+        tester.element(find.byKey(const Key('cleanup-incoming'))),
+        alignment: 0.94,
+      );
       await tester.pumpAndSettle();
       await capture('mobile-storage');
       await tester.tap(find.byKey(const Key('nav-send')));
@@ -118,16 +130,58 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('create-invitation')));
       await tester.pumpAndSettle();
-      await capture('mobile-invitation');
+      // No QR/credential-bearing screenshot is written to the source tree.
       await tester.tap(find.widgetWithText(TextButton, 'Закрыть'));
       await tester.pumpAndSettle();
     } finally {
+      // ignore: avoid_print
+      print('CAPTURE_TEARDOWN_BEGIN');
       await tester.pumpWidget(const SizedBox.shrink());
+      // A UI action can schedule the real storage preview from the fake widget
+      // clock. Let both its timer and filesystem completions settle before
+      // shutdown waits for tracked work in runAsync's real clock.
+      await tester.pump(const Duration(seconds: 1));
+      for (var i = 0; i < 100 && controller.storageRefreshing; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump();
+      }
+      expect(controller.storageRefreshing, isFalse);
+      // ignore: avoid_print
+      print('CAPTURE_TEARDOWN_STORAGE_SETTLED');
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
       await tester.binding.setSurfaceSize(null);
+      // Shutdown also joins work created by UI actions in the fake-clock zone.
+      // Pump that zone while yielding to real socket/filesystem completions;
+      // awaiting the whole shutdown inside runAsync would strand those joins.
+      var shutdownFinished = false;
+      Object? shutdownError;
+      final shutdown = controller.shutdown().then(
+        (_) => shutdownFinished = true,
+        onError: (Object error) {
+          shutdownError = error;
+          shutdownFinished = true;
+          return true;
+        },
+      );
+      for (var i = 0; i < 1000 && !shutdownFinished; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump(const Duration(milliseconds: 10));
+      }
+      expect(
+        shutdownFinished,
+        isTrue,
+        reason: 'Real controller did not close.',
+      );
+      expect(shutdownError, isNull);
+      await shutdown;
+      // ignore: avoid_print
+      print('CAPTURE_SHUTDOWN_DONE');
       await tester.runAsync(() async {
-        await controller.shutdown();
         controller.dispose();
         secrets.clear();
         await sessionDirectory.delete(recursive: true);
