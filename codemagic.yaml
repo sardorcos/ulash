@@ -133,7 +133,7 @@ workflows:
           echo "Building $BUILD_NAME ($BUILD_NUMBER)"
           flutter --no-version-check build ios --release --config-only --no-codesign --no-pub \
             --build-name="$BUILD_NAME" --build-number="$BUILD_NUMBER"
-          mkdir -p "$CM_BUILD_DIR/build"
+          mkdir -p "$CM_BUILD_DIR/build" /tmp/xcodebuild_logs
           cd ios
           AUTH=(-allowProvisioningUpdates
             -authenticationKeyPath "$ASC_KEY_PATH"
@@ -144,7 +144,12 @@ workflows:
             -destination 'generic/platform=iOS' \
             -archivePath "$CM_BUILD_DIR/build/Runner.xcarchive" \
             "${AUTH[@]}" DEVELOPMENT_TEAM="$TEAM_ID" CODE_SIGN_STYLE=Automatic \
-            | xcpretty || { echo "archive failed" >&2; exit 1; }
+            > /tmp/xcodebuild_logs/archive.log 2>&1 || {
+              grep -E 'error:|error -|Code Signing|No profiles|provision|certificate' /tmp/xcodebuild_logs/archive.log | sort -u | head -60
+              echo "----- tail -----"; tail -80 /tmp/xcodebuild_logs/archive.log
+              exit 1
+            }
+          tail -5 /tmp/xcodebuild_logs/archive.log
           cat > "$CM_BUILD_DIR/build/ExportOptions.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -161,7 +166,12 @@ workflows:
             -archivePath "$CM_BUILD_DIR/build/Runner.xcarchive" \
             -exportOptionsPlist "$CM_BUILD_DIR/build/ExportOptions.plist" \
             -exportPath "$CM_BUILD_DIR/build/ipa" \
-            "${AUTH[@]}"
+            "${AUTH[@]}" > /tmp/xcodebuild_logs/export.log 2>&1 || {
+              grep -E 'error|Error' /tmp/xcodebuild_logs/export.log | sort -u | head -40
+              tail -60 /tmp/xcodebuild_logs/export.log
+              exit 1
+            }
+          tail -5 /tmp/xcodebuild_logs/export.log
           ls -la "$CM_BUILD_DIR/build/ipa"
       - name: Remove API key
         script: rm -rf "$HOME/private_keys"
