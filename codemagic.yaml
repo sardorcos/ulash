@@ -47,7 +47,7 @@ workflows:
       xcode: latest
       cocoapods: default
       groups:
-        - ulash_signing # CERTIFICATE_PRIVATE_KEY (kept for manual signing)
+        - ulash_signing # CERTIFICATE_PRIVATE_KEY (secure)
       vars:
         BUNDLE_ID: uz.ulash.app
     cache:
@@ -77,43 +77,24 @@ workflows:
           fi
           echo "App Store Connect app id: $APP_ID"
           echo "APP_STORE_APPLE_ID=$APP_ID" >> "$CM_ENV"
-      # Signing: the archive is built unsigned; export re-signs it with an
-      # Apple cloud-managed Distribution certificate through the integration's
-      # API key. No development certificate, no private key, and none of the
-      # account's limited Distribution certificates are needed.
-      - name: Prepare signing
+      # Signing: an Apple Distribution certificate created from the secure
+      # CERTIFICATE_PRIVATE_KEY of this app (group ulash_signing) and an App
+      # Store profile for uz.ulash.app, fetched or created via the
+      # integration's API key. Creating the certificate needs a free slot
+      # under Apple's Distribution certificate limit.
+      - name: Set up keychain
+        script: keychain initialize
+      - name: Fetch App Store signing files
         script: |
-          set -euo pipefail
-          for v in APP_STORE_CONNECT_KEY_IDENTIFIER APP_STORE_CONNECT_ISSUER_ID APP_STORE_CONNECT_PRIVATE_KEY; do
-            if [ -z "${!v:-}" ]; then echo "$v is not provided by the integration" >&2; exit 1; fi
-          done
-          mkdir -p "$HOME/private_keys"
-          KEY_PATH="$HOME/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_IDENTIFIER}.p8"
-          # Normalise whatever form the integration provides (raw PEM, escaped
-          # newlines, @file:/@env: reference, or bare base64) into a PEM file.
-          # Only the shape is printed, never the key.
-          python3 - "$KEY_PATH" <<'PY'
-          import os, re, sys, textwrap
-          raw = os.environ["APP_STORE_CONNECT_PRIVATE_KEY"].strip()
-          if raw.startswith("@file:"):
-              raw = open(os.path.expanduser(raw[6:])).read().strip()
-          elif raw.startswith("@env:"):
-              raw = os.environ[raw[5:]].strip()
-          raw = raw.replace("\\r", "").replace("\\n", "\n").replace("\r", "")
-          body = re.sub(r"-----[A-Z ]+-----", "", raw)
-          body = re.sub(r"\s+", "", body)
-          pem = "-----BEGIN PRIVATE KEY-----\n" + "\n".join(textwrap.wrap(body, 64)) + "\n-----END PRIVATE KEY-----\n"
-          print(f"key shape: {len(raw)} chars, header={'BEGIN' in raw}, body={len(body)} base64 chars")
-          with open(sys.argv[1], "w") as handle:
-              handle.write(pem)
-          PY
-          chmod 600 "$KEY_PATH"
-          TEAM_ID=$(app-store-connect bundle-ids list --bundle-id-identifier "$BUNDLE_ID" --strict-match-identifier --platform IOS --json \
-            | python3 -c 'import json,sys; a=json.load(sys.stdin)[0].get("attributes",{}); print(a.get("seedId") or a.get("seed_id") or "")')
-          if [ -z "$TEAM_ID" ]; then echo "Could not determine the team ID" >&2; exit 1; fi
-          echo "Team ID: $TEAM_ID"
-          echo "ASC_KEY_PATH=$KEY_PATH" >> "$CM_ENV"
-          echo "TEAM_ID=$TEAM_ID" >> "$CM_ENV"
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --strict-match-identifier \
+            --certificate-key=@env:CERTIFICATE_PRIVATE_KEY \
+            --create
+      - name: Install certificates and profiles
+        script: |
+          keychain add-certificates
+          xcode-project use-profiles
       - name: Build IPA
         script: |
           set -euo pipefail
@@ -132,54 +113,15 @@ workflows:
           BUILD_NUMBER=$((LATEST + 1))
           if [ "$STAMP" -gt "$BUILD_NUMBER" ]; then BUILD_NUMBER=$STAMP; fi
           echo "Building $BUILD_NAME ($BUILD_NUMBER)"
-          flutter --no-version-check build ios --release --config-only --no-codesign --no-pub \
-            --build-name="$BUILD_NAME" --build-number="$BUILD_NUMBER"
-          mkdir -p "$CM_BUILD_DIR/build" /tmp/xcodebuild_logs
-          cd ios
-          AUTH=(-allowProvisioningUpdates
-            -authenticationKeyPath "$ASC_KEY_PATH"
-            -authenticationKeyID "$APP_STORE_CONNECT_KEY_IDENTIFIER"
-            -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID")
-          xcodebuild archive \
-            -workspace Runner.xcworkspace -scheme Runner -configuration Release \
-            -destination 'generic/platform=iOS' \
-            -archivePath "$CM_BUILD_DIR/build/Runner.xcarchive" \
-            DEVELOPMENT_TEAM="$TEAM_ID" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            > /tmp/xcodebuild_logs/archive.log 2>&1 || {
-              grep -E 'error:|error -|Code Signing|No profiles|provision|certificate' /tmp/xcodebuild_logs/archive.log | sort -u | head -60
-              echo "----- tail -----"; tail -80 /tmp/xcodebuild_logs/archive.log
-              exit 1
-            }
-          tail -5 /tmp/xcodebuild_logs/archive.log
-          cat > "$CM_BUILD_DIR/build/ExportOptions.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>method</key><string>app-store-connect</string>
-            <key>destination</key><string>export</string>
-            <key>signingStyle</key><string>automatic</string>
-            <key>teamID</key><string>${TEAM_ID}</string>
-            <key>uploadSymbols</key><true/>
-            <key>manageAppVersionAndBuildNumber</key><false/>
-          </dict></plist>
-          PLIST
-          xcodebuild -exportArchive \
-            -archivePath "$CM_BUILD_DIR/build/Runner.xcarchive" \
-            -exportOptionsPlist "$CM_BUILD_DIR/build/ExportOptions.plist" \
-            -exportPath "$CM_BUILD_DIR/build/ipa" \
-            "${AUTH[@]}" > /tmp/xcodebuild_logs/export.log 2>&1 || {
-              grep -E 'error|Error' /tmp/xcodebuild_logs/export.log | sort -u | head -40
-              tail -60 /tmp/xcodebuild_logs/export.log
-              exit 1
-            }
-          tail -5 /tmp/xcodebuild_logs/export.log
-          ls -la "$CM_BUILD_DIR/build/ipa"
-      - name: Remove API key
-        script: rm -rf "$HOME/private_keys"
+          flutter --no-version-check build ipa --release --no-pub \
+            --build-name="$BUILD_NAME" \
+            --build-number="$BUILD_NUMBER" \
+            --export-options-plist=/Users/builder/export_options.plist
+          ls -la build/ios/ipa
     artifacts:
-      - build/ipa/*.ipa
+      - apps/file_transfer/build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
-      - build/Runner.xcarchive/dSYMs/*.dSYM
+      - apps/file_transfer/build/ios/archive/Runner.xcarchive/dSYMs/*.dSYM
     publishing:
       app_store_connect:
         auth: integration
