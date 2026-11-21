@@ -103,6 +103,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   Object? _backgroundTask;
   bool _keepAwake = false;
   Directory? _logDirectory;
+  int? _lastHostPort;
   bool _emitScheduled = false;
   List<core.TransferSnapshot>? _inboxCache;
   List<TransferItem>? _transfersCache;
@@ -201,10 +202,13 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       _subscriptions.add(
         _inbox!.changes.listen((_) {
           _emit();
+          _announceReceived();
           _refreshStorageSoon();
         }),
       );
       _subscriptions.add(_trusted!.changes.listen((_) => _emit()));
+      _announced = null;
+      _announceReceived(); // baseline: already completed before this launch
       _needsOnboarding =
           _runtime.requireOnboarding &&
           await _secrets.read('transfer.settings.onboarded') != 'true';
@@ -334,6 +338,25 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     final pending = _initialization;
     if (pending != null) await pending;
     if (_startupIssue == StartupIssue.none && _identity != null) return;
+    await _restart();
+  }
+
+  /// Closes everything opened by startup and starts again. Running sends
+  /// are stopped first; their state is in the journal.
+  Future<void> _restart() async {
+    for (final run in _outgoingRuns.values.toList()) {
+      run.cancel();
+    }
+    for (final client in _activeClients.values.toList()) {
+      client.close();
+    }
+    while (_running.isNotEmpty && !_closing) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    _peerTimer?.cancel();
+    _peerTimer = null;
+    _online.clear();
+    _autoResume.clear();
     await _releaseStartupResources();
     _initialization = null;
     _starting = true;
@@ -393,8 +416,12 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       _emit();
       return;
     }
-    _startupIssue = StartupIssue.other;
-    await retryStartup();
+    // Restart in place: the normal screen stays up (no error screen flash).
+    await _restart();
+    if (_startupIssue == StartupIssue.none) {
+      _setStatus(_l.statusDeviceKeysReset);
+      _emit();
+    }
   }
 
   @override
@@ -445,14 +472,24 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       peers: _trusted!,
       inbox: _inbox!,
     );
-    try {
-      await host.start(
-        address: _runtime.listenAddress,
-        port: _runtime.listenPort,
-      );
-    } on SocketException {
-      await host.start(address: _runtime.listenAddress);
+    // Prefer the port this device used last, so paired peers keep reaching
+    // the stored endpoint across restarts (rename, background, fallback).
+    final ports = <int>{
+      ?_lastHostPort,
+      if (_runtime.listenPort != 0) _runtime.listenPort,
+    };
+    var started = false;
+    for (final port in ports) {
+      try {
+        await host.start(address: _runtime.listenAddress, port: port);
+        started = true;
+        break;
+      } on SocketException {
+        /* Busy: try the next candidate. */
+      }
     }
+    if (!started) await host.start(address: _runtime.listenAddress);
+    _lastHostPort = host.port;
     _host = host;
     _receiving = true;
     _network = _localNetworkDenied
@@ -657,6 +694,47 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   bool get _incomingActive =>
       _inboxList().any((item) => item.state == core.TransferState.transferring);
 
+  /// Durable-progress speed per transfer: exponentially smoothed over
+  /// samples at least 0.8 s apart on a monotonic clock.
+  final _speedClock = Stopwatch()..start();
+  final _speedSamples = <String, (int bytes, int millis, double? rate)>{};
+
+  double? _speed(String id, int bytes, bool active) {
+    if (!active) {
+      _speedSamples.remove(id);
+      return null;
+    }
+    final now = _speedClock.elapsedMilliseconds;
+    final sample = _speedSamples[id];
+    if (sample == null || bytes < sample.$1) {
+      _speedSamples[id] = (bytes, now, null);
+      return null;
+    }
+    final elapsed = now - sample.$2;
+    if (elapsed < 800) return sample.$3;
+    final instant = (bytes - sample.$1) * 1000 / elapsed;
+    final rate = sample.$3 == null ? instant : sample.$3! * .7 + instant * .3;
+    _speedSamples[id] = (bytes, now, rate);
+    return rate;
+  }
+
+  Set<String>? _announced;
+
+  /// One status message per newly completed incoming transfer.
+  void _announceReceived() {
+    final completed = _inboxList()
+        .where((item) => item.state == core.TransferState.completed)
+        .toList();
+    final known = _announced;
+    _announced = completed.map((item) => item.transferId).toSet();
+    if (known == null) return; // first observation after startup
+    for (final item in completed) {
+      if (!known.contains(item.transferId)) {
+        _setStatus(_l.statusReceivedDone(_title(item.manifest)));
+      }
+    }
+  }
+
   void _invalidate() {
     _inboxCache = null;
     _transfersCache = null;
@@ -704,6 +782,11 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           phase: _snapshotPhase(item),
           totalBytes: item.manifest.totalBytes,
           transferredBytes: item.durableBytes,
+          bytesPerSecond: _speed(
+            'in:${item.transferId}',
+            item.durableBytes,
+            item.state == core.TransferState.transferring,
+          ),
           createdAt: item.createdAt,
           fileCount: item.files.length,
           detail: allMissing ? _l.receivedFilesMissing : _snapshotDetail(item),
@@ -750,6 +833,11 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           phase: phase,
           totalBytes: job.manifest.totalBytes,
           transferredBytes: snapshot?.durableBytes ?? 0,
+          bytesPerSecond: _speed(
+            'out:${job.id}',
+            snapshot?.durableBytes ?? 0,
+            phase == TransferPhase.transferring,
+          ),
           createdAt: job.createdAt,
           fileCount: job.manifest.files.length,
           detail:
@@ -1176,6 +1264,9 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     job.snapshot = snapshot;
     switch (snapshot.state) {
       case core.TransferState.completed:
+        if (job.localState != 'completed') {
+          _setStatus(_l.statusSentDone(_title(job.manifest)));
+        }
         job.localState = 'completed';
       case core.TransferState.cancelled:
         job.localState = 'cancelled';
@@ -1540,9 +1631,19 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         for (final endpoint in candidates) {
           final client = core.CoreClient.forPeer(peer, endpoint: endpoint);
           try {
-            await client.capabilities().timeout(const Duration(seconds: 3));
-            if (_trusted!.byId(peer.peerId) == null) break;
-            await _trusted!.updateEndpoint(peer.peerId, endpoint);
+            final caps = await client.capabilities().timeout(
+              const Duration(seconds: 3),
+            );
+            final current = _trusted!.byId(peer.peerId);
+            if (current == null) break;
+            // Write the protected store only when something changed.
+            if (current.endpoint != endpoint) {
+              await _trusted!.updateEndpoint(peer.peerId, endpoint);
+            }
+            final name = caps['displayName'];
+            if (name is String) {
+              await _trusted!.updateDisplayName(peer.peerId, name);
+            }
             final found = _discovered
                 .where((item) => item.endpoint == endpoint)
                 .firstOrNull;

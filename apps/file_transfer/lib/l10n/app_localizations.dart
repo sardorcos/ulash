@@ -2313,6 +2313,30 @@ abstract class AppLocalizations {
   /// In ru, this message translates to:
   /// **'Операция остановлена (код {code}). Данные не отмечены как успешно переданные.'**
   String errWithCode(String code);
+
+  /// No description provided for @statusDeviceKeysReset.
+  ///
+  /// In ru, this message translates to:
+  /// **'Ключи устройства сброшены. Подключите свои устройства заново по QR-коду.'**
+  String get statusDeviceKeysReset;
+
+  /// No description provided for @statusReceivedDone.
+  ///
+  /// In ru, this message translates to:
+  /// **'Файлы получены: {title}'**
+  String statusReceivedDone(String title);
+
+  /// No description provided for @statusSentDone.
+  ///
+  /// In ru, this message translates to:
+  /// **'Доставлено: {title}'**
+  String statusSentDone(String title);
+
+  /// No description provided for @etaLeft.
+  ///
+  /// In ru, this message translates to:
+  /// **'осталось {value}'**
+  String etaLeft(String value);
 }
 
 class _AppLocalizationsDelegate

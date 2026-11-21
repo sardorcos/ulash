@@ -367,5 +367,9 @@
   "errFormat": "Invalid QR code or unsupported data format.",
   "errFileSystem": "Could not read or save the file. Check access and free space.",
   "errUnknown": "Something went wrong. Try again. If the problem continues, send the diagnostics log from Settings.",
-  "errWithCode": "The operation stopped (code {code}). Data was not marked as transferred."
+  "errWithCode": "The operation stopped (code {code}). Data was not marked as transferred.",
+  "statusDeviceKeysReset": "Device keys were reset. Pair your devices again with a QR code.",
+  "statusReceivedDone": "Files received: {title}",
+  "statusSentDone": "Delivered: {title}",
+  "etaLeft": "{value} left"
 }

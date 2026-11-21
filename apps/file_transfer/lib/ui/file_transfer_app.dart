@@ -1297,6 +1297,14 @@ class _TransferShellState extends State<_TransferShell> {
     );
   }
 
+  static String _formatEta(double seconds) {
+    final total = seconds.isFinite ? seconds.ceil().clamp(1, 359999) : 359999;
+    final h = total ~/ 3600;
+    final m = (total % 3600) ~/ 60;
+    final sec = (total % 60).toString().padLeft(2, '0');
+    return h > 0 ? '$h:${m.toString().padLeft(2, '0')}:$sec' : '$m:$sec';
+  }
+
   Future<void> _confirmClearHistory() async {
     final accepted = await showDialog<bool>(
       context: context,
@@ -1504,7 +1512,17 @@ class _TransferShellState extends State<_TransferShell> {
                   item.bytesPerSecond! > 0 &&
                   item.phase == TransferPhase.transferring)
                 Text(
-                  l.speedPerSecond(formatBytes(l, item.bytesPerSecond!)),
+                  [
+                    l.speedPerSecond(formatBytes(l, item.bytesPerSecond!)),
+                    if (item.totalBytes > item.transferredBytes)
+                      l.etaLeft(
+                        _formatEta(
+                          (item.totalBytes - item.transferredBytes) /
+                              item.bytesPerSecond!,
+                        ),
+                      ),
+                  ].join(' · '),
+                  key: Key('speed-${item.id}'),
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
             ],

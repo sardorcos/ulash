@@ -154,6 +154,8 @@ final class CoreHost {
   Map<String, dynamic> get capabilities => {
     'protocolMajor': 1,
     'protocolMinor': 0,
+    // Authenticated, pinned response: lets paired peers pick up a rename.
+    'displayName': identity.displayName,
     'canHostForeground': true,
     'canPushClient': true,
     'canPullClient': false,

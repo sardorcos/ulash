@@ -1344,4 +1344,23 @@ class AppLocalizationsRu extends AppLocalizations {
   String errWithCode(String code) {
     return 'Операция остановлена (код $code). Данные не отмечены как успешно переданные.';
   }
+
+  @override
+  String get statusDeviceKeysReset =>
+      'Ключи устройства сброшены. Подключите свои устройства заново по QR-коду.';
+
+  @override
+  String statusReceivedDone(String title) {
+    return 'Файлы получены: $title';
+  }
+
+  @override
+  String statusSentDone(String title) {
+    return 'Доставлено: $title';
+  }
+
+  @override
+  String etaLeft(String value) {
+    return 'осталось $value';
+  }
 }

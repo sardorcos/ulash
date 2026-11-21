@@ -406,4 +406,30 @@ void main() {
     }),
     timeout: const Timeout(Duration(seconds: 60)),
   );
+
+  test(
+    'a rename reaches already paired devices over the pinned connection',
+    () => _realNetwork(() async {
+      final sender = await _Node.create('Sender');
+      final receiver = await _Node.create('Receiver');
+      try {
+        await _pair(sender.controller, receiver.controller);
+        await receiver.controller.renameDevice('Office PC');
+        expect(receiver.controller.errorMessage, isNull);
+        await _waitUntil(() => receiver.controller.receivingEnabled,
+            reason: 'host restarted after rename');
+        await sender.controller.refreshPeers();
+        await _waitUntil(
+          () => sender.controller.peers.any(
+            (peer) => peer.isTrusted && peer.name == 'Office PC',
+          ),
+          reason: 'peer name updated from authenticated capabilities',
+        );
+      } finally {
+        await sender.close();
+        await receiver.close();
+      }
+    }),
+    timeout: const Timeout(Duration(seconds: 60)),
+  );
 }

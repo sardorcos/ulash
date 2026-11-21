@@ -1346,4 +1346,23 @@ class AppLocalizationsUz extends AppLocalizations {
   String errWithCode(String code) {
     return 'Amal toʻxtatildi (kod $code). Maʼlumotlar muvaffaqiyatli uzatilgan deb belgilanmadi.';
   }
+
+  @override
+  String get statusDeviceKeysReset =>
+      'Qurilma kalitlari tiklandi. Qurilmalaringizni QR-kod orqali qayta ulang.';
+
+  @override
+  String statusReceivedDone(String title) {
+    return 'Fayllar qabul qilindi: $title';
+  }
+
+  @override
+  String statusSentDone(String title) {
+    return 'Yetkazildi: $title';
+  }
+
+  @override
+  String etaLeft(String value) {
+    return '$value qoldi';
+  }
 }

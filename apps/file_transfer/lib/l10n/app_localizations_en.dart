@@ -1340,4 +1340,23 @@ class AppLocalizationsEn extends AppLocalizations {
   String errWithCode(String code) {
     return 'The operation stopped (code $code). Data was not marked as transferred.';
   }
+
+  @override
+  String get statusDeviceKeysReset =>
+      'Device keys were reset. Pair your devices again with a QR code.';
+
+  @override
+  String statusReceivedDone(String title) {
+    return 'Files received: $title';
+  }
+
+  @override
+  String statusSentDone(String title) {
+    return 'Delivered: $title';
+  }
+
+  @override
+  String etaLeft(String value) {
+    return '$value left';
+  }
 }

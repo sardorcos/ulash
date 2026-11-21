@@ -45,6 +45,17 @@ final class TrustedPeer {
   final DateTime pairedAt;
   final Uri? endpoint;
 
+  TrustedPeer withDisplayName(String value) => TrustedPeer(
+    peerId: peerId,
+    displayName: value,
+    serverPin: serverPin,
+    outgoingToken: outgoingToken,
+    inboundTokenDigest: inboundTokenDigest,
+    pairingId: pairingId,
+    pairedAt: pairedAt,
+    endpoint: endpoint,
+  );
+
   TrustedPeer withEndpoint(Uri value) => TrustedPeer(
     peerId: peerId,
     displayName: displayName,
@@ -170,6 +181,37 @@ final class TrustedPeerStore {
       rethrow;
     }
   });
+
+  /// Applies a name reported by the peer over its pinned, authenticated
+  /// connection (the user renamed that device). Invalid names are ignored.
+  Future<bool> updateDisplayName(String peerId, String name) =>
+      _serialResult(() async {
+        _ensureLoaded();
+        final peer = _peers[peerId];
+        final clean = name.trim();
+        if (peer == null ||
+            clean.isEmpty ||
+            clean.length > 80 ||
+            clean.runes.any((rune) => rune < 32 || rune == 127) ||
+            clean == peer.displayName) {
+          return false;
+        }
+        _peers[peerId] = peer.withDisplayName(clean);
+        try {
+          await _persist();
+          _changes.add(null);
+          return true;
+        } catch (_) {
+          _peers[peerId] = peer;
+          rethrow;
+        }
+      });
+
+  Future<T> _serialResult<T>(Future<T> Function() action) {
+    final result = _tail.then((_) => action());
+    _tail = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    return result;
+  }
 
   Future<void> revoke(String peerId) => _serial(() async {
     _ensureLoaded();

@@ -367,5 +367,9 @@
   "errFormat": "Notoʻgʻri QR-kod yoki qoʻllab-quvvatlanmaydigan maʼlumot formati.",
   "errFileSystem": "Faylni oʻqib yoki saqlab boʻlmadi. Ruxsat va boʻsh joyni tekshiring.",
   "errUnknown": "Nimadir notoʻgʻri ketdi. Amalni takrorlang. Xato qaytarilsa, sozlamalardan diagnostika jurnalini yuboring.",
-  "errWithCode": "Amal toʻxtatildi (kod {code}). Maʼlumotlar muvaffaqiyatli uzatilgan deb belgilanmadi."
+  "errWithCode": "Amal toʻxtatildi (kod {code}). Maʼlumotlar muvaffaqiyatli uzatilgan deb belgilanmadi.",
+  "statusDeviceKeysReset": "Qurilma kalitlari tiklandi. Qurilmalaringizni QR-kod orqali qayta ulang.",
+  "statusReceivedDone": "Fayllar qabul qilindi: {title}",
+  "statusSentDone": "Yetkazildi: {title}",
+  "etaLeft": "{value} qoldi"
 }

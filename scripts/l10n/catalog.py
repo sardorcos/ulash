@@ -399,3 +399,9 @@ e('errFormat', 'Некорректный QR-код или неподдержив
 e('errFileSystem', 'Не удалось прочитать или сохранить файл. Проверьте доступ и свободное место.', 'Faylni oʻqib yoki saqlab boʻlmadi. Ruxsat va boʻsh joyni tekshiring.', 'Could not read or save the file. Check access and free space.')
 e('errUnknown', 'Что-то пошло не так. Повторите действие. Если ошибка повторяется, отправьте журнал диагностики из настроек.', 'Nimadir notoʻgʻri ketdi. Amalni takrorlang. Xato qaytarilsa, sozlamalardan diagnostika jurnalini yuboring.', 'Something went wrong. Try again. If the problem continues, send the diagnostics log from Settings.')
 e('errWithCode', 'Операция остановлена (код {code}). Данные не отмечены как успешно переданные.', 'Amal toʻxtatildi (kod {code}). Maʼlumotlar muvaffaqiyatli uzatilgan deb belgilanmadi.', 'The operation stopped (code {code}). Data was not marked as transferred.', code=S)
+
+# ---------- 1.0 self-audit additions ----------
+e('statusDeviceKeysReset', 'Ключи устройства сброшены. Подключите свои устройства заново по QR-коду.', 'Qurilma kalitlari tiklandi. Qurilmalaringizni QR-kod orqali qayta ulang.', 'Device keys were reset. Pair your devices again with a QR code.')
+e('statusReceivedDone', 'Файлы получены: {title}', 'Fayllar qabul qilindi: {title}', 'Files received: {title}', title=S)
+e('statusSentDone', 'Доставлено: {title}', 'Yetkazildi: {title}', 'Delivered: {title}', title=S)
+e('etaLeft', 'осталось {value}', '{value} qoldi', '{value} left', value=S)

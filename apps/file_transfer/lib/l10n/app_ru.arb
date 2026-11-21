@@ -798,5 +798,30 @@
         "type": "String"
       }
     }
+  },
+  "statusDeviceKeysReset": "Ключи устройства сброшены. Подключите свои устройства заново по QR-коду.",
+  "statusReceivedDone": "Файлы получены: {title}",
+  "@statusReceivedDone": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      }
+    }
+  },
+  "statusSentDone": "Доставлено: {title}",
+  "@statusSentDone": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      }
+    }
+  },
+  "etaLeft": "осталось {value}",
+  "@etaLeft": {
+    "placeholders": {
+      "value": {
+        "type": "String"
+      }
+    }
   }
 }
