@@ -3,7 +3,6 @@
 import 'dart:io';
 import 'dart:ui' as ui;
 
-import 'package:file_transfer/ui/app_controller.dart';
 import 'package:file_transfer/ui/file_transfer_app.dart';
 // Test the bundled Material API used by the compatible application shell.
 // ignore: deprecated_member_use
@@ -13,31 +12,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:transfer_core/transfer_core.dart';
 
-import 'ui_test.dart' show TestController;
-
-/// Empty view state with a real temporary TLS host and a real invitation.
-/// No device, file, transfer, history, or progress fixtures are inserted.
-class CaptureController extends TestController {
-  CaptureController(this.host) {
-    deviceName = host.identity.displayName;
-    networkState = NetworkState.ready;
-    receivingEnabled = true;
-  }
-  final CoreHost host;
-
-  @override
-  String get saveLocationLabel => 'Хранилище приложения';
-
-  @override
-  Future<void> createInvitation() async {
-    final value = host.createInvite();
-    invitation = PairingInvitation(
-      payload: value.encode(),
-      expiresAt: DateTime.now().add(Duration(seconds: value.ttlSeconds)),
-    );
-    notifyListeners();
-  }
-}
+import 'package:file_transfer/services/app_runtime.dart';
+import 'package:file_transfer/services/transfer_app_controller.dart';
 
 void main() {
   testWidgets('capture real widget previews with an ephemeral TLS host', (
@@ -66,19 +42,23 @@ void main() {
     });
 
     late Directory sessionDirectory;
-    late DurableInbox inbox;
-    late TrustedPeerStore peers;
-    late CoreHost host;
+    late TransferAppController controller;
     final secrets = MemorySecretStore();
     await tester.runAsync(() async {
       sessionDirectory = await Directory.systemTemp.createTemp('transfer-ui-');
-      final identity = await DeviceIdentity.generate(displayName: 'Linux');
-      peers = TrustedPeerStore(secrets);
-      inbox = await DurableInbox.open(sessionDirectory);
-      host = CoreHost(identity: identity, peers: peers, inbox: inbox);
-      await host.start();
+      controller = TransferAppController(
+        runtime: AppRuntime(
+          secrets: secrets,
+          storageDirectory: () async => sessionDirectory,
+          ensurePermission: () async => true,
+          addresses: () async => ['127.0.0.1'],
+          listenAddress: InternetAddress.loopbackIPv4,
+          initialDeviceName: 'Linux',
+        ),
+      );
+      await controller.initialize();
+      expect(controller.errorMessage, isNull);
     });
-    final controller = CaptureController(host);
     final boundary = GlobalKey();
     final output = Directory('../../docs/previews');
     output.createSync(recursive: true);
@@ -109,6 +89,9 @@ void main() {
       );
       await tester.pumpAndSettle();
       await capture('desktop-send');
+      await tester.tap(find.byKey(const Key('nav-settings')));
+      await tester.pumpAndSettle();
+      await capture('desktop-storage');
       await tester.tap(find.byKey(const Key('nav-receive')));
       await tester.pumpAndSettle();
       await capture('desktop-receive');
@@ -123,6 +106,11 @@ void main() {
       await tester.binding.setSurfaceSize(const Size(390, 844));
       await tester.pumpAndSettle();
       await capture('mobile-receive');
+      await tester.tap(find.byKey(const Key('nav-settings')));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('refresh-storage')));
+      await tester.pumpAndSettle();
+      await capture('mobile-storage');
       await tester.tap(find.byKey(const Key('nav-send')));
       await tester.pumpAndSettle();
       await capture('mobile-send');
@@ -138,11 +126,9 @@ void main() {
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
       await tester.binding.setSurfaceSize(null);
-      controller.dispose();
       await tester.runAsync(() async {
-        await host.close();
-        await inbox.close();
-        await peers.close();
+        await controller.shutdown();
+        controller.dispose();
         secrets.clear();
         await sessionDirectory.delete(recursive: true);
       });

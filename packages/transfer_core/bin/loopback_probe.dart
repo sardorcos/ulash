@@ -14,6 +14,8 @@ import 'package:transfer_core/src/security/device_identity.dart';
 import 'package:transfer_core/src/security/secret_store.dart';
 import 'package:transfer_core/src/security/trusted_peer_store.dart';
 import 'package:transfer_core/src/storage/durable_inbox.dart';
+import 'package:transfer_core/src/storage/durable_outbox.dart';
+import 'package:transfer_core/src/storage/storage_budget.dart';
 import 'package:uuid/uuid.dart';
 
 /// An actual HTTPS + SQLite + disk probe, not a UI progress simulation.
@@ -80,9 +82,11 @@ Future<Map<String, dynamic>> _run(int mib, String? outputPath) async {
   final source = File(p.join(output.path, 'source.bin'));
   final reportFile = File(p.join(output.path, 'result.json'));
   final inboxRoot = Directory(p.join(output.path, 'receiver'));
+  final outboxRoot = Directory(p.join(output.path, 'sender'));
   if (await source.exists() ||
       await reportFile.exists() ||
-      await inboxRoot.exists()) {
+      await inboxRoot.exists() ||
+      await outboxRoot.exists()) {
     throw const FormatException(
       'Use a fresh output directory; existing files are not overwritten',
     );
@@ -108,9 +112,21 @@ Future<Map<String, dynamic>> _run(int mib, String? outputPath) async {
   final receiverPeers = TrustedPeerStore(receiverSecrets);
   CoreHost? host;
   DurableInbox? inbox;
+  DurableOutbox? outbox;
   CoreClient? client;
   HttpClient? raw;
+  // Both logical peers use this Linux filesystem. No native capacity adapter
+  // exists in this CLI; null is deliberate and must not be advertised as free
+  // space. The real temporary quota and reservation bookkeeping still run.
+  StorageBudget newBudget() => StorageBudget(availableBytes: () async => null);
+  var budget = newBudget();
   try {
+    outbox = await DurableOutbox.open(outboxRoot, budget: budget);
+    var prepared = await outbox.stageFile(source);
+    if (prepared.manifest.sha256 != sourceHash ||
+        prepared.manifest.sizeBytes != totalBytes) {
+      throw StateError('Prepared copy differs from the original');
+    }
     final senderIdentity = await DeviceIdentity.loadOrCreate(
       senderSecrets,
       displayName: 'Probe sender',
@@ -119,7 +135,11 @@ Future<Map<String, dynamic>> _run(int mib, String? outputPath) async {
       receiverSecrets,
       displayName: 'Probe receiver',
     );
-    inbox = await DurableInbox.open(inboxRoot, checkpointBytes: checkpoint);
+    inbox = await DurableInbox.open(
+      inboxRoot,
+      checkpointBytes: checkpoint,
+      budget: budget,
+    );
     host = CoreHost(
       identity: receiverIdentity,
       peers: receiverPeers,
@@ -151,18 +171,11 @@ Future<Map<String, dynamic>> _run(int mib, String? outputPath) async {
       peers: senderPeers,
     );
     if (peer == null) throw StateError('Approved pairing did not complete');
-    final fileId = const Uuid().v4();
+    final fileId = prepared.manifest.fileId;
     final transfer = await client.offer(
       TransferManifest(
         requestId: const Uuid().v4(),
-        files: [
-          FileManifest(
-            fileId: fileId,
-            displayName: 'source.bin',
-            sizeBytes: totalBytes,
-            sha256: sourceHash,
-          ),
-        ],
+        files: [prepared.manifest],
       ),
     );
     var consentChecked = false;
@@ -175,6 +188,13 @@ Future<Map<String, dynamic>> _run(int mib, String? outputPath) async {
       throw StateError('Data endpoint was not consent-gated');
     }
     await host.acceptTransfer(transfer.id);
+    final acceptedBudget = await budget.inspect();
+    if (acceptedBudget.temporaryBytes != totalBytes ||
+        acceptedBudget.reservedBytes != totalBytes) {
+      throw StateError(
+        'Source copy and incoming reservation were not both accounted',
+      );
+    }
     final position = await client.headFile(transfer.id, fileId);
     raw = createPinnedHttpClient(endpoint, receiverIdentity.serverPin);
     final request = await raw.openUrl(
@@ -193,7 +213,9 @@ Future<Map<String, dynamic>> _run(int mib, String? outputPath) async {
     unawaited(request.done.then<void>((_) {}, onError: (Object _) {}));
     // Send > one durable checkpoint, then interrupt a deliberately incomplete
     // Content-Length body. This is a genuine TCP/TLS interruption.
-    await request.addStream(source.openRead(0, checkpoint + oneMiB ~/ 2));
+    await request.addStream(
+      File(prepared.path).openRead(0, checkpoint + oneMiB ~/ 2),
+    );
     await request.flush();
     final firstInbox = inbox;
     await _until(
@@ -216,9 +238,25 @@ Future<Map<String, dynamic>> _run(int mib, String? outputPath) async {
     host = null;
     await inbox.close();
     inbox = null;
+    await outbox.close();
+    outbox = null;
+    budget = newBudget();
     // Open the receiver from its actual SQLite and .part files. A new listener
     // address is allowed, while the pinned device identity remains unchanged.
-    inbox = await DurableInbox.open(inboxRoot, checkpointBytes: checkpoint);
+    // Reopen the sender too, so all quota claims are rebuilt from actual files
+    // and journals rather than reused from the previous budget object.
+    outbox = await DurableOutbox.open(outboxRoot, budget: budget);
+    prepared = outbox.get(fileId);
+    inbox = await DurableInbox.open(
+      inboxRoot,
+      checkpointBytes: checkpoint,
+      budget: budget,
+    );
+    final recoveredBudget = await budget.inspect();
+    if (recoveredBudget.temporaryBytes != totalBytes + beforeRestart ||
+        recoveredBudget.reservedBytes != totalBytes - beforeRestart) {
+      throw StateError('Restart did not reconstruct exact storage obligations');
+    }
     host = CoreHost(
       identity: receiverIdentity,
       peers: receiverPeers,
@@ -234,7 +272,7 @@ Future<Map<String, dynamic>> _run(int mib, String? outputPath) async {
     await client.uploadFile(
       transferId: transfer.id,
       fileId: fileId,
-      source: source,
+      source: File(prepared.path),
     );
     final received = inbox.status(transfer.id).files.single;
     if (received.state != FileState.committed || received.finalPath == null) {
@@ -245,6 +283,30 @@ Future<Map<String, dynamic>> _run(int mib, String? outputPath) async {
     final sinkBytes = await sink.length();
     if (sourceHash != sinkHash || totalBytes != sinkBytes) {
       throw StateError('Independent sink reread did not match source');
+    }
+    // A wire receipt, not a local socket completion, authorizes source cleanup.
+    final receipt = await client.transferStatus(transfer.id);
+    if (receipt.state != TransferState.completed ||
+        receipt.files.length != 1 ||
+        receipt.files.single.state != FileState.committed ||
+        receipt.files.single.offset != totalBytes ||
+        jsonEncode(receipt.manifest.toJson()) !=
+            jsonEncode(transfer.manifest.toJson()) ||
+        jsonEncode(receipt.files.single.manifest.toJson()) !=
+            jsonEncode(prepared.manifest.toJson())) {
+      throw StateError('No complete committed receipt for the prepared source');
+    }
+    final committedBudget = await budget.inspect();
+    if (committedBudget.reservedBytes != 0 ||
+        committedBudget.temporaryBytes != totalBytes) {
+      throw StateError(
+        'Committed receive file remained charged to temporary quota',
+      );
+    }
+    await outbox.remove(fileId);
+    final finalBudget = await budget.inspect();
+    if (finalBudget.reservedBytes != 0 || finalBudget.temporaryBytes != 0) {
+      throw StateError('Verified source cleanup left quota obligations');
     }
     final result = <String, dynamic>{
       'status': 'passed',
@@ -262,6 +324,14 @@ Future<Map<String, dynamic>> _run(int mib, String? outputPath) async {
       'manual_pair_approval_checked': true,
       'receiver_consent_checked': consentChecked,
       'receiver_state': received.state.wireName,
+      'prepared_source_verified': true,
+      'committed_wire_receipt_checked': true,
+      'prepared_source_deleted_after_receipt': true,
+      'capacity_adapter': 'unavailable in Linux CLI; availableBytes is null',
+      'budget_at_acceptance': _budgetJson(acceptedBudget),
+      'budget_after_restart': _budgetJson(recoveredBudget),
+      'budget_after_receive_commit': _budgetJson(committedBudget),
+      'budget_after_source_cleanup': _budgetJson(finalBudget),
       'elapsed_seconds': started.elapsedMilliseconds / 1000,
       'credentials': 'ephemeral memory only; not included in result',
       'report_path': reportFile.absolute.path,
@@ -276,12 +346,21 @@ Future<Map<String, dynamic>> _run(int mib, String? outputPath) async {
     client?.close();
     await host?.close();
     await inbox?.close();
+    await outbox?.close();
     await senderPeers.close();
     await receiverPeers.close();
     senderSecrets.clear();
     receiverSecrets.clear();
   }
 }
+
+Map<String, Object?> _budgetJson(StorageBudgetSnapshot snapshot) => {
+  'available_bytes': snapshot.availableBytes,
+  'temporary_bytes': snapshot.temporaryBytes,
+  'future_reserved_bytes': snapshot.reservedBytes,
+  'safety_reserve_bytes': snapshot.safetyReserveBytes,
+  'temporary_quota_bytes': snapshot.temporaryQuotaBytes,
+};
 
 Future<void> _until(bool Function() predicate) async {
   final timer = Stopwatch()..start();

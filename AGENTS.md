@@ -23,3 +23,8 @@ Read `docs/IMPLEMENTATION_STATUS_RU.md` and the relevant part of
 - Do not commit keys, tokens, QR invitations, keystores, runtime-data or build caches.
 - The repository has no production signing credentials. Device installation,
   signed release publication and customer distribution are separate actions.
+
+- Use one StorageBudget for inbox and outbox on the same volume. Unknown native free space stays null; never convert it into an invented capacity.
+- Keep committed network receipt and native export state separate. Recover an unfinished export as unknown and never automatically repeat it.
+- Explicit cleanup may remove only the previewed, still-unreferenced outgoing copies after the user confirms the documented last-copy consequence. Never sweep completed received files.
+- The delivered 0.2 debug Android ID is .alpha02 because its signer differs from 0.1. Preserve installed user data; never suggest uninstalling a prior app to mask a signing-key mismatch.

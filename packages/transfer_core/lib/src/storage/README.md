@@ -6,7 +6,7 @@ has been completed.
 
 ## Entry points
 
-- `DurableInbox.open(Directory, {checkpointBytes, checkpointInterval})`
+- `DurableInbox.open(Directory, {checkpointBytes, checkpointInterval, budget})`
 - `createOffer(TransferManifest, {required peerId})`
 - `accept`, `reject`, `cancel`, `pause`, `resume` return `TransferSnapshot`.
 - `pause` and `resume` accept `bySource: true`; the default is the local sink.
@@ -19,7 +19,7 @@ has been completed.
   exact complete body triggers hash verification and sink commit automatically.
 - `finishFile(transferId, fileId, {incarnation})` verifies a complete durable file
   or an accepted empty file. It is idempotent after commit.
-- `DurableOutbox.open(Directory)` provides `stageFile`, `stageStream`, `get`,
+- `DurableOutbox.open(Directory, {budget})` provides `stageFile`, `stageStream`, `get`,
   `list`, `read(fileId, {offset})`, `remove`, `close`.
 - `stageStream` accepts a native provider stream with optional
   `expectedSizeBytes`, `mimeType`, `onProgress`, and `isCancelled` callbacks.
@@ -53,12 +53,57 @@ acquires an in-process lease and nonblocking OS advisory file lock. Cancellation
 and final commit have an explicit sink ordering; an already committed result is
 retained when the rest of its package is cancelled.
 
+## Temporary storage and free-space guard (0.2)
+
+Pass one shared `StorageBudget` to both stores on the same filesystem. Its
+native `availableBytes` callback reports bytes actually available to this app;
+`null` explicitly means that capacity could not be reported. No artificial
+available-space value is substituted. A configured temporary quota still
+applies when the platform cannot report free space.
+
+Defaults are a **128 MiB free-space safety margin** and a **20 GiB temporary
+payload quota**. They are product policy values, not measured performance
+figures. `setTemporaryQuotaBytes` changes the quota atomically; lowering it below
+existing payloads plus outstanding reservations returns
+`TEMP_QUOTA_BELOW_USAGE`, without deleting files or invalidating accepted work.
+
+An incoming batch reserves its full manifest size before persisting consent.
+A known-size outgoing copy reserves its size before creating a partial file;
+an unknown-length provider stream expands its claim before each bounded write.
+Both directions use one serialized accounting queue. Already-written payloads
+count toward the temporary quota but are **not subtracted twice** from OS free
+space. The free-space check includes only future reserved bytes and the margin.
+Checks run at admission, receive-stream start/resume, after at most 4 MiB of
+shared writes or 2 seconds, and whenever an unknown-size stream expands.
+
+`inspect()` returns nullable `availableBytes`, actual temporary payload bytes,
+future reserved bytes, safety margin and quota. The budget counts prepared
+outgoing files and incomplete incoming payloads. It excludes committed receive
+results from the temporary quota; those results still occupy disk space and
+are reflected by the native capacity query. Journals and filesystem allocation
+overhead are outside the payload quota and remain part of OS-used space.
+
+Reservations are rebuilt from journals and actual payload lengths on store
+open, including orphaned payloads. Failed preparation removes only its own
+temporary copy. Cancellation releases a receive reservation only after pending
+writes have stopped and its partial file has been removed. Hash failures retain
+their existing partial data but release future-byte reservations. No automatic
+retention or history deletion is introduced by this guard.
+
+These are application admission reservations, **not OS preallocation**. Other
+processes can consume disk space between checks, and providers can report
+capacity imprecisely. Actual write/flush failures remain handled by the durable
+journal. `DISK_FULL` pauses a receive at its last acknowledged checkpoint and
+does not remove originals or committed results. The per-root filesystem lease
+remains required; all stores for one volume must receive the same budget.
+
 ## Explicit alpha limitations
 
 - Foreground push storage only; no pull receipts, agreed receive resets,
-  background URLSession journal adapter, automatic expiry or disk quota manager.
-- Disk-full errors are handled at write time. A native free-space preflight and
-  reserved-space accounting are not implemented yet.
+  background URLSession journal adapter or automatic expiry.
+- Free-space protection depends on the injected native capacity adapter. These
+  core tests use deterministic capacity simulators and real local payload files;
+  they do not replace physical-device capacity tests.
 - `stageFile` compares source metadata and a second source hash to detect normal
   concurrent edits. This is not an OS-level coordinated snapshot of an actively
   edited provider document. `stageStream` snapshots exactly the supplied bytes;
@@ -88,6 +133,13 @@ retained when the rest of its package is cancelled.
 consent, interruption/resume, missing-prefix refusal, commit-intent recovery,
 hash failures, empty files, pause ownership, retention of committed files,
 source mutation detection, provider streams and malicious staging symlinks.
+
+`test/storage_budget_test.dart` adds insufficient-disk consent rejection,
+all-or-nothing batch quota admission, concurrent inbox/outbox reservations,
+no double-counting during writes, retained completed files, late space loss
+with checkpoint recovery, unknown-size provider limits, restart reconstruction,
+quota lowering, empty files at the reserve margin, cancelled preparation,
+orphan accounting and safe deletion refusal through a symlinked parent.
 
 Recovery tests deliberately construct the filesystem/journal states that exist
 between write/flush/commit/rename operations. They are not an exhaustive power

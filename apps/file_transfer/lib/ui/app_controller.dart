@@ -24,6 +24,8 @@ abstract class AppController extends ChangeNotifier {
   String? get networkDetail => null;
   String get saveLocationLabel => 'Хранилище приложения';
   String get versionLabel => 'Альфа-версия';
+  StorageOverview? get storageOverview => null;
+  bool get storageRefreshing => false;
 
   Future<void> chooseFiles();
   Future<void> removeSource(String sourceId);
@@ -54,6 +56,13 @@ abstract class AppController extends ChangeNotifier {
       Future.error(UnsupportedError('Сканирование QR пока недоступно.'));
   Future<void> addSourcePaths(List<String> paths) =>
       Future.error(UnsupportedError('Перетаскивание пока недоступно.'));
+  Future<void> exportReceivedFile(String transferId, String fileId) =>
+      Future.error(UnsupportedError('Сохранение копии пока недоступно.'));
+  Future<void> refreshStorage() async {}
+  Future<void> setTemporaryQuota(int bytes) =>
+      Future.error(UnsupportedError('Изменение лимита пока недоступно.'));
+  Future<void> clearUnusedTemporary(List<String> fileIds) =>
+      Future.error(UnsupportedError('Очистка пока недоступна.'));
 }
 
 enum NetworkState { starting, ready, unavailable, permissionRequired }
@@ -87,6 +96,8 @@ class AppCapabilities {
     this.saveLocation = false,
     this.qrScanner = false,
     this.desktopDrop = false,
+    this.fileExport = false,
+    this.storageManagement = false,
   });
 
   final bool fileSelection;
@@ -97,6 +108,8 @@ class AppCapabilities {
   final bool saveLocation;
   final bool qrScanner;
   final bool desktopDrop;
+  final bool fileExport;
+  final bool storageManagement;
 }
 
 @immutable
@@ -154,6 +167,7 @@ class TransferItem {
     this.canResume = false,
     this.canCancel = false,
     this.canOpen = false,
+    this.canExport = false,
     this.receivedFiles = const [],
   });
 
@@ -173,6 +187,7 @@ class TransferItem {
   final bool canResume;
   final bool canCancel;
   final bool canOpen;
+  final bool canExport;
 
   /// Only verified, committed files that the user can open explicitly.
   final List<ReceivedFile> receivedFiles;
@@ -189,11 +204,59 @@ class ReceivedFile {
     required this.id,
     required this.name,
     required this.bytes,
+    this.exportPhase = ExportPhase.notExported,
+    this.exportDestination,
+    this.exportDetail,
   });
 
   final String id;
   final String name;
   final int bytes;
+  final ExportPhase exportPhase;
+  final String? exportDestination;
+  final String? exportDetail;
+}
+
+enum ExportPhase {
+  notExported,
+  exporting,
+  exported,
+  cancelled,
+  failed,
+  unknown,
+}
+
+@immutable
+class TemporaryFileItem {
+  const TemporaryFileItem({
+    required this.id,
+    required this.name,
+    required this.bytes,
+  });
+  final String id;
+  final String name;
+  final int bytes;
+}
+
+@immutable
+class StorageOverview {
+  const StorageOverview({
+    required this.availableBytes,
+    required this.temporaryBytes,
+    required this.reservedBytes,
+    required this.safetyReserveBytes,
+    required this.temporaryQuotaBytes,
+    required this.unusedFiles,
+    required this.checkedAt,
+  });
+  final int? availableBytes;
+  final int temporaryBytes;
+  final int reservedBytes;
+  final int safetyReserveBytes;
+  final int? temporaryQuotaBytes;
+  final List<TemporaryFileItem> unusedFiles;
+  final DateTime checkedAt;
+  int get unusedBytes => unusedFiles.fold(0, (sum, file) => sum + file.bytes);
 }
 
 @immutable

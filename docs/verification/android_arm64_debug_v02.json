@@ -1,0 +1,73 @@
+{
+  "verified_at_utc": "2026-11-21T01:59:02.795976+00:00",
+  "artifact": "apps/file_transfer/build/app/outputs/flutter-apk/app-arm64-v8a-debug.apk",
+  "size_bytes": 119676406,
+  "sha256": "aab351e73483695c3c4c5566026edda23ffa8f8604ec36effc428e5c59338b72",
+  "package_name": "uz.sardor.file_transfer.alpha02",
+  "application_label": "Передача файлов α0.2",
+  "version_name": "0.2.0",
+  "version_code": 2002,
+  "launchable_activity": "uz.sardor.file_transfer.MainActivity",
+  "provider_authorities": [
+    "uz.sardor.file_transfer.alpha02.fileProvider.com.crazecoder.openfile",
+    "uz.sardor.file_transfer.alpha02.mlkitinitprovider",
+    "uz.sardor.file_transfer.alpha02.androidx-startup"
+  ],
+  "min_sdk": 29,
+  "target_sdk": 37,
+  "native_abis": [
+    "arm64-v8a"
+  ],
+  "permissions": [
+    "android.permission.INTERNET",
+    "android.permission.ACCESS_NETWORK_STATE",
+    "android.permission.ACCESS_WIFI_STATE",
+    "android.permission.CHANGE_WIFI_MULTICAST_STATE",
+    "android.permission.ACCESS_LOCAL_NETWORK",
+    "android.permission.CAMERA",
+    "uz.sardor.file_transfer.alpha02.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+  ],
+  "broad_storage_permissions_present": false,
+  "debuggable": true,
+  "allow_backup": false,
+  "uses_cleartext_traffic": false,
+  "zip_crc_check": "passed",
+  "apksigner_verify_exit_code": 0,
+  "signature_scheme_v2_verified": true,
+  "signer_certificate_sha256": "1106f42aa8cc0cf9b558233af7cc3e70169b7ec7537a90dc858d6d09395f5f8e",
+  "previous_alpha_signer_certificate_sha256": "d22f63f220a458b4d5734f5f983aa5c2fcfccd8dffac9b8ca0998fc8142be662",
+  "same_signer_as_alpha_0_1": false,
+  "installation_mode": "separate_application_preserving_alpha_0_1_data",
+  "old_data_migration_implemented": false,
+  "source_dart_files_count": 30,
+  "source_dart_tree_sha256": "842e9cc867ba73f7817778329451aa8a1d0a434430a61a863037103a68336377",
+  "production_source_inputs_count": 119,
+  "production_source_inputs_sha256": "55f14c03f0b46df2572c83a807ef88e0a45454494214e18c380288190870fbd0",
+  "production_source_before_after_match": true,
+  "source_snapshot_captured_before_build_utc": "2026-11-21T01:57:29.213179+00:00",
+  "source_snapshot_captured_after_build_utc": "2026-11-21T01:59:01.205919+00:00",
+  "source_hash_algorithm": "SHA-256 of sorted UTF-8 relative path + NUL + file bytes + NUL",
+  "command": "flutter --no-version-check build apk --debug --no-pub --target-platform android-arm64 --split-per-abi",
+  "build_exit_code": 0,
+  "gradle_task_elapsed_seconds": 64.1,
+  "build_resource_profile": {
+    "jvm_max_heap": "3GiB",
+    "jvm_max_metaspace": "1GiB",
+    "workers_max": 2,
+    "kotlin_compiler_strategy": "in-process"
+  },
+  "flutter_version": "3.50.1",
+  "dart_version": "3.14.0",
+  "java_compiler_version": "21.0.13",
+  "device_installation_tested": false,
+  "physical_device_transfer_tested": false,
+  "native_libraries": [
+    "lib/arm64-v8a/libVkLayer_khronos_validation.so",
+    "lib/arm64-v8a/libbarhopper_v3.so",
+    "lib/arm64-v8a/libdartjni.so",
+    "lib/arm64-v8a/libflutter.so",
+    "lib/arm64-v8a/libimage_processing_util_jni.so",
+    "lib/arm64-v8a/libsqlite3.so",
+    "lib/arm64-v8a/libsurface_util_jni.so"
+  ]
+}

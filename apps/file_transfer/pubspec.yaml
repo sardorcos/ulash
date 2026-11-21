@@ -1,7 +1,7 @@
 name: file_transfer
 description: Private local file sharing for iOS, Android and Windows.
 publish_to: none
-version: 0.1.0+1
+version: 0.2.0+2
 environment:
   sdk: '>=3.13.5 <4.0.0'
 dependencies:
@@ -22,8 +22,8 @@ dependencies:
   path: ^1.9.1
   uuid: ^4.6.0
   sqlite3: ^3.9.1
-dev_dependencies:
   crypto: ^3.0.8
+dev_dependencies:
   flutter_test:
     sdk: flutter
   integration_test:

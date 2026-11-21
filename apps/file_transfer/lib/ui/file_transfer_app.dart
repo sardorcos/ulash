@@ -1215,10 +1215,28 @@ class _TransferShellState extends State<_TransferShell> {
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
+          for (final file in item.receivedFiles.where(
+            (file) => file.exportPhase != ExportPhase.notExported,
+          )) ...[
+            const SizedBox(height: 8),
+            Text(
+              '${file.name}: ${file.exportDetail ?? ''}'
+              '${file.exportDestination != null && file.exportPhase != ExportPhase.exported ? '\nРанее сохранено: ${file.exportDestination}' : ''}',
+              key: Key('export-status-${file.id}'),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color:
+                    file.exportPhase == ExportPhase.failed ||
+                        file.exportPhase == ExportPhase.unknown
+                    ? scheme.error
+                    : scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
           if (item.canPause ||
               item.canResume ||
               item.canCancel ||
-              item.canOpen) ...[
+              item.canOpen ||
+              item.canExport) ...[
             const SizedBox(height: 12),
             Wrap(
               spacing: 8,
@@ -1253,6 +1271,17 @@ class _TransferShellState extends State<_TransferShell> {
                       item.receivedFiles.length > 1
                           ? 'Открыть файлы'
                           : 'Открыть файл',
+                    ),
+                  ),
+                if (item.canExport)
+                  TextButton.icon(
+                    key: Key('export-${item.id}'),
+                    onPressed: () => _exportReceived(item),
+                    icon: const Icon(Icons.save_alt_rounded, size: 18),
+                    label: Text(
+                      item.receivedFiles.length > 1
+                          ? 'Сохранить копию файла…'
+                          : 'Сохранить копию…',
                     ),
                   ),
               ],
@@ -1305,7 +1334,9 @@ class _TransferShellState extends State<_TransferShell> {
               Padding(
                 padding: const EdgeInsets.only(left: 50, top: 6),
                 child: Text(
-                  'Внешний экспорт доступен после получения файла, если поддерживается платформой.',
+                  c.capabilities.fileExport
+                      ? 'В истории полученных файлов нажмите «Сохранить копию…» и выберите место в системном окне.'
+                      : 'Полученные файлы остаются в приложении. Системное сохранение доступно на поддерживаемых платформах.',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
@@ -1314,6 +1345,8 @@ class _TransferShellState extends State<_TransferShell> {
           ],
         ),
       ),
+      const SizedBox(height: 18),
+      _storagePanel(),
       const SizedBox(height: 18),
       _Panel(
         child: Column(
@@ -1381,6 +1414,167 @@ class _TransferShellState extends State<_TransferShell> {
     ],
   );
 
+  Widget _storagePanel() {
+    final storage = c.storageOverview;
+    final enabled = c.capabilities.storageManagement && !c.isBusy;
+    return _Panel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Expanded(child: _SectionHeader(title: 'Хранилище')),
+              IconButton(
+                key: const Key('refresh-storage'),
+                tooltip: 'Обновить сведения о месте',
+                onPressed: enabled && !c.storageRefreshing
+                    ? () => _run(c.refreshStorage)
+                    : null,
+                icon: const Icon(Icons.refresh_rounded),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          if (storage == null)
+            const Text('Сведения о хранилище пока недоступны.')
+          else ...[
+            _SettingRow(
+              icon: Icons.storage_rounded,
+              title: 'Свободное место',
+              subtitle: storage.availableBytes == null
+                  ? 'Система не сообщила объём. Проверка лимита временных копий работает.'
+                  : '${formatBytes(storage.availableBytes!)} · проверено ${formatDate(storage.checkedAt)}',
+            ),
+            const Divider(height: 28),
+            _SettingRow(
+              icon: Icons.folder_copy_outlined,
+              title: 'Временные копии',
+              subtitle:
+                  '${formatBytes(storage.temporaryBytes)} уже занято; '
+                  '${formatBytes(storage.reservedBytes)} предусмотрено для начатых передач.',
+            ),
+            const SizedBox(height: 14),
+            if (storage.temporaryQuotaBytes != null)
+              LinearProgressIndicator(
+                value:
+                    ((storage.temporaryBytes + storage.reservedBytes) /
+                            storage.temporaryQuotaBytes!)
+                        .clamp(0.0, 1.0),
+                semanticsLabel: 'Использование лимита временного хранилища',
+              ),
+            const SizedBox(height: 12),
+            Text(
+              'Лимит временного хранилища',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                for (final gib in const [5, 10, 20, 50])
+                  ChoiceChip(
+                    key: Key('quota-$gib'),
+                    label: Text('$gib ГиБ'),
+                    selected:
+                        storage.temporaryQuotaBytes == gib * 1024 * 1024 * 1024,
+                    onSelected: enabled
+                        ? (_) => _run(
+                            () => c.setTemporaryQuota(gib * 1024 * 1024 * 1024),
+                          )
+                        : null,
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Перед записью проверяется запас ${formatBytes(storage.safetyReserveBytes)} '
+              'свободного места. Готовые полученные файлы не входят в этот лимит '
+              'и не удаляются при очистке временных копий.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const Divider(height: 28),
+            _SettingRow(
+              icon: Icons.cleaning_services_outlined,
+              title: 'Неиспользуемые копии',
+              subtitle:
+                  '${storage.unusedFiles.length} файлов · ${formatBytes(storage.unusedBytes)}',
+            ),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                key: const Key('cleanup-temporary'),
+                onPressed: enabled && storage.unusedFiles.isNotEmpty
+                    ? _confirmCleanup
+                    : null,
+                icon: const Icon(Icons.delete_outline_rounded),
+                label: const Text('Очистить неиспользуемые копии'),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Future<void> _confirmCleanup() async {
+    final files = List<TemporaryFileItem>.of(
+      c.storageOverview?.unusedFiles ?? [],
+    );
+    if (files.isEmpty) return;
+    final bytes = files.fold<int>(0, (sum, file) => sum + file.bytes);
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Удалить временные копии?'),
+        content: SizedBox(
+          width: 440,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Будет удалено до ${files.length} копий (${formatBytes(bytes)}), '
+                  'не используемых выбранными файлами и незавершёнными передачами. '
+                  'Для новой отправки их потребуется выбрать заново. '
+                  'Исходные и готовые полученные файлы останутся на месте. '
+                  'Если исходный файл уже удалён, временная копия может быть единственной; '
+                  'после очистки восстановить её из приложения нельзя.',
+                ),
+                const SizedBox(height: 14),
+                for (final file in files.take(10))
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 5),
+                    child: Text('${file.name} · ${formatBytes(file.bytes)}'),
+                  ),
+                if (files.length > 10)
+                  Text('И ещё ${files.length - 10} файлов.'),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Оставить'),
+          ),
+          FilledButton(
+            key: const Key('confirm-cleanup-temporary'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Удалить копии'),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true && mounted) {
+      await _run(
+        () => c.clearUnusedTemporary(files.map((file) => file.id).toList()),
+      );
+    }
+  }
+
   Widget _themeChip(ThemeMode mode, String label, IconData icon) => ChoiceChip(
     avatar: Icon(icon, size: 19),
     label: Text(label),
@@ -1440,6 +1634,59 @@ class _TransferShellState extends State<_TransferShell> {
     );
     if (fileId != null && mounted) {
       await _run(() => c.openReceivedFile(item.id, fileId));
+    }
+  }
+
+  Future<void> _exportReceived(TransferItem item) async {
+    if (item.receivedFiles.isEmpty) return;
+    String? fileId;
+    if (item.receivedFiles.length == 1) {
+      fileId = item.receivedFiles.single.id;
+    } else {
+      fileId = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Сохранить копию файла'),
+          content: SizedBox(
+            width: 440,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 420),
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: item.receivedFiles.length,
+                separatorBuilder: (_, _) => const Divider(height: 10),
+                itemBuilder: (context, index) {
+                  final file = item.receivedFiles[index];
+                  return ListTile(
+                    key: Key('export-file-${file.id}'),
+                    contentPadding: EdgeInsets.zero,
+                    leading: _FileTypeIcon(name: file.name),
+                    title: Text(
+                      file.name,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      '${formatBytes(file.bytes)}\n${file.exportDetail ?? 'Получен в приложении'}',
+                    ),
+                    trailing: const Icon(Icons.save_alt_rounded, size: 20),
+                    onTap: () => Navigator.pop(context, file.id),
+                  );
+                },
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Закрыть'),
+            ),
+          ],
+        ),
+      );
+    }
+    if (fileId != null && mounted) {
+      await _run(() => c.exportReceivedFile(item.id, fileId!));
     }
   }
 

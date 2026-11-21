@@ -30,6 +30,12 @@ android {
     }
 
     buildTypes {
+        getByName("debug") {
+            // The original alpha debug key is not available in a fresh build
+            // environment. Install this alpha alongside it, keeping its data.
+            // This never changes the release application ID or signing policy.
+            applicationIdSuffix = ".alpha02"
+        }
         release {
             // Production signing is intentionally not configured in the source archive.
             // Use a private upload keystore and CI secrets before publishing.

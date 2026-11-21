@@ -1,0 +1,7 @@
+{
+  "version": "0.1.0",
+  "source_archive": "File_Transfer_Alpha_v0_1_0_Source.zip",
+  "source_archive_sha256": "1094d8ae32e9a2348e867bc5c784543fe44b54be9ec62edc84cb358bb6b3e9f5",
+  "original_source_commit": "540c0e3a05757e6be10a3a592493fc18830d20b8",
+  "note": "Restored from the previously delivered verified archive before developing0.2; Git history was not contained in the archive."
+}

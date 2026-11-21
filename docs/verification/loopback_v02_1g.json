@@ -1,0 +1,72 @@
+{
+  "status": "passed",
+  "mode": "foreground HTTPS push with receiver restart and resume",
+  "source_path": "/workspace/scratch/c3a4a0f6fabd/probe_v02_1g/source.bin",
+  "sink_path": "/workspace/scratch/c3a4a0f6fabd/probe_v02_1g/receiver/received/ecd4e176-89d1-4c3d-9df8-5c3ddd6af345/fb46f2f2-1d1c-4c8e-a75b-0148f421c54d/source.bin",
+  "size": 1073741824,
+  "size_bytes": 1073741824,
+  "sha256": "64ac271682815a3defa1ddb2320b525ff25d5102f901be28b960200f66d3c407",
+  "source_sha256": "64ac271682815a3defa1ddb2320b525ff25d5102f901be28b960200f66d3c407",
+  "sink_sha256": "64ac271682815a3defa1ddb2320b525ff25d5102f901be28b960200f66d3c407",
+  "checkpoint_bytes": 4194304,
+  "resumed_from_bytes": 4718592,
+  "host_restarted": true,
+  "manual_pair_approval_checked": true,
+  "receiver_consent_checked": true,
+  "receiver_state": "committed",
+  "prepared_source_verified": true,
+  "committed_wire_receipt_checked": true,
+  "prepared_source_deleted_after_receipt": true,
+  "capacity_adapter": "unavailable in Linux CLI; availableBytes is null",
+  "budget_at_acceptance": {
+    "available_bytes": null,
+    "temporary_bytes": 1073741824,
+    "future_reserved_bytes": 1073741824,
+    "safety_reserve_bytes": 134217728,
+    "temporary_quota_bytes": 21474836480
+  },
+  "budget_after_restart": {
+    "available_bytes": null,
+    "temporary_bytes": 1078460416,
+    "future_reserved_bytes": 1069023232,
+    "safety_reserve_bytes": 134217728,
+    "temporary_quota_bytes": 21474836480
+  },
+  "budget_after_receive_commit": {
+    "available_bytes": null,
+    "temporary_bytes": 1073741824,
+    "future_reserved_bytes": 0,
+    "safety_reserve_bytes": 134217728,
+    "temporary_quota_bytes": 21474836480
+  },
+  "budget_after_source_cleanup": {
+    "available_bytes": null,
+    "temporary_bytes": 0,
+    "future_reserved_bytes": 0,
+    "safety_reserve_bytes": 134217728,
+    "temporary_quota_bytes": 21474836480
+  },
+  "elapsed_seconds": 99.625,
+  "credentials": "ephemeral memory only; not included in result",
+  "report_path": "/workspace/scratch/c3a4a0f6fabd/probe_v02_1g/result.json",
+  "independent_verification": {
+    "tool": "Python 3.12.14 hashlib.file_digest",
+    "method": "Independent reread of both complete disk files after Dart probe finished",
+    "files": [
+      {
+        "role": "source",
+        "bytes": 1073741824,
+        "sha256": "64ac271682815a3defa1ddb2320b525ff25d5102f901be28b960200f66d3c407"
+      },
+      {
+        "role": "sink",
+        "bytes": 1073741824,
+        "sha256": "64ac271682815a3defa1ddb2320b525ff25d5102f901be28b960200f66d3c407"
+      }
+    ],
+    "both_sizes_and_sha256_match": true,
+    "prepared_source_directory_empty": true,
+    "physical_device_test": false,
+    "environment": "Two logical peers in one Linux environment; real TCP/TLS and SQLite"
+  }
+}

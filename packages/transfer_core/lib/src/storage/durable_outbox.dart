@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
@@ -7,20 +8,26 @@ import 'package:sqlite3/sqlite3.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models.dart';
+import 'storage_budget.dart';
 import 'storage_support.dart';
 
 /// Immutable staged copies and persistent outgoing requests. User originals
 /// are never moved, renamed or deleted. This alpha supports ordinary local
 /// files; native coordinated file-provider snapshots are a separate adapter.
 class DurableOutbox {
-  DurableOutbox._(this.root, this._db, this._lease);
+  DurableOutbox._(this.root, this._db, this._lease, this._budget);
   final Directory root;
   final Database _db;
   final StorageLease _lease;
+  final StorageBudget? _budget;
+  String get _budgetScope => 'outbox:${root.path}';
   bool _closed = false;
   int _preparing = 0;
 
-  static Future<DurableOutbox> open(Directory directory) async {
+  static Future<DurableOutbox> open(
+    Directory directory, {
+    StorageBudget? budget,
+  }) async {
     final root = await prepareStorageDirectory(directory);
     await ensurePlainDirectory(Directory(p.join(root.path, '.preparing')));
     await ensurePlainDirectory(Directory(p.join(root.path, 'files')));
@@ -49,11 +56,85 @@ class DurableOutbox {
           await entity.delete();
         }
       }
-      return DurableOutbox._(root, db, lease);
+      final store = DurableOutbox._(root, db, lease, budget);
+      await store._restoreBudget();
+      return store;
     } catch (_) {
       opened?.close();
       await lease.release();
       rethrow;
+    }
+  }
+
+  Future<void> _restoreBudget() async {
+    if (_budget == null) return;
+    final idsByPath = <String, String>{
+      for (final row in _db.select('SELECT file_id,path FROM outbox_files'))
+        row['path'] as String: row['file_id'] as String,
+    };
+    final claims = <StorageBudgetClaim>[];
+    // Include orphaned payloads left between rename and journal publication.
+    // They consume quota, but recovery does not silently delete them.
+    await for (final entity in Directory(
+      p.join(root.path, 'files'),
+    ).list(followLinks: false)) {
+      if (entity is! File) continue;
+      final length = await entity.length();
+      claims.add(
+        StorageBudgetClaim(
+          key: idsByPath[entity.path] ?? 'orphan:${entity.path}',
+          usedBytes: length,
+          totalBytes: length,
+        ),
+      );
+    }
+    await _budget.restoreScope(_budgetScope, claims);
+  }
+
+  Future<void> _reserve(String fileId, int length) async {
+    await _budget?.reserveAll(_budgetScope, [
+      StorageBudgetClaim(key: fileId, usedBytes: 0, totalBytes: length),
+    ]);
+  }
+
+  Future<void> _write(
+    String fileId,
+    RandomAccessFile handle,
+    List<int> chunk,
+  ) async {
+    for (var cursor = 0; cursor < chunk.length;) {
+      final end = math.min(cursor + 256 * 1024, chunk.length);
+      if (_budget == null) {
+        await handle.writeFrom(chunk, cursor, end);
+      } else {
+        await _budget.write(_budgetScope, fileId, end - cursor, () async {
+          await handle.writeFrom(chunk, cursor, end);
+        });
+      }
+      cursor = end;
+    }
+  }
+
+  Future<void> _settleFailedPreparation(
+    String fileId,
+    File temporary,
+    File ready,
+  ) async {
+    if (_budget == null) return;
+    var bytes = 0;
+    for (final file in [temporary, ready]) {
+      if (await FileSystemEntity.type(file.path, followLinks: false) ==
+          FileSystemEntityType.file) {
+        bytes += await file.length();
+      }
+    }
+    if (bytes == 0) {
+      await _budget.forget(_budgetScope, fileId);
+    } else {
+      await _budget.reconcile(
+        _budgetScope,
+        StorageBudgetClaim(key: fileId, usedBytes: bytes, totalBytes: bytes),
+      );
     }
   }
 
@@ -101,6 +182,7 @@ class DurableOutbox {
 
     try {
       checkCancelled();
+      await _reserve(fileId, before.size);
       await validateManagedDirectory(root, temporary.parent);
       await validateManagedDirectory(root, ready.parent);
       await temporary.create(exclusive: true);
@@ -118,7 +200,7 @@ class DurableOutbox {
           );
         }
         digest.add(chunk);
-        await handle.writeFrom(chunk);
+        await _write(fileId, handle, chunk);
         onProgress?.call(length);
       }
       digest.close();
@@ -183,11 +265,18 @@ class DurableOutbox {
       throw storageIoError(error);
     } finally {
       await handle?.close();
-      if (!published) {
-        if (await temporary.exists()) await temporary.delete();
-        if (await ready.exists()) await ready.delete();
+      try {
+        if (!published) {
+          try {
+            if (await temporary.exists()) await temporary.delete();
+            if (await ready.exists()) await ready.delete();
+          } finally {
+            await _settleFailedPreparation(fileId, temporary, ready);
+          }
+        }
+      } finally {
+        _preparing--;
       }
-      _preparing--;
     }
   }
 
@@ -233,6 +322,7 @@ class DurableOutbox {
     var published = false;
     _preparing++;
     try {
+      await _reserve(fileId, expectedSizeBytes ?? 0);
       await validateManagedDirectory(root, temporary.parent);
       await validateManagedDirectory(root, ready.parent);
       await temporary.create(exclusive: true);
@@ -259,7 +349,7 @@ class DurableOutbox {
         digest.add(chunk);
         // Providers are responsible for bounded emitted chunks; the store adds
         // no unbounded buffers and consumes each event with backpressure.
-        await handle.writeFrom(chunk);
+        await _write(fileId, handle, chunk);
         onProgress?.call(length);
       }
       digest.close();
@@ -314,11 +404,18 @@ class DurableOutbox {
       throw storageIoError(error);
     } finally {
       await handle?.close();
-      if (!published) {
-        if (await temporary.exists()) await temporary.delete();
-        if (await ready.exists()) await ready.delete();
+      try {
+        if (!published) {
+          try {
+            if (await temporary.exists()) await temporary.delete();
+            if (await ready.exists()) await ready.delete();
+          } finally {
+            await _settleFailedPreparation(fileId, temporary, ready);
+          }
+        }
+      } finally {
+        _preparing--;
       }
-      _preparing--;
     }
   }
 
@@ -501,11 +598,19 @@ class DurableOutbox {
     }
     requireContainedPath(root, file.path);
     final snapshot = File(file.path);
-    if (await FileSystemEntity.type(snapshot.path, followLinks: false) ==
-        FileSystemEntityType.file) {
+    await validateManagedDirectory(root, snapshot.parent);
+    final kind = await FileSystemEntity.type(snapshot.path, followLinks: false);
+    if (kind == FileSystemEntityType.file) {
+      await ensurePlainFile(snapshot);
       await snapshot.delete();
+    } else if (kind != FileSystemEntityType.notFound) {
+      throw const StorageException(
+        'UNSAFE_PATH',
+        'Prepared copy is not an ordinary file.',
+      );
     }
     _db.execute('DELETE FROM outbox_files WHERE file_id=?', [fileId]);
+    await _budget?.forget(_budgetScope, fileId);
   }
 
   Future<void> close() async {

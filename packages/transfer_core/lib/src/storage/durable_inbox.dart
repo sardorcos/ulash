@@ -8,6 +8,7 @@ import 'package:sqlite3/sqlite3.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models.dart';
+import 'storage_budget.dart';
 import 'storage_support.dart';
 
 /// Foreground, push-only receive store. Owns its private directory; it never
@@ -20,11 +21,14 @@ class DurableInbox {
     this.checkpointBytes,
     this.checkpointInterval,
     this._lease,
+    this._budget,
   );
 
   final Directory root;
   final Database _db;
   final StorageLease _lease;
+  final StorageBudget? _budget;
+  String get _budgetScope => 'inbox:${root.path}';
   final int checkpointBytes;
   final Duration checkpointInterval;
   final _controls = _ControlQueue();
@@ -39,6 +43,7 @@ class DurableInbox {
     Directory directory, {
     int checkpointBytes = 4 * 1024 * 1024,
     Duration checkpointInterval = const Duration(seconds: 2),
+    StorageBudget? budget,
   }) async {
     if (checkpointBytes < 1 || checkpointInterval <= Duration.zero) {
       throw ArgumentError('Positive checkpoint parameters required.');
@@ -75,13 +80,90 @@ class DurableInbox {
         checkpointBytes,
         checkpointInterval,
         lease,
+        budget,
       );
       await store._recover();
+      await store._restoreBudget();
       return store;
     } catch (_) {
       opened?.close();
       await lease.release();
       rethrow;
+    }
+  }
+
+  static const _reservedStates = {
+    'accepted',
+    'transferring',
+    'paused',
+    'verifying',
+    'committing',
+  };
+
+  StorageBudgetClaim _budgetClaim(Row row, int length) {
+    final target = _reservedStates.contains(row['state'])
+        ? math.max(_fileSnapshot(row).manifest.sizeBytes, length)
+        : length;
+    return StorageBudgetClaim(
+      key: row['incarnation'] as String,
+      usedBytes: length,
+      totalBytes: target,
+    );
+  }
+
+  Future<void> _restoreBudget() async {
+    if (_budget == null) return;
+    final rows = _db.select('SELECT * FROM inbox_files');
+    final rowsByPath = <String, Row>{
+      for (final row in rows) row['temporary_path'] as String: row,
+    };
+    final lengths = <String, int>{};
+    final claims = <StorageBudgetClaim>[];
+    await for (final entity in Directory(
+      p.join(root.path, '.staging'),
+    ).list(followLinks: false)) {
+      if (entity is! File) continue;
+      final length = await entity.length();
+      lengths[entity.path] = length;
+      if (!rowsByPath.containsKey(entity.path)) {
+        claims.add(
+          StorageBudgetClaim(
+            key: 'orphan:${entity.path}',
+            usedBytes: length,
+            totalBytes: length,
+          ),
+        );
+      }
+    }
+    for (final row in rows) {
+      final length = lengths[row['temporary_path']] ?? 0;
+      if (row['state'] == 'committed' && length == 0) continue;
+      claims.add(_budgetClaim(row, length));
+    }
+    await _budget.restoreScope(_budgetScope, claims);
+  }
+
+  Future<void> _reconcileBudgetRow(Row row) async {
+    if (_budget == null) return;
+    final file = File(row['temporary_path'] as String);
+    requireContainedPath(root, file.path);
+    await validateManagedDirectory(root, file.parent);
+    final kind = await FileSystemEntity.type(file.path, followLinks: false);
+    final length = kind == FileSystemEntityType.file ? await file.length() : 0;
+    if (row['state'] == 'committed' && length == 0) {
+      await _budget.forget(_budgetScope, row['incarnation'] as String);
+    } else {
+      await _budget.reconcile(_budgetScope, _budgetClaim(row, length));
+    }
+  }
+
+  Future<void> _reconcileBudgetTransfer(String id) async {
+    if (_budget == null) return;
+    for (final row in _db.select(
+      'SELECT * FROM inbox_files WHERE transfer_id=?',
+      [id],
+    )) {
+      await _reconcileBudgetRow(row);
     }
   }
 
@@ -225,33 +307,47 @@ class DurableInbox {
         'Offer cannot be accepted.',
       );
     }
-    for (final row in _db.select(
-      'SELECT * FROM inbox_files WHERE transfer_id=?',
-      [id],
-    )) {
-      final file = File(row['temporary_path'] as String);
-      requireContainedPath(root, file.path);
-      await validateManagedDirectory(root, file.parent);
-      if (await FileSystemEntity.type(file.path, followLinks: false) ==
-          FileSystemEntityType.notFound) {
-        await file.create(exclusive: true);
-      } else {
-        await ensurePlainFile(file);
-        if (await file.length() != 0) {
-          throw const StorageException(
-            'RECOVERY_INCONSISTENT',
-            'Unaccepted file contains data.',
-          );
+    final rows = _db.select('SELECT * FROM inbox_files WHERE transfer_id=?', [
+      id,
+    ]);
+    try {
+      // Reserve the full batch atomically, before any consent is persisted.
+      await _budget?.reserveAll(_budgetScope, [
+        for (final row in rows)
+          StorageBudgetClaim(
+            key: row['incarnation'] as String,
+            usedBytes: 0,
+            totalBytes: _fileSnapshot(row).manifest.sizeBytes,
+          ),
+      ]);
+      for (final row in rows) {
+        final file = File(row['temporary_path'] as String);
+        requireContainedPath(root, file.path);
+        await validateManagedDirectory(root, file.parent);
+        if (await FileSystemEntity.type(file.path, followLinks: false) ==
+            FileSystemEntityType.notFound) {
+          await file.create(exclusive: true);
+        } else {
+          await ensurePlainFile(file);
+          if (await file.length() != 0) {
+            throw const StorageException(
+              'RECOVERY_INCONSISTENT',
+              'Unaccepted file contains data.',
+            );
+          }
         }
       }
+      journalTransaction(_db, () {
+        _db.execute(
+          "UPDATE inbox_files SET state='accepted' WHERE transfer_id=? AND state='offered'",
+          [id],
+        );
+        _refreshTransfer(id);
+      });
+    } catch (error) {
+      await _reconcileBudgetTransfer(id);
+      throw storageIoError(error);
     }
-    journalTransaction(_db, () {
-      _db.execute(
-        "UPDATE inbox_files SET state='accepted' WHERE transfer_id=? AND state='offered'",
-        [id],
-      );
-      _refreshTransfer(id);
-    });
     return _emit(id);
   });
 
@@ -355,6 +451,7 @@ class DurableInbox {
         await file.delete();
       }
     }
+    await _reconcileBudgetTransfer(id);
     return _emit(id);
   });
 
@@ -443,6 +540,8 @@ class DurableInbox {
       handle = await temporary.open(mode: FileMode.append);
       await handle.truncate(offset);
       await handle.setPosition(offset);
+      await _reconcileBudgetRow(_fileRow(transferId, fileId));
+      await _budget?.check();
       writer.check();
       _db.execute(
         "UPDATE inbox_files SET state='transferring',error_code=NULL WHERE transfer_id=? AND file_id=?",
@@ -470,7 +569,13 @@ class DurableInbox {
               checkpointBytes - (written - checkpointOffset),
             ),
           );
-          await handle.writeFrom(chunk, cursor, cursor + length);
+          if (_budget == null) {
+            await handle.writeFrom(chunk, cursor, cursor + length);
+          } else {
+            await _budget.write(_budgetScope, incarnation, length, () async {
+              await handle!.writeFrom(chunk, cursor, cursor + length);
+            });
+          }
           cursor += length;
           written += length;
           if (written - checkpointOffset >= checkpointBytes ||
@@ -521,8 +626,12 @@ class DurableInbox {
       } catch (_) {
         /* Failure is already reflected by the journal. */
       }
-      _writer = null;
-      writer.done.complete();
+      try {
+        await _reconcileBudgetRow(_fileRow(transferId, fileId));
+      } finally {
+        _writer = null;
+        writer.done.complete();
+      }
     }
   }
 
@@ -586,8 +695,12 @@ class DurableInbox {
       _recordFailure(writer, mapped);
       throw mapped;
     } finally {
-      _writer = null;
-      writer.done.complete();
+      try {
+        await _reconcileBudgetRow(_fileRow(transferId, fileId));
+      } finally {
+        _writer = null;
+        writer.done.complete();
+      }
     }
   }
 
@@ -678,6 +791,8 @@ class DurableInbox {
       'TRANSFER_PAUSED',
       'INCOMPLETE_FILE',
       'DISK_FULL',
+      'TEMP_QUOTA_EXCEEDED',
+      'CAPACITY_UNAVAILABLE',
       'STORAGE_FAILURE',
     }.contains(error.code);
     _db.execute(
@@ -815,9 +930,16 @@ class DurableInbox {
           }
         }
         if (state != 'accepted') {
+          // A validated paused prefix keeps its existing reason (for example
+          // DISK_FULL). Restart is not a new cause and must not hide the action
+          // the user still needs to take before resuming. Previously active
+          // states, or a pause without a recorded reason, are interrupted.
+          final cause = state == 'paused' && file.errorCode?.isNotEmpty == true
+              ? file.errorCode!
+              : 'TRANSFER_INTERRUPTED';
           _db.execute(
-            "UPDATE inbox_files SET state='paused',error_code='TRANSFER_INTERRUPTED' WHERE transfer_id=? AND file_id=?",
-            [transferId, fileId],
+            "UPDATE inbox_files SET state='paused',error_code=? WHERE transfer_id=? AND file_id=?",
+            [cause, transferId, fileId],
           );
         }
       } catch (error) {

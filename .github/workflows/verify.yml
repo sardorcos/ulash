@@ -10,6 +10,16 @@ on:
         type: boolean
         required: false
         default: false
+      build_ios:
+        description: Also compile iOS without device signing (macOS required)
+        type: boolean
+        required: false
+        default: false
+      build_windows:
+        description: Also compile an unsigned Windows x64 release bundle
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -54,3 +64,41 @@ jobs:
         run: flutter --no-version-check pub get --enforce-lockfile
       - name: Compile debug Android
         run: python3 scripts/build_android.py --no-pub --target-platform android-arm64 --split-per-abi
+
+  # These jobs prepare native compilation gates. They have not been executed
+  # in the Linux development workspace, and are not physical-device acceptance.
+  ios_unsigned:
+    if: github.event_name == 'workflow_dispatch' && inputs.build_ios
+    runs-on: macos-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install verified Flutter SDK
+        run: python3 scripts/install_flutter_ci.py --destination "${{ runner.temp }}/transfer-sdk"
+      - name: Inspect Xcode toolchain
+        run: xcodebuild -version
+      - name: Resolve locked dependencies
+        working-directory: apps/file_transfer
+        run: flutter --no-version-check pub get --enforce-lockfile
+      - name: Compile iOS without signing
+        working-directory: apps/file_transfer
+        run: flutter --no-version-check build ios --release --no-codesign --no-pub
+
+  windows_unsigned:
+    if: github.event_name == 'workflow_dispatch' && inputs.build_windows
+    runs-on: windows-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install verified Flutter SDK
+        run: python scripts/install_flutter_ci.py --destination "${{ runner.temp }}/transfer-sdk"
+      - name: Resolve locked dependencies
+        working-directory: apps/file_transfer
+        run: flutter --no-version-check pub get --enforce-lockfile
+      - name: Compile Windows x64 bundle
+        working-directory: apps/file_transfer
+        run: flutter --no-version-check build windows --release --no-pub

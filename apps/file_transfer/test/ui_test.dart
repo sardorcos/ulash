@@ -31,11 +31,18 @@ class TestController extends AppController {
   ThemeMode themeMode = ThemeMode.light;
   @override
   String? errorMessage;
+  AppCapabilities availableCapabilities = const AppCapabilities();
+  @override
+  AppCapabilities get capabilities => availableCapabilities;
+  @override
+  StorageOverview? storageOverview;
 
   int chooseCount = 0;
   String? sentPeer;
   String? pairedText;
   (String, String)? openedFile;
+  (String, String)? exportedFile;
+  List<String>? cleanedFiles;
   final responses = <(String, bool)>[];
 
   @override
@@ -102,6 +109,16 @@ class TestController extends AppController {
   @override
   Future<void> openReceivedFile(String transferId, String fileId) async {
     openedFile = (transferId, fileId);
+  }
+
+  @override
+  Future<void> exportReceivedFile(String transferId, String fileId) async {
+    exportedFile = (transferId, fileId);
+  }
+
+  @override
+  Future<void> clearUnusedTemporary(List<String> fileIds) async {
+    cleanedFiles = List.of(fileIds);
   }
 
   @override
@@ -340,4 +357,92 @@ void main() {
     expect(controller.openedFile, ('package', 'second'));
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'export is an explicit separate action for the chosen committed file',
+    (tester) async {
+      await setSize(tester, const Size(390, 844));
+      final controller = TestController()
+        ..availableCapabilities = const AppCapabilities(fileExport: true)
+        ..transfers = [
+          TransferItem(
+            id: 'received',
+            title: '2 файла',
+            peerName: 'Отправитель',
+            direction: TransferDirection.incoming,
+            phase: TransferPhase.completed,
+            totalBytes: 300,
+            transferredBytes: 300,
+            createdAt: DateTime(2026, 11, 21),
+            fileCount: 2,
+            canOpen: true,
+            canExport: true,
+            receivedFiles: const [
+              ReceivedFile(id: 'one', name: 'Первый.pdf', bytes: 100),
+              ReceivedFile(
+                id: 'two',
+                name: 'Второй.txt',
+                bytes: 200,
+                exportPhase: ExportPhase.unknown,
+                exportDetail:
+                    'Результат сохранения не подтверждён. Проверьте папку.',
+              ),
+            ],
+          ),
+        ];
+      await tester.pumpWidget(FileTransferApp(controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('nav-history')));
+      await tester.pumpAndSettle();
+      expect(controller.exportedFile, isNull);
+      expect(find.byKey(const Key('export-status-two')), findsOneWidget);
+      await tester.ensureVisible(find.byKey(const Key('export-received')));
+      await tester.tap(find.byKey(const Key('export-received')));
+      await tester.pumpAndSettle();
+      expect(controller.exportedFile, isNull);
+      await tester.tap(find.byKey(const Key('export-file-two')));
+      await tester.pumpAndSettle();
+      expect(controller.exportedFile, ('received', 'two'));
+      expect(controller.openedFile, isNull);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'storage cleanup requires confirmation of the previewed IDs and fits narrow screen',
+    (tester) async {
+      await setSize(tester, const Size(360, 800));
+      final controller = TestController()
+        ..availableCapabilities = const AppCapabilities(storageManagement: true)
+        ..storageOverview = StorageOverview(
+          availableBytes: null,
+          temporaryBytes: 128,
+          reservedBytes: 64,
+          safetyReserveBytes: 128 * 1024 * 1024,
+          temporaryQuotaBytes: 20 * 1024 * 1024 * 1024,
+          checkedAt: DateTime(2026, 11, 21),
+          unusedFiles: const [
+            TemporaryFileItem(id: 'previewed', name: 'Копия.txt', bytes: 128),
+          ],
+        );
+      await tester.pumpWidget(FileTransferApp(controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('nav-settings')));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('cleanup-temporary')));
+      await tester.tap(find.byKey(const Key('cleanup-temporary')));
+      await tester.pumpAndSettle();
+      expect(controller.cleanedFiles, isNull);
+      expect(find.text('Копия.txt · 128 Б'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, 'Оставить'));
+      await tester.pumpAndSettle();
+      expect(controller.cleanedFiles, isNull);
+      await tester.tap(find.byKey(const Key('cleanup-temporary')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('confirm-cleanup-temporary')));
+      await tester.pumpAndSettle();
+      expect(controller.cleanedFiles, ['previewed']);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

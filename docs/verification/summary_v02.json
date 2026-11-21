@@ -1,0 +1,35 @@
+{
+  "version": "0.2.0",
+  "date": "2026-11-21",
+  "timezone": "Asia/Samarkand",
+  "flutter": "3.50.1",
+  "dart": "3.14.0",
+  "environment": "Linux development host",
+  "tests": {
+    "core": 46,
+    "app": 33,
+    "total": 79,
+    "new_since_v0_1": 30,
+    "standard_optional_capture_skipped": 1,
+    "optional_capture_separately_passed": 1
+  },
+  "static_analysis": {
+    "core": "passed; no issues",
+    "app": "passed; no issues"
+  },
+  "dependency_lockfiles_enforced": true,
+  "automated_log": "automated_tests_v02.log",
+  "large_file_evidence": "loopback_v02_1g.json",
+  "native_build_evidence": "android_arm64_debug_v02.json",
+  "ios_build_executed": false,
+  "windows_build_executed": false,
+  "physical_device_acceptance_executed": false,
+  "gate_a_complete": false,
+  "limits_are_not_benchmarks": true,
+  "android_build_executed": true,
+  "android_build_exit_code": 0,
+  "apk_size_bytes": 119676406,
+  "apk_sha256": "aab351e73483695c3c4c5566026edda23ffa8f8604ec36effc428e5c59338b72",
+  "apk_application_id": "uz.sardor.file_transfer.alpha02",
+  "source_input_fingerprint_root_verified": true
+}

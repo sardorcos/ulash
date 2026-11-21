@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart' as picker;
 // Compatibility during the Flutter 3.50 Material migration.
 // ignore: deprecated_member_use
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 import 'package:transfer_core/transfer_core.dart' as core;
@@ -15,6 +17,7 @@ import 'lan_discovery.dart';
 import 'app_runtime.dart';
 import 'outgoing_journal.dart';
 import 'receipt_validation.dart';
+import 'export_journal.dart';
 
 /// Bridges the presentation contract to real native storage and HTTPS.
 /// No simulated progress, peers, receipt, or automatic file acceptance.
@@ -31,6 +34,9 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   core.CoreHost? _host;
   LanDiscovery? _discovery;
   OutgoingJournal? _journal;
+  ExportJournal? _exports;
+  core.StorageBudget? _storageBudget;
+  StorageOverview? _storageOverview;
   final _subscriptions = <StreamSubscription<dynamic>>[];
   final _sources = <SelectedSource>[];
   final _jobs = <OutgoingJob>[];
@@ -38,11 +44,13 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   final _platforms = <String, DevicePlatform>{};
   final _activeClients = <String, core.CoreClient>{};
   final _running = <String>{};
+  final _unconfirmedExports = <(String, String)>{};
   final _discovered = <DiscoveredEndpoint>[];
   NetworkState _network = NetworkState.starting;
   ThemeMode _theme = ThemeMode.system;
   bool _starting = true;
   bool _preparing = false;
+  bool _picking = false;
   bool _pairing = false;
   bool _receiving = false;
   bool _refreshing = false;
@@ -50,6 +58,10 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   bool _closing = false;
   bool _receiveWanted = true;
   bool _foreground = true;
+  bool _exporting = false;
+  bool _cleaning = false;
+  bool _changingQuota = false;
+  bool _storageRefreshing = false;
   Future<void> _hostLifecycle = Future.value();
   Future<void>? _initialization;
   Future<void>? _shutdown;
@@ -64,6 +76,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   List<String> _addresses = [];
   PairingInvitation? _invitation;
   Timer? _peerTimer;
+  Timer? _storageTimer;
 
   Future<void> initialize() => _initialization ??= _initialize();
 
@@ -75,7 +88,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       final root = await _runtime.storageDirectory();
       final data = Directory(p.join(root.path, 'file-transfer-v1'));
       await data.create(recursive: true);
-      _dataPath = data.path;
+      _dataPath = await data.resolveSymbolicLinks();
       _identity = await core.DeviceIdentity.loadOrCreate(
         _secrets,
         displayName: _runtime.initialDeviceName ?? _defaultName(),
@@ -88,15 +101,35 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
               .where((value) => value.name == savedTheme)
               .firstOrNull ??
           ThemeMode.system;
+      final savedQuota = int.tryParse(
+        await _secrets.read('transfer.settings.temporaryQuotaBytes') ?? '',
+      );
+      _storageBudget = core.StorageBudget(
+        availableBytes: () async => _runtime.availableBytes == null
+            ? null
+            : await _runtime.availableBytes!(data),
+        temporaryQuotaBytes: _quotaOptions.contains(savedQuota)
+            ? savedQuota!
+            : 20 * 1024 * 1024 * 1024,
+      );
       _inbox = await core.DurableInbox.open(
         Directory(p.join(data.path, 'inbox')),
+        budget: _storageBudget,
       );
       _outbox = await core.DurableOutbox.open(
         Directory(p.join(data.path, 'outbox')),
+        budget: _storageBudget,
       );
       _journal = OutgoingJournal(Directory(p.join(data.path, 'journal')));
+      _exports = ExportJournal(Directory(p.join(data.path, 'journal')));
       _jobs.addAll(_journal!.recover());
-      _subscriptions.add(_inbox!.changes.listen((_) => _emit()));
+      await _updateStorageOverview();
+      _subscriptions.add(
+        _inbox!.changes.listen((_) {
+          _emit();
+          _refreshStorageSoon();
+        }),
+      );
       _subscriptions.add(_trusted!.changes.listen((_) => _emit()));
       if (!await _runtime.ensurePermission()) {
         _network = NetworkState.permissionRequired;
@@ -195,7 +228,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   @override
   bool get receivingEnabled => _receiving;
   @override
-  bool get isBusy => _starting || _preparing;
+  bool get isBusy =>
+      _starting || _picking || _preparing || _cleaning || _changingQuota;
   @override
   String? get busyLabel => _busy;
   @override
@@ -207,7 +241,11 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   @override
   PairingInvitation? get invitation => _invitation;
   @override
-  String get versionLabel => '0.1.0 · техническая альфа';
+  String get versionLabel => '0.2.0 · техническая альфа';
+  @override
+  StorageOverview? get storageOverview => _storageOverview;
+  @override
+  bool get storageRefreshing => _storageRefreshing;
   @override
   String get saveLocationLabel => _dataPath == null
       ? 'Хранилище приложения'
@@ -226,6 +264,12 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     pairing: _host != null && !_pairing,
     discovery: _discovery != null && _discoveryIssue == null,
     rename: false,
+    fileExport:
+        _runtime.exportSupported &&
+        _runtime.exportFile != null &&
+        _exports != null &&
+        !_exporting,
+    storageManagement: _storageBudget != null && _outbox != null && !_starting,
     qrScanner: scanCode != null && _host != null && !_pairing,
     desktopDrop:
         (Platform.isWindows || Platform.isLinux || Platform.isMacOS) &&
@@ -314,23 +358,24 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           locationLabel: saveLocationLabel,
           receivedFiles: item.files
               .where((file) => file.state == core.FileState.committed)
-              .map(
-                (file) => ReceivedFile(
-                  id: file.fileId,
-                  name: file.manifest.displayName,
-                  bytes: file.manifest.sizeBytes,
-                ),
-              )
+              .map((file) => _receivedFile(item.transferId, file))
               .toList(),
           canPause:
               !terminal &&
               !item.pausedBySink &&
               item.state != core.TransferState.offered,
-          canResume: !terminal && item.pausedBySink,
+          canResume:
+              !terminal &&
+              (item.pausedBySink ||
+                  (item.state == core.TransferState.paused &&
+                      !item.pausedBySource)),
           canCancel: !terminal,
           canOpen: item.files.any(
             (file) => file.state == core.FileState.committed,
           ),
+          canExport:
+              capabilities.fileExport &&
+              item.files.any((file) => file.state == core.FileState.committed),
         ),
       );
     }
@@ -383,12 +428,15 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   @override
   Future<void> chooseFiles() => _guard(() async {
     if (_outbox == null || isBusy) return;
-    final picked = await picker.FilePicker.pickFiles(
-      dialogTitle: 'Выберите файлы',
-    );
-    if (picked.isEmpty) return;
-    _preparing = true;
+    _picking = true;
+    _busy = 'Выбор файлов';
+    _emit();
     try {
+      final picked = await picker.FilePicker.pickFiles(
+        dialogTitle: 'Выберите файлы',
+      );
+      if (_closing || picked.isEmpty) return;
+      _preparing = true;
       for (final item in picked) {
         if (_sources.length >= core.TransferLimits.maxFiles) {
           throw const core.StorageException('TOO_MANY_FILES', 'Too many files');
@@ -428,6 +476,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         _emit();
       }
     } finally {
+      _picking = false;
       _preparing = false;
       _busy = null;
     }
@@ -480,7 +529,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
 
   @override
   Future<void> sendTo(String peerId) => _guard(() async {
-    if (_sources.isEmpty || _outbox == null) return;
+    if (isBusy || _sources.isEmpty || _outbox == null) return;
     if (_jobs.where((job) => !job.isTerminal).length >= 10) {
       throw const core.StorageException('QUEUE_FULL', 'Queue is full');
     }
@@ -756,6 +805,12 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   Future<void> respondToTransfer(String transferId, bool accept) =>
       _guard(() async {
         if (accept) {
+          if (_cleaning || _changingQuota) {
+            throw const core.StorageException(
+              'BUSY',
+              'Storage settings are changing.',
+            );
+          }
           await _inbox!.accept(transferId);
         } else {
           await _inbox!.reject(transferId);
@@ -957,6 +1012,285 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     await _secrets.write('transfer.settings.theme', mode.name);
     _theme = mode;
   });
+
+  static const _quotaOptions = <int>[
+    5 * 1024 * 1024 * 1024,
+    10 * 1024 * 1024 * 1024,
+    20 * 1024 * 1024 * 1024,
+    50 * 1024 * 1024 * 1024,
+  ];
+
+  bool _unusedSource(String id) =>
+      !_sources.any((source) => source.id == id) && !_referenced(id);
+
+  Future<void> _updateStorageOverview() async {
+    if (_storageRefreshing ||
+        _storageBudget == null ||
+        _outbox == null ||
+        _closing) {
+      return;
+    }
+    _storageRefreshing = true;
+    _emit();
+    try {
+      final snapshot = await _storageBudget!.inspect();
+      final unused = _outbox!.list().where(
+        (file) => _unusedSource(file.manifest.fileId),
+      );
+      _storageOverview = StorageOverview(
+        availableBytes: snapshot.availableBytes,
+        temporaryBytes: snapshot.temporaryBytes,
+        reservedBytes: snapshot.reservedBytes,
+        safetyReserveBytes: snapshot.safetyReserveBytes,
+        temporaryQuotaBytes: snapshot.temporaryQuotaBytes,
+        unusedFiles: List.unmodifiable(
+          unused.map(
+            (file) => TemporaryFileItem(
+              id: file.manifest.fileId,
+              name: file.manifest.displayName,
+              bytes: file.manifest.sizeBytes,
+            ),
+          ),
+        ),
+        checkedAt: DateTime.now().toUtc(),
+      );
+    } finally {
+      _storageRefreshing = false;
+      _emit();
+    }
+  }
+
+  void _refreshStorageSoon() {
+    if (_closing || _disposed || _storageTimer != null) return;
+    _storageTimer = Timer(const Duration(milliseconds: 500), () {
+      _storageTimer = null;
+      _launch(_updateStorageOverview());
+    });
+  }
+
+  @override
+  Future<void> refreshStorage() => _guard(_updateStorageOverview);
+
+  @override
+  Future<void> setTemporaryQuota(int bytes) => _guard(() async {
+    if (isBusy || _storageBudget == null) return;
+    if (!_quotaOptions.contains(bytes)) {
+      throw const core.StorageException(
+        'INVALID_QUOTA',
+        'Unsupported storage limit.',
+      );
+    }
+    _changingQuota = true;
+    _emit();
+    try {
+      final previous = (await _storageBudget!.inspect()).temporaryQuotaBytes;
+      await _storageBudget!.setTemporaryQuotaBytes(bytes);
+      try {
+        await _secrets.write(
+          'transfer.settings.temporaryQuotaBytes',
+          bytes.toString(),
+        );
+      } catch (_) {
+        await _storageBudget!.setTemporaryQuotaBytes(previous);
+        rethrow;
+      }
+      _status = 'Лимит временного хранилища сохранён.';
+    } finally {
+      _changingQuota = false;
+      await _updateStorageOverview();
+    }
+  });
+
+  @override
+  Future<void> clearUnusedTemporary(List<String> fileIds) => _guard(() async {
+    if (isBusy || _outbox == null) return;
+    _cleaning = true;
+    _busy = 'Очистка неиспользуемых копий';
+    _emit();
+    var count = 0;
+    try {
+      // Only the exact previewed selection is eligible. New files and all
+      // live job/source references are rechecked immediately before deletion.
+      for (final id in fileIds.toSet()) {
+        if (!_unusedSource(id)) continue;
+        if (!_outbox!.list().any((file) => file.manifest.fileId == id)) {
+          continue;
+        }
+        await _outbox!.remove(id);
+        count++;
+      }
+      _status =
+          'Удалено неиспользуемых временных копий: $count. Полученные файлы сохранены.';
+    } finally {
+      _cleaning = false;
+      _busy = null;
+      await _updateStorageOverview();
+    }
+  });
+
+  ReceivedFile _receivedFile(String transferId, core.FileSnapshot file) {
+    final record = _exports?.latest(transferId, file.fileId);
+    final success = _exports?.lastSuccess(transferId, file.fileId);
+    final phase = _unconfirmedExports.contains((transferId, file.fileId))
+        ? ExportPhase.unknown
+        : record == null
+        ? ExportPhase.notExported
+        : switch (record.state) {
+            ExportState.exporting => ExportPhase.exporting,
+            ExportState.exported => ExportPhase.exported,
+            ExportState.cancelled => ExportPhase.cancelled,
+            ExportState.failed => ExportPhase.failed,
+            ExportState.unknown => ExportPhase.unknown,
+          };
+    return ReceivedFile(
+      id: file.fileId,
+      name: file.manifest.displayName,
+      bytes: file.manifest.sizeBytes,
+      exportPhase: phase,
+      exportDestination: success?.destinationLabel,
+      exportDetail: switch (phase) {
+        ExportPhase.notExported => 'Получен в хранилище приложения',
+        ExportPhase.exporting => 'Сохранение копии…',
+        ExportPhase.exported => 'Копия сохранена: ${record!.destinationLabel}',
+        ExportPhase.cancelled => 'Последнее сохранение отменено',
+        ExportPhase.failed =>
+          record?.errorCode == 'COMMITTED_FILE_CHANGED'
+              ? 'Файл изменён или перемещён. Сохранение копии остановлено.'
+              : 'Не удалось сохранить копию. Полученный файл остаётся в приложении.',
+        ExportPhase.unknown => 'Результат сохранения не подтверждён. Проверьте выбранную папку перед повтором.',
+      },
+    );
+  }
+
+  Future<File> _committedFile(core.FileSnapshot snapshot) async {
+    final path = snapshot.finalPath;
+    if (_dataPath == null ||
+        snapshot.state != core.FileState.committed ||
+        path == null) {
+      throw const core.StorageException('NOT_FOUND', 'No committed file.');
+    }
+    final received = p.normalize(
+      p.absolute(p.join(_dataPath!, 'inbox', 'received')),
+    );
+    final absolute = p.normalize(p.absolute(path));
+    if (!p.isWithin(received, absolute) ||
+        await FileSystemEntity.type(absolute, followLinks: false) !=
+            FileSystemEntityType.file) {
+      throw const core.StorageException(
+        'COMMITTED_FILE_CHANGED',
+        'Committed file unavailable.',
+      );
+    }
+    final file = File(absolute);
+    if (p.normalize(await file.resolveSymbolicLinks()) != absolute ||
+        await file.length() != snapshot.manifest.sizeBytes) {
+      throw const core.StorageException(
+        'COMMITTED_FILE_CHANGED',
+        'Committed file changed.',
+      );
+    }
+    return file;
+  }
+
+  @override
+  Future<void> exportReceivedFile(
+    String transferId,
+    String fileId,
+  ) => _guard(() async {
+    if (!capabilities.fileExport ||
+        _exporting ||
+        !transferId.startsWith('in:')) {
+      return;
+    }
+    final id = transferId.substring(3);
+    final snapshot = _inbox!.status(id);
+    final file = snapshot.files
+        .where(
+          (file) =>
+              file.fileId == fileId && file.state == core.FileState.committed,
+        )
+        .firstOrNull;
+    if (file == null) {
+      throw const core.StorageException('NOT_FOUND', 'No committed file.');
+    }
+    _exporting = true;
+    ExportRecord? record;
+    var copyReported = false;
+    try {
+      record = _exports!.begin(id, fileId);
+      _unconfirmedExports.remove((id, fileId));
+      _emit();
+      final source = await _committedFile(file);
+      final digest = await sha256.bind(source.openRead()).first;
+      if (digest.toString() != file.manifest.sha256) {
+        throw const core.StorageException(
+          'COMMITTED_FILE_CHANGED',
+          'Committed contents changed.',
+        );
+      }
+      if (_closing) {
+        _exports!.finish(record.id, ExportState.cancelled);
+        return;
+      }
+      final result = await _runtime.exportFile!(
+        source: source,
+        displayName: p.basename(source.path),
+        mimeType:
+            file.manifest.mimeType != null &&
+                RegExp(r'^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$')
+                    .hasMatch(file.manifest.mimeType!)
+            ? file.manifest.mimeType
+            : 'application/octet-stream',
+      );
+      if (result == null) {
+        _exports!.finish(record.id, ExportState.cancelled);
+        _status =
+            'Сохранение копии отменено. Полученный файл остаётся в приложении.';
+      } else {
+        copyReported = true;
+        _exports!.finish(
+          record.id,
+          ExportState.exported,
+          destinationLabel: result.destinationLabel,
+          platformReference: result.platformReference,
+        );
+        _status = 'Копия сохранена: ${result.destinationLabel}';
+      }
+    } catch (error) {
+      final code = error is core.StorageException
+          ? error.code
+          : error is PlatformException
+          ? error.code
+          : 'EXPORT_FAILED';
+      // The copy can have succeeded if an OS callback or journal write was
+      // interrupted; only a positive persisted result yields "exported".
+      final latest = _exports!.latest(id, fileId);
+      if (record != null &&
+          latest?.id == record.id &&
+          latest?.state == ExportState.exporting) {
+        try {
+          _exports!.finish(
+            record.id,
+            copyReported ||
+                    code == 'EXPORT_INTERRUPTED' ||
+                    error is FormatException
+                ? ExportState.unknown
+                : ExportState.failed,
+            errorCode: code,
+          );
+        } catch (_) {
+          // A failed journal write cannot turn an uncertain copy into success.
+          // The unfinished durable row also recovers as unknown after restart.
+          _unconfirmedExports.add((id, fileId));
+        }
+      }
+      rethrow;
+    } finally {
+      _exporting = false;
+      _emit();
+    }
+  });
+
   @override
   Future<void> openTransfer(String transferId) => _guard(() async {
     if (!transferId.startsWith('in:')) return;
@@ -984,7 +1318,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           throw const core.StorageException('NOT_FOUND', 'No committed file');
         }
         // Only an explicit user action may launch the system's file handler.
-        final result = await OpenFilex.open(file.finalPath!);
+        final saved = await _committedFile(file);
+        final result = await OpenFilex.open(saved.path);
         if (result.type != ResultType.done) {
           _error = 'Файл сохранён, но подходящую программу открыть не удалось.';
         }
@@ -1025,6 +1360,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     } catch (error) {
       if (!_closing) _error = _friendly(error);
     } finally {
+      _refreshStorageSoon();
       _emit();
     }
   }
@@ -1052,6 +1388,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     _receiveWanted = false;
     _foreground = false;
     _peerTimer?.cancel();
+    _storageTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _pairingClient?.close();
     for (final client in _activeClients.values) {
@@ -1071,6 +1408,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     await _inbox?.close();
     await _outbox?.close();
     _journal?.close();
+    _exports?.close();
   }
 
   String _peerName(String peerId) =>
@@ -1114,6 +1452,14 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     if (value.state == core.TransferState.completed) {
       return 'SHA-256 проверен · сохранение подтверждено';
     }
+    final spaceError = value.files
+        .map((file) => file.errorCode)
+        .where((code) => code == 'DISK_FULL' || code == 'TEMP_QUOTA_EXCEEDED')
+        .firstOrNull;
+    if (spaceError != null) {
+      return '${_friendly(core.StorageException(spaceError, ''))} '
+          'Подтверждённая часть файла сохранена; затем нажмите «Продолжить».';
+    }
     if (value.pausedBySink) return 'Пауза получателя';
     if (value.pausedBySource) return 'Пауза отправителя';
     if (value.state == core.TransferState.offered) {
@@ -1133,6 +1479,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         ? error.code
         : error is core.StorageException
         ? error.code
+        : error is PlatformException
+        ? error.code
         : null;
     return switch (code) {
       'PEER_UNAVAILABLE' || 'NO_LAN_ADDRESS' => 'Устройство недоступно. Подключите оба устройства к одной сети и откройте приложение.',
@@ -1148,6 +1496,18 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       'SOURCE_CHANGED' =>
         'Исходный файл изменился во время подготовки. Выберите его повторно.',
       'FILE_TOO_LARGE' => 'Размер файла превышает предел этой сборки — 10 ГиБ.',
+      'DISK_FULL' || 'STORAGE_FULL' => 'Недостаточно свободного места с учётом начатых передач и резерва. Освободите место в настройках хранилища и повторите.',
+      'TEMP_QUOTA_EXCEEDED' => 'Достигнут лимит временных копий. Очистите неиспользуемые копии или увеличьте лимит в настройках.',
+      'TEMP_QUOTA_BELOW_USAGE' => 'Этот лимит меньше объёма временных копий и места для начатых передач. Сначала завершите передачи или освободите место.',
+      'CAPACITY_UNAVAILABLE' => 'Не удалось определить доступное место. Повторите проверку в настройках хранилища.',
+      'COMMITTED_FILE_CHANGED' => 'Полученный файл удалён, перемещён или изменён. Сохранение копии остановлено; проверьте файл.',
+      'EXPORT_INTERRUPTED' => 'Результат сохранения не подтверждён. Проверьте выбранную папку перед повтором.',
+      'EXPORT_FAILED' || 'EXPORT_IO' || 'EXPORT_UNAVAILABLE' => 'Не удалось сохранить внешнюю копию. Полученный файл остаётся в приложении; выберите другое место или повторите.',
+      'EXPORT_SOURCE_UNAVAILABLE' => 'Полученный файл недоступен для сохранения копии. Проверьте, что он не удалён или перемещён.',
+      'EXPORT_UNSUPPORTED' => 'Системное сохранение не поддерживается на этом устройстве. Файл остаётся в приложении.',
+      'EXPORT_BUSY' => 'Дождитесь завершения текущего сохранения или закройте открытое системное окно.',
+      'DESTINATION_EXISTS' || 'EXPORT_DESTINATION_EXISTS' =>
+        'Файл с таким именем уже существует. Укажите другое имя или папку.',
       'QUEUE_FULL' =>
         'Очередь заполнена. Завершите или отмените незавершённые передачи.',
       'BUSY' ||
