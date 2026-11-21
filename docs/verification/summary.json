@@ -1,0 +1,16 @@
+{
+  "date": "2026-11-20",
+  "flutter": "3.50.1",
+  "dart": "3.14.0",
+  "core_tests_passed": 35,
+  "flutter_tests_passed": 14,
+  "total_tests_passed": 49,
+  "capture_test_skipped_in_normal_run": 1,
+  "core_analyze": "no issues",
+  "app_analyze": "no issues",
+  "loopback_1g": "passed, independently verified with Python SHA-256",
+  "physical_device_matrix": "not run",
+  "ios_build": "not run",
+  "windows_build": "not run",
+  "ci_workflow": "created and YAML parsed; not executed on GitHub"
+}

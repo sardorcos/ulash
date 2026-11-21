@@ -1,0 +1,33 @@
+name: file_transfer
+description: Private local file sharing for iOS, Android and Windows.
+publish_to: none
+version: 0.1.0+1
+environment:
+  sdk: '>=3.13.5 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  transfer_core:
+    path: ../../packages/transfer_core
+  file_picker: ^13.4.0
+  path_provider: ^2.1.6
+  flutter_secure_storage: ^11.2.0
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^7.5.0
+  bonsoir: ^7.1.6
+  open_filex: ^5.0.0
+  desktop_drop: ^0.8.0
+  path: ^1.9.1
+  uuid: ^4.6.0
+  sqlite3: ^3.9.1
+dev_dependencies:
+  crypto: ^3.0.8
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+flutter:
+  uses-material-design: true

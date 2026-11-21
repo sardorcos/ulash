@@ -1,0 +1,90 @@
+
+[packages/transfer_core] dart pub get --enforce-lockfile
+Resolving dependencies...
+Downloading packages...
+Got dependencies!
+
+[packages/transfer_core] dart analyze --fatal-infos
+Analyzing transfer_core...
+No issues found!
+
+[packages/transfer_core] dart test --reporter expanded
+Running build hooks...
+00:00 +0: loading test/security_test.dart
+00:00 +0: test/storage_test.dart: only one store instance may own an inbox directory
+00:00 +1: test/security_test.dart: (setUpAll)
+00:00 +2: test/security_test.dart: (setUpAll)
+00:00 +3: test/security_test.dart: (setUpAll)
+00:00 +4: test/security_test.dart: (setUpAll)
+00:00 +5: test/security_test.dart: (setUpAll)
+00:00 +6: test/security_test.dart: (setUpAll)
+00:00 +7: test/security_test.dart: (setUpAll)
+00:00 +8: test/security_test.dart: (setUpAll)
+00:00 +9: test/security_test.dart: (setUpAll)
+00:00 +10: test/security_test.dart: (setUpAll)
+00:00 +11: test/security_test.dart: (setUpAll)
+00:00 +12: test/security_test.dart: (setUpAll)
+00:00 +13: test/security_test.dart: (setUpAll)
+00:00 +13: test/network_test.dart: (setUpAll)
+00:00 +14: test/network_test.dart: (setUpAll)
+00:00 +15: test/network_test.dart: (setUpAll)
+00:00 +16: test/network_test.dart: (setUpAll)
+00:00 +17: test/network_test.dart: (setUpAll)
+00:00 +18: test/network_test.dart: (setUpAll)
+00:00 +19: test/network_test.dart: (setUpAll)
+00:00 +20: test/network_test.dart: (setUpAll)
+00:00 +21: test/network_test.dart: (setUpAll)
+00:00 +22: test/network_test.dart: (setUpAll)
+00:00 +23: test/network_test.dart: (setUpAll)
+00:00 +23: test/storage_test.dart: outbox rejects source edits during preparation without publishing a manifest
+00:00 +24: test/network_test.dart: real TLS rejects the wrong pinned identity before any authenticated operation
+00:00 +25: test/network_test.dart: real TLS rejects the wrong pinned identity before any authenticated operation
+00:00 +26: test/network_test.dart: pairing retry survives client restart and requires manual acceptance
+00:00 +27: test/network_test.dart: consent gates streaming, full transfer is verified and retry does not duplicate files
+00:01 +28: test/network_test.dart: truncated HTTPS stream recovers its durable prefix across host restart
+00:01 +29: test/network_test.dart: bad offset cannot overwrite data and revoked credentials cannot resume
+00:02 +30: test/network_test.dart: source cannot clear a pause explicitly owned by the receiver
+00:02 +31: test/network_test.dart: HTTP redirect never forwards credentials to another origin
+00:02 +32: test/network_test.dart: oversized JSON is refused before creating pairing state
+00:02 +33: test/network_test.dart: empty file still requires acceptance and reaches verified commit
+00:02 +34: test/network_test.dart: revoking a peer stops an in-flight writer without waiting for more bytes
+00:02 +35: test/network_test.dart: (tearDownAll)
+00:02 +35: All tests passed!
+
+[apps/file_transfer] flutter --no-version-check pub get --enforce-lockfile
+Resolving dependencies...
+Downloading packages...
+  cross_file 0.3.5+5 (0.4.0 available)
+  desktop_drop 0.8.0 (0.9.2 available)
+  material_color_utilities 0.13.0 (0.13.1 available)
+  qr 3.0.3 (4.0.1 available)
+  test_api 0.7.14 (0.7.15 available)
+  vector_math 2.4.3 (2.4.4 available)
+Got dependencies!
+6 packages have newer versions incompatible with dependency constraints.
+Try `flutter pub outdated` for more information.
+
+[apps/file_transfer] flutter --no-version-check analyze --no-pub
+Analyzing file_transfer...                                      
+No issues found! (ran in 1.9s)
+
+[apps/file_transfer] flutter --no-version-check test --reporter expanded
+00:00 +0: loading /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart
+00:00 +0: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:00 +0 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:00 +1 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:00 +2 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:00 +3 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:00 +4 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: two real controllers pair, require consent and commit exact file bytes
+00:03 +5 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/ui_test.dart: all five mobile pages fit 360px and do not invent transfers
+00:03 +6 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/controller_integration_test.dart: receive-off survives refresh and resume; parallel starts share one listener
+00:03 +7 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/ui_test.dart: short desktop and enlarged text remain usable
+00:03 +8 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/ui_test.dart: short desktop and enlarged text remain usable
+00:03 +9 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/ui_test.dart: sending needs a prepared source and a trusted available peer
+00:04 +10 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/ui_test.dart: incoming consent is explicit and reaches the controller
+00:04 +11 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/ui_test.dart: 100 percent bytes during verification is not successful delivery
+00:04 +12 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/ui_test.dart: manual invitation is forwarded and unsupported scanner is disabled
+00:05 +13 ~1: /workspace/scratch/c3a4a0f6fabd/file-transfer/apps/file_transfer/test/ui_test.dart: the user can choose any committed file in a received package
+00:05 +14 ~1: All tests passed!
+
+Validation passed. Native device acceptance remains a separate gate.

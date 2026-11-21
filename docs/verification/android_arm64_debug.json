@@ -1,0 +1,35 @@
+{
+  "verified_at_utc": "2026-11-20T18:16:30.196238+00:00",
+  "artifact": "apps/file_transfer/build/app/outputs/flutter-apk/app-arm64-v8a-debug.apk",
+  "size_bytes": 119608218,
+  "sha256": "76587efc670eb0a92ee8cd1ac1f18292a1091c65be0ceabab800c3f07af7c74d",
+  "package_name": "uz.sardor.file_transfer",
+  "version_name": "0.1.0",
+  "version_code": 2001,
+  "min_sdk": 29,
+  "target_sdk": 37,
+  "native_abis": [
+    "arm64-v8a"
+  ],
+  "debuggable": true,
+  "zip_crc_check": "passed",
+  "apksigner_verify_exit_code": 0,
+  "signature_scheme_v2_verified": true,
+  "signer_subject": "C=US, O=Android, CN=Android Debug",
+  "source_dart_files_count": 27,
+  "source_dart_tree_sha256": "74c2bf73bc87926a35fa9c0e7f1b98beaaed9abcac1346805e36d960087e0dca",
+  "command": "flutter --no-version-check build apk --debug --no-pub --target-platform android-arm64 --split-per-abi",
+  "flutter_version": "3.50.1",
+  "java_compiler_version": "21.0.13",
+  "device_installation_tested": false,
+  "physical_device_transfer_tested": false,
+  "native_libraries": [
+    "lib/arm64-v8a/libVkLayer_khronos_validation.so",
+    "lib/arm64-v8a/libbarhopper_v3.so",
+    "lib/arm64-v8a/libdartjni.so",
+    "lib/arm64-v8a/libflutter.so",
+    "lib/arm64-v8a/libimage_processing_util_jni.so",
+    "lib/arm64-v8a/libsqlite3.so",
+    "lib/arm64-v8a/libsurface_util_jni.so"
+  ]
+}

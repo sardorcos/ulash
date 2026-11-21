@@ -1,0 +1,17 @@
+name: transfer_core
+description: Foreground LAN file transfer protocol and durable storage.
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: '>=3.13.5 <4.0.0'
+dependencies:
+  crypto: ^3.0.8
+  path: ^1.9.1
+  uuid: ^4.6.0
+  sqlite3: ^3.9.1
+  pointycastle: ^4.0.0
+  basic_utils: ^5.8.2
+  asn1lib: ^1.6.8
+dev_dependencies:
+  test: ^1.33.0
+  lints: ^6.0.0

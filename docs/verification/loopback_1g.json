@@ -1,0 +1,29 @@
+{
+  "status": "passed",
+  "mode": "foreground HTTPS push with receiver restart and resume",
+  "source_path": "/workspace/scratch/c3a4a0f6fabd/probe_network_1g/source.bin",
+  "sink_path": "/workspace/scratch/c3a4a0f6fabd/probe_network_1g/receiver/received/4748bc68-51f5-4838-b105-a445e86ee170/76387a9f-955d-4a51-ad06-37005059cf6b/source.bin",
+  "size": 1073741824,
+  "size_bytes": 1073741824,
+  "sha256": "64ac271682815a3defa1ddb2320b525ff25d5102f901be28b960200f66d3c407",
+  "source_sha256": "64ac271682815a3defa1ddb2320b525ff25d5102f901be28b960200f66d3c407",
+  "sink_sha256": "64ac271682815a3defa1ddb2320b525ff25d5102f901be28b960200f66d3c407",
+  "checkpoint_bytes": 4194304,
+  "resumed_from_bytes": 4718592,
+  "host_restarted": true,
+  "manual_pair_approval_checked": true,
+  "receiver_consent_checked": true,
+  "receiver_state": "committed",
+  "elapsed_seconds": 69.255,
+  "credentials": "ephemeral memory only; not included in result",
+  "report_path": "/workspace/scratch/c3a4a0f6fabd/probe_network_1g/result.json",
+  "independent_verification": {
+    "tool": "Python 3.12.14 hashlib.sha256",
+    "matched": true,
+    "source_sha256": "64ac271682815a3defa1ddb2320b525ff25d5102f901be28b960200f66d3c407",
+    "sink_sha256": "64ac271682815a3defa1ddb2320b525ff25d5102f901be28b960200f66d3c407",
+    "size_bytes": 1073741824
+  },
+  "test_scope": "Two logical peers in one Linux environment; real TCP/TLS and disk. Not a physical iOS/Android/Windows device test.",
+  "date": "2026-11-20"
+}
