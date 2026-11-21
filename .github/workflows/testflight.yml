@@ -182,7 +182,7 @@ jobs:
         working-directory: apps/file_transfer
         run: |
           echo "Version $BUILD_NAME ($BUILD_NUMBER)"
-          flutter --no-version-check build ios --release --config-only --no-pub \
+          flutter --no-version-check build ios --release --config-only --no-codesign --no-pub \
             --build-name="$BUILD_NAME" --build-number="$BUILD_NUMBER"
 
       - name: Write API key
