@@ -203,3 +203,20 @@ workflows:
           for p in json.load(sys.stdin):
               a = p.get("attributes", {})
               print(a.get("profileType"), a.get("profileState"), a.get("name"), "expires", a.get("expirationDate"))'
+
+  testflight-testers:
+    name: TestFlight internal testers
+    instance_type: linux_x2
+    max_build_duration: 10
+    integrations:
+      app_store_connect: monetniy-mir-asc
+    environment:
+      vars:
+        BUNDLE_ID: uz.ulash.app
+        TESTFLIGHT_GROUP: Internal Testers
+    scripts:
+      - name: Internal group and account holder
+        script: |
+          set -euo pipefail
+          python3 -m pip install --quiet "pyjwt[crypto]==2.10.1" requests
+          python3 scripts/testflight_testers.py
