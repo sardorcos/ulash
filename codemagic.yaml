@@ -240,3 +240,24 @@ workflows:
         # The first upload of a new app must be done manually in Play Console;
         # keep drafts until the store listing and Data safety form are complete.
         submit_as_draft: true
+
+  asc-diagnostics:
+    name: App Store Connect diagnostics (read-only)
+    instance_type: linux_x2
+    max_build_duration: 10
+    integrations:
+      app_store_connect: monetniy-mir-asc
+    scripts:
+      - name: Certificates and profiles (metadata only)
+        script: |
+          set -euo pipefail
+          app-store-connect certificates list --type DISTRIBUTION --type IOS_DISTRIBUTION --json \
+            | python3 -c 'import json,sys
+          for c in json.load(sys.stdin):
+              a = c.get("attributes", {})
+              print(c.get("id"), a.get("certificateType"), a.get("displayName"), a.get("name"), "expires", a.get("expirationDate"))'
+          app-store-connect profiles list --json \
+            | python3 -c 'import json,sys
+          for p in json.load(sys.stdin):
+              a = p.get("attributes", {})
+              print(a.get("profileType"), a.get("profileState"), a.get("name"), "expires", a.get("expirationDate"))'
