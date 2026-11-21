@@ -1,0 +1,211 @@
+name: iOS → TestFlight
+
+# Builds a signed release IPA on a macOS runner and uploads it to App Store
+# Connect (TestFlight). Signing is cloud-managed by Apple through an
+# App Store Connect API key: no certificate or profile is stored anywhere.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   ASC_KEY_ID       App Store Connect API key ID          (e.g. 2X9R4HXF34)
+#   ASC_ISSUER_ID    Issuer ID shown above the keys table  (UUID)
+#   ASC_PRIVATE_KEY  full contents of AuthKey_<KEY_ID>.p8, including the
+#                    BEGIN/END lines
+# The API key needs the "Admin" role (cloud signing creates certificates).
+# The app record "Ulash" (bundle ID uz.ulash.app) must exist in App Store
+# Connect before the first upload; the bundle ID itself is registered here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      register_only:
+        description: Only register the bundle ID and check the API key
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+env:
+  CI: true
+  FLUTTER_SUPPRESS_ANALYTICS: true
+  BUNDLE_ID: uz.ulash.app
+
+jobs:
+  testflight:
+    runs-on: macos-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Check secrets
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          missing=0
+          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY; do
+            if [ -z "${!name}" ]; then echo "::error::Secret $name is not set"; missing=1; fi
+          done
+          exit $missing
+
+      - name: Install App Store Connect tooling
+        run: python3 -m pip install --quiet --break-system-packages codemagic-cli-tools==0.71.0 || python3 -m pip install --quiet codemagic-cli-tools==0.71.0
+
+      - name: Write API key
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          mkdir -p "$HOME/private_keys"
+          printf '%s\n' "$ASC_PRIVATE_KEY" > "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          chmod 600 "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          echo "ASC_KEY_PATH=$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8" >> "$GITHUB_ENV"
+
+      - name: Register bundle ID and find team and app
+        env:
+          APP_STORE_CONNECT_KEY_IDENTIFIER: ${{ secrets.ASC_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          export APP_STORE_CONNECT_PRIVATE_KEY="@file:$ASC_KEY_PATH"
+          ids=$(app-store-connect bundle-ids list --bundle-id-identifier "$BUNDLE_ID" --strict-match-identifier --platform IOS --json)
+          if [ "$(echo "$ids" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')" = "0" ]; then
+            echo "Registering $BUNDLE_ID"
+            ids="[$(app-store-connect bundle-ids create "$BUNDLE_ID" --name Ulash --platform IOS --json)]"
+          fi
+          team=$(echo "$ids" | python3 -c 'import json,sys; a=json.load(sys.stdin)[0].get("attributes",{}); print(a.get("seedId") or a.get("seed_id") or "")')
+          if [ -z "$team" ]; then echo "::error::Could not determine the team ID from the bundle ID"; exit 1; fi
+          echo "Team ID: $team"
+          echo "TEAM_ID=$team" >> "$GITHUB_ENV"
+          apps=$(app-store-connect apps list --bundle-id-identifier "$BUNDLE_ID" --strict-match-identifier --json || echo '[]')
+          app_id=$(echo "$apps" | python3 -c 'import json,sys; a=json.load(sys.stdin); print(a[0]["id"] if a else "")')
+          if [ -z "$app_id" ]; then
+            echo "::warning::No App Store Connect app record for $BUNDLE_ID yet. Create app \"Ulash\" (bundle ID $BUNDLE_ID) in App Store Connect → Apps → New App, then run this workflow again."
+          else
+            echo "App Store Connect app id: $app_id"
+          fi
+          echo "APP_ID=$app_id" >> "$GITHUB_ENV"
+
+      - name: Stop after registration
+        if: inputs.register_only || env.APP_ID == ''
+        run: |
+          echo "Registration check finished."
+          if [ -z "$APP_ID" ] && [ "${{ inputs.register_only }}" != "true" ]; then exit 1; fi
+
+      - name: Select newest stable Xcode
+        if: ${{ !inputs.register_only }}
+        run: |
+          latest=$(ls -d /Applications/Xcode_*.app 2>/dev/null | grep -viE 'beta|rc' | sort -V | tail -1 || true)
+          if [ -n "$latest" ]; then sudo xcode-select -s "$latest/Contents/Developer"; fi
+          xcodebuild -version
+
+      - name: Install verified Flutter SDK
+        if: ${{ !inputs.register_only }}
+        run: python3 scripts/install_flutter_ci.py --destination "${{ runner.temp }}/transfer-sdk"
+
+      - name: Analyze and test
+        if: ${{ !inputs.register_only }}
+        run: python3 scripts/verify.py
+
+      - name: Choose build number
+        if: ${{ !inputs.register_only }}
+        env:
+          APP_STORE_CONNECT_KEY_IDENTIFIER: ${{ secrets.ASC_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -uo pipefail
+          export APP_STORE_CONNECT_PRIVATE_KEY="@file:$ASC_KEY_PATH"
+          if ! latest=$(app-store-connect get-latest-build-number "$APP_ID"); then
+            echo "::warning::Could not read the latest build number; using a timestamp."
+            latest=0
+          fi
+          case "$latest" in ''|*[!0-9]*) latest=0 ;; esac
+          stamp=$(date -u +%y%j%H%M | sed 's/^0*//')
+          build=$((latest + 1))
+          if [ "$stamp" -gt "$build" ]; then build=$stamp; fi
+          name=$(grep -E '^version:' apps/file_transfer/pubspec.yaml | sed -E 's/^version:[[:space:]]*([^+[:space:]]+).*/\1/')
+          echo "Version $name ($build)"
+          echo "BUILD_NAME=$name" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=$build" >> "$GITHUB_ENV"
+
+      - name: Prepare iOS project
+        if: ${{ !inputs.register_only }}
+        working-directory: apps/file_transfer
+        run: |
+          flutter --no-version-check build ios --release --config-only --no-pub \
+            --build-name="$BUILD_NAME" --build-number="$BUILD_NUMBER"
+
+      - name: Archive (cloud-managed signing)
+        if: ${{ !inputs.register_only }}
+        working-directory: apps/file_transfer/ios
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -workspace Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Runner.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGN_STYLE=Automatic \
+            | tee "$RUNNER_TEMP/archive.log" | grep -E 'error:|warning: .*signing|\*\* ARCHIVE' || true
+          test -d "$RUNNER_TEMP/Runner.xcarchive" || { tail -200 "$RUNNER_TEMP/archive.log"; exit 1; }
+
+      - name: Export and upload to App Store Connect
+        if: ${{ !inputs.register_only }}
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>teamID</key><string>${TEAM_ID}</string>
+            <key>uploadSymbols</key><true/>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict></plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Runner.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            2>&1 | tee "$RUNNER_TEMP/export.log" | tail -60
+          grep -qE 'EXPORT SUCCEEDED|Upload succeeded|Uploaded' "$RUNNER_TEMP/export.log"
+          echo "Uploaded $BUILD_NAME ($BUILD_NUMBER). It appears in TestFlight after Apple finishes processing (usually 5–30 minutes)."
+
+      - name: Keep logs
+        if: always() && !inputs.register_only
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcode-logs
+          path: |
+            ${{ runner.temp }}/archive.log
+            ${{ runner.temp }}/export.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Remove API key
+        if: always()
+        run: rm -rf "$HOME/private_keys"

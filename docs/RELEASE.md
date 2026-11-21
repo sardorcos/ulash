@@ -21,6 +21,26 @@ Bundle ID и applicationId после первой публикации смен
 
 ---
 
+## Самый короткий путь: GitHub Actions → TestFlight
+
+Workflow `.github/workflows/testflight.yml` собирает подписанную сборку на macOS-раннере GitHub и сам загружает её в TestFlight. Подпись облачная (Apple создаёт сертификат и профиль по API-ключу), Bundle ID регистрируется автоматически, номер сборки вычисляется сам. Codemagic в этом варианте не нужен.
+
+От владельца аккаунта нужно один раз:
+
+1. **App Store Connect → Users and Access → Integrations → App Store Connect API → Team Keys → «+»**: имя `GitHub Actions`, доступ **Admin** (нужен для облачной подписи). Скачайте `AuthKey_XXXX.p8` (скачивается один раз), запишите **Key ID** и **Issuer ID**.
+2. **GitHub → репозиторий `ulash` → Settings → Secrets and variables → Actions → New repository secret** — три секрета:
+   - `ASC_KEY_ID` — Key ID;
+   - `ASC_ISSUER_ID` — Issuer ID;
+   - `ASC_PRIVATE_KEY` — всё содержимое файла `.p8` вместе со строками `BEGIN/END PRIVATE KEY`.
+3. **App Store Connect → Apps → «+» → New App**: iOS, имя `Ulash`, основной язык Russian, Bundle ID `uz.ulash.app` (если его ещё нет в списке — сначала запустите workflow с галочкой `register_only`, он зарегистрирует Bundle ID), SKU `ulash-ios`.
+4. **Actions → «iOS → TestFlight» → Run workflow.** Через 20–40 минут сборка появится в TestFlight (после обработки Apple).
+
+Минуты macOS для приватного репозитория расходуются из квоты GitHub (у бесплатного плана — 200 минут macOS в месяц, одна сборка ≈ 25–35 минут).
+
+---
+
+Ниже — альтернативный путь через Codemagic.
+
 ## 1. Apple Developer: регистрация идентификатора
 
 1. Откройте https://developer.apple.com/account → **Certificates, Identifiers & Profiles** → **Identifiers** → **+**.
