@@ -34,6 +34,7 @@ abstract class AppController extends ChangeNotifier {
   /// Why startup failed, if it did. The interface offers matching recovery.
   StartupIssue get startupIssue => StartupIssue.none;
   bool get needsOnboarding => false;
+  bool get canRepairStorage => false;
 
   /// Short code of this device's key (compare during pairing).
   String? get deviceCode => null;

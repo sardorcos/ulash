@@ -6,9 +6,11 @@ Read `docs/IMPLEMENTATION_STATUS_RU.md` and the relevant part of
 - Keep UI and native adapters separate from `packages/transfer_core`.
 - Never fabricate discovered peers, transfer progress or a delivery receipt.
 - Never weaken SPKI pinning, enable plaintext fallback, follow auth redirects,
-  or reset an identity on a locked/corrupt secure store.
+  or reset an identity on a locked/corrupt secure store automatically. A reset
+  happens only after the user confirms it (startup recovery or Settings); it
+  removes keys and pairings only and keeps the user's settings.
 - Discovery is an untrusted address hint. Names and addresses do not establish trust.
-- No file data before explicit Sink consent. No autoaccept in this alpha.
+- No file data before explicit Sink consent. No autoaccept.
 - A Sender may mark success or clean its only prepared copy only after a complete,
   validated committed receipt from the Sink.
 - Preserve outgoing request IDs and cancellation intent across restart.
@@ -28,5 +30,9 @@ Read `docs/IMPLEMENTATION_STATUS_RU.md` and the relevant part of
 - Keep committed network receipt and native export state separate. Recover an unfinished export as unknown and never automatically repeat it.
 - Explicit outgoing cleanup may remove only the previewed, still-unreferenced copies after the user confirms the documented last-copy consequence. Incoming cleanup may stop only the confirmed batch IDs and remove journal-owned unfinished payloads; preserve completed files, receipts and unresolved commit intents.
 - Rejection, cancellation and expiry do not automatically delete an outgoing prepared copy. Automatic source cleanup requires a complete validated committed receipt. A user-requested new attempt has a new requestId and requires new Sink consent.
-- Network retries are finite and cancellable. Never clear a manual Source or Sink pause automatically, retry trust/integrity failures, or restart work after backgrounding/shutdown without user action.
-- The 0.2 and 0.3 debug Android ID is .alpha02 with the same verified signer, different from 0.1. Preserve installed user data; never suggest uninstalling a prior app to mask a signing-key mismatch.
+- Network retries are finite and cancellable. Never clear a manual Source or Sink pause automatically or retry trust/integrity failures.
+- Product decision for 1.0: a send stopped by backgrounding (after the bounded grace period) or by exhausted network retries continues automatically once the app is in the foreground and the peer answers a fresh pinned probe (at most 3 automatic continuations per job and session). A cold start never resumes work by itself; a manual pause is never resumed automatically.
+- Automatic history pruning removes journal records only, never prepared copies or received files. A freshly created outbox journal never deletes existing snapshots.
+- Release identifiers: iOS bundle ID and Android applicationId `uz.ulash.app` (debug `uz.ulash.app.debug`). The alpha lines (`uz.sardor.file_transfer*`) are separate installations; there is no migration from them.
+- User-visible text lives in `apps/file_transfer/lib/l10n/*.arb` (ru template, uz Latin, en), generated from `scripts/l10n/catalog.py` via `scripts/l10n/gen.py` and `flutter gen-l10n`. Never hard-code UI strings.
+- Diagnostics are local only and must not contain file names, paths, addresses, tokens or invitations.

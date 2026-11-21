@@ -4,3 +4,4 @@
 "NSLocalNetworkUsageDescription" = "Ulash umumiy Wi-Fi tarmog‘idagi qurilmalaringizni topadi va tanlangan fayllarni internet va bulutsiz to‘g‘ridan-to‘g‘ri uzatadi.";
 "NSCameraUsageDescription" = "Kamera faqat qurilmangizni ulash uchun QR-kodni skanerlashga kerak.";
 "NSPhotoLibraryUsageDescription" = "Qurilmangizga yuborish uchun foto va videolarni tanlashga ruxsat kerak.";
+"NSPhotoLibraryAddUsageDescription" = "Qabul qilingan foto va videolarni oʻzingiz tanlaganingizda «Rasmlar»ga saqlash uchun kerak.";

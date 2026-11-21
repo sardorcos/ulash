@@ -93,6 +93,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   int _messageSerial = 0;
   StartupIssue _startupIssue = StartupIssue.none;
   File? _failedJournal;
+  bool _journalTooNew = false;
   bool _needsOnboarding = false;
   bool _localNetworkDenied = false;
   bool _observing = false;
@@ -121,6 +122,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     }
     _startupIssue = StartupIssue.none;
     _failedJournal = null;
+    _journalTooNew = false;
     try {
       _busy = _l.busyPreparingStorage;
       _emit();
@@ -244,6 +246,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           code == 'JOURNAL_CORRUPT' ||
           code == 'JOURNAL_TOO_NEW') {
         _failedJournal = file;
+        _journalTooNew = code == 'JOURNAL_TOO_NEW';
         _startupIssue = StartupIssue.journal;
       }
       rethrow;
@@ -343,7 +346,20 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
 
   /// Closes everything opened by startup and starts again. Running sends
   /// are stopped first; their state is in the journal.
+  bool _restarting = false;
+  bool _manualResumePending = false;
+
   Future<void> _restart() async {
+    _restarting = true;
+    _autoResume.clear();
+    try {
+      await _restartNow();
+    } finally {
+      _restarting = false;
+    }
+  }
+
+  Future<void> _restartNow() async {
     for (final run in _outgoingRuns.values.toList()) {
       run.cancel();
     }
@@ -393,6 +409,13 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     _invalidate();
   }
 
+  static const _settingsKeys = [
+    'transfer.settings.theme',
+    'transfer.settings.temporaryQuotaBytes',
+    'transfer.settings.locale',
+    'transfer.settings.onboarded',
+  ];
+
   @override
   Future<void> resetDeviceKeys() async {
     if (_closing) return;
@@ -400,7 +423,20 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     try {
       final reset = _runtime.resetSecrets;
       if (reset != null) {
+        // Only keys and pairings are reset; the user's settings survive.
+        final kept = <String, String>{};
+        for (final key in _settingsKeys) {
+          try {
+            final value = await _secrets.read(key);
+            if (value != null) kept[key] = value;
+          } catch (_) {
+            /* Unreadable store: settings are lost with the keys. */
+          }
+        }
         await reset();
+        for (final entry in kept.entries) {
+          await _secrets.write(entry.key, entry.value);
+        }
       } else {
         for (final key in const [
           'transfer.identity.v1',
@@ -427,7 +463,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   @override
   Future<void> repairStorage() async {
     final file = _failedJournal;
-    if (file == null || _closing) return;
+    if (file == null || _journalTooNew || _closing) return;
     final stamp = DateTime.now().toUtc().millisecondsSinceEpoch;
     for (final suffix in const ['', '-wal', '-shm']) {
       final part = File('${file.path}$suffix');
@@ -552,6 +588,11 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   StartupIssue get startupIssue => _startupIssue;
   @override
   bool get needsOnboarding => _needsOnboarding;
+
+  /// A newer app version's journal must not be moved aside: updating the app
+  /// is the fix, so repair is offered only for a damaged journal.
+  @override
+  bool get canRepairStorage => _failedJournal != null && !_journalTooNew;
   @override
   bool get localNetworkDenied => _localNetworkDenied;
   @override
@@ -878,8 +919,18 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       return await action();
     } finally {
       _systemUi--;
+      // The user may have left the app from the system sheet (e.g. the share
+      // target opened another app). Apply the lifecycle state we skipped.
+      if (_systemUi == 0 &&
+          _lastLifecycle == AppLifecycleState.paused &&
+          _runtime.mobileLifecycle &&
+          !_closing) {
+        _enterBackground();
+      }
     }
   }
+
+  AppLifecycleState? _lastLifecycle;
 
   Future<void> _pickAndStage({required bool media}) => _guard(() async {
     if (_outbox == null || isBusy) return;
@@ -1040,6 +1091,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
 
   Future<void> _runJob(OutgoingJob job, {bool resumeSource = false}) async {
     if (_closing ||
+        _restarting ||
         _disposed ||
         !_foreground ||
         _running.isNotEmpty ||
@@ -1130,7 +1182,14 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   /// Continues one job that the lifecycle or the network interrupted, once
   /// its peer is reachable again. Manual pauses are never resumed here.
   void _scheduleAutoResume() {
-    if (_closing || _disposed || !_foreground || _running.isNotEmpty) return;
+    if (_closing ||
+        _restarting ||
+        _disposed ||
+        !_foreground ||
+        _running.isNotEmpty ||
+        _manualResumePending) {
+      return;
+    }
     for (final id in _autoResume.toList()) {
       final job = _jobs.where((item) => item.id == id).firstOrNull;
       if (job == null ||
@@ -1416,7 +1475,17 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     }
     _autoResume.remove(job.id);
     _autoResumeAttempts.remove(job.id);
-    await _refreshTrusted();
+    // The user's explicit choice wins over a queued automatic continuation.
+    _manualResumePending = true;
+    try {
+      await _refreshTrusted();
+    } finally {
+      _manualResumePending = false;
+    }
+    if (_running.isNotEmpty) {
+      _setStatus(_l.waitCurrentSend);
+      return;
+    }
     _launch(_runJob(job, resumeSource: true));
   });
 
@@ -1581,7 +1650,9 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
 
   @override
   Future<void> scanInvitation() => _guard(() async {
-    final text = await _withSystemUi(() async => scanCode?.call());
+    // The scanner is an in-app screen, not a system sheet: leaving the app
+    // from it must still be handled as backgrounding.
+    final text = await scanCode?.call();
     if (text != null) await pairFromText(text);
   });
   @override
@@ -1781,11 +1852,15 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   /// Removes a finished outgoing record and its prepared copies that no
   /// selection or other unfinished job uses. The interface confirms first,
   /// including the warning that such a copy may be the last one.
-  Future<void> _removeJob(OutgoingJob job) async {
+  Future<void> _removeJob(OutgoingJob job, {bool deleteCopies = true}) async {
     _jobs.remove(job);
     _journal?.delete(job.id);
     _autoResume.remove(job.id);
     _autoResumeAttempts.remove(job.id);
+    // Automatic pruning never deletes a prepared copy: it may be the last one.
+    // Unreferenced copies then appear under "unused copies" for explicit
+    // cleanup with its last-copy warning.
+    if (!deleteCopies) return;
     for (final file in job.manifest.files) {
       if (_unusedSource(file.fileId) &&
           !_jobs.any(
@@ -1830,7 +1905,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           in _jobs
               .where((job) => job.isTerminal && job.createdAt.isBefore(limit))
               .toList()) {
-        await _removeJob(job);
+        await _removeJob(job, deleteCopies: false);
       }
       for (final item in _inbox?.list() ?? const <core.TransferSnapshot>[]) {
         if (_terminal(item) &&
@@ -2247,6 +2322,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (!_runtime.mobileLifecycle || _closing) return;
+    _lastLifecycle = state;
     if (state == AppLifecycleState.paused) {
       // A picker, share sheet, viewer or export dialog of our own stops the
       // Android activity too; the user has not left the app.

@@ -40,6 +40,10 @@ class DurableOutbox {
     await ensurePlainDirectory(Directory(p.join(root.path, 'files')));
     final lease = await StorageLease.acquire(root, 'outbox');
     Database? opened;
+    // A journal created just now (first launch, or a damaged one moved aside)
+    // knows nothing about existing snapshots: those may be the last copy of a
+    // user's file, so they are never deleted as "orphans" in that case.
+    final journalExisted = File(p.join(root.path, 'outbox.sqlite')).existsSync();
     try {
       final db = openJournal(
         File(p.join(root.path, 'outbox.sqlite')),
@@ -57,7 +61,7 @@ class DurableOutbox {
         }
       }
       final store = DurableOutbox._(root, db, lease, budget);
-      await store._deleteOrphanBlobs();
+      if (journalExisted) await store._deleteOrphanBlobs();
       await store._restoreBudget();
       return store;
     } catch (_) {

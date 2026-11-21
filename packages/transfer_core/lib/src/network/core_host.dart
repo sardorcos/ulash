@@ -444,7 +444,15 @@ final class CoreHost {
     // Keep cancellation directly connected to HttpRequest. An async* wrapper
     // can strand its inner moveNext future when storage cancels a live body.
     return request.timeout(uploadIdleTimeout).map((chunk) {
-      if (_closed || peers.authenticate(token)?.peerId != peerId) {
+      if (_closed) {
+        // Host restart/shutdown: resumable from the durable offset, never a
+        // destructive failure of the partial file.
+        throw const StorageException(
+          'TRANSFER_INTERRUPTED',
+          'Receiver is restarting',
+        );
+      }
+      if (peers.authenticate(token)?.peerId != peerId) {
         throw const StorageException('PEER_REVOKED', 'Pairing was revoked');
       }
       count += chunk.length;

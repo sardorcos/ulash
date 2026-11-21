@@ -432,4 +432,30 @@ void main() {
     }),
     timeout: const Timeout(Duration(seconds: 60)),
   );
+
+  test(
+    'a confirmed key reset keeps settings and does not repeat onboarding',
+    () => _realNetwork(() async {
+      final secrets = core.MemorySecretStore();
+      final node = await _Node.create(
+        'Reset',
+        secrets: secrets,
+        requireOnboarding: true,
+        resetSecrets: () async => secrets.clear(),
+      );
+      try {
+        await node.controller.completeOnboarding();
+        await node.controller.setLocale(const Locale('en'));
+        final before = node.controller.deviceCode;
+        await node.controller.resetDeviceKeys();
+        expect(node.controller.startupIssue, StartupIssue.none);
+        expect(node.controller.needsOnboarding, isFalse);
+        expect(node.controller.locale, const Locale('en'));
+        expect(node.controller.deviceCode, isNot(before));
+        expect(node.controller.receivingEnabled, isTrue);
+      } finally {
+        await node.close();
+      }
+    }),
+  );
 }

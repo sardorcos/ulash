@@ -71,6 +71,7 @@ workflows:
         script: |
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
             --type IOS_APP_STORE \
+            --strict-match-identifier \
             --create
       - name: Install certificates and profiles
         script: |
@@ -82,9 +83,17 @@ workflows:
           cd "$CM_BUILD_DIR/apps/file_transfer"
           # Marketing version comes from pubspec.yaml (version: X.Y.Z+N).
           BUILD_NAME=$(grep -E '^version:' pubspec.yaml | sed -E 's/^version:[[:space:]]*([^+[:space:]]+).*/\1/')
-          LATEST=$(app-store-connect get-latest-build-number "$APP_STORE_APPLE_ID" 2>/dev/null || echo 0)
+          # The first upload has no builds yet; any API error is printed.
+          if ! LATEST=$(app-store-connect get-latest-build-number "$APP_STORE_APPLE_ID"); then
+            echo "warning: could not read the latest build number" >&2
+            LATEST=0
+          fi
           case "$LATEST" in ''|*[!0-9]*) LATEST=0 ;; esac
+          # A UTC timestamp floor (yyDDDHHMM) keeps numbers increasing even if
+          # the lookup failed, so an upload can never be a duplicate.
+          STAMP=$(date -u +%y%j%H%M | sed 's/^0*//')
           BUILD_NUMBER=$((LATEST + 1))
+          if [ "$STAMP" -gt "$BUILD_NUMBER" ]; then BUILD_NUMBER=$STAMP; fi
           echo "Building $BUILD_NAME ($BUILD_NUMBER)"
           flutter --no-version-check build ipa --release \
             --build-name="$BUILD_NAME" \
@@ -139,11 +148,17 @@ workflows:
           set -euo pipefail
           cd "$CM_BUILD_DIR/apps/file_transfer"
           BUILD_NAME=$(grep -E '^version:' pubspec.yaml | sed -E 's/^version:[[:space:]]*([^+[:space:]]+).*/\1/')
-          LATEST=$(google-play get-latest-build-number --package-name "$PACKAGE_NAME" 2>/dev/null || echo 0)
+          if ! LATEST=$(google-play get-latest-build-number --package-name "$PACKAGE_NAME"); then
+            echo "warning: could not read the latest version code" >&2
+            LATEST=0
+          fi
           case "$LATEST" in ''|*[!0-9]*) LATEST=0 ;; esac
+          STAMP=$(date -u +%y%j%H%M | sed 's/^0*//')
+          BUILD_NUMBER=$((LATEST + 1))
+          if [ "$STAMP" -gt "$BUILD_NUMBER" ]; then BUILD_NUMBER=$STAMP; fi
           flutter --no-version-check build appbundle --release \
             --build-name="$BUILD_NAME" \
-            --build-number="$((LATEST + 1))"
+            --build-number="$BUILD_NUMBER"
     artifacts:
       - apps/file_transfer/build/app/outputs/bundle/release/*.aab
       - apps/file_transfer/build/app/outputs/mapping/release/mapping.txt

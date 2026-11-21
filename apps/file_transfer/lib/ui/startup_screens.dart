@@ -293,7 +293,7 @@ class _StartupIssueScreenState extends State<StartupIssueScreen> {
                         ),
                       ),
                     ],
-                    if (c.startupIssue == StartupIssue.journal) ...[
+                    if (c.startupIssue == StartupIssue.journal && c.canRepairStorage) ...[
                       const SizedBox(height: 12),
                       SizedBox(
                         width: double.infinity,

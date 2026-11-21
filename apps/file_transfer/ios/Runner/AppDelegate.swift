@@ -121,13 +121,10 @@ private final class StorageBridge: NSObject, UIDocumentPickerDelegate,
   /// its journal entry can be flushed. It never keeps a transfer running in
   /// the background; Dart ends it as soon as the checkpoint is durable.
   private func beginBackgroundTask(result: FlutterResult) {
-    var identifier = UIBackgroundTaskIdentifier.invalid
-    identifier = UIApplication.shared.beginBackgroundTask(withName: "Ulash.checkpoint") { [weak self] in
-      guard let self = self else {
-        UIApplication.shared.endBackgroundTask(identifier)
-        return
-      }
-      self.finishBackgroundTask(identifier.rawValue, expired: true)
+    // The expiration handler must not capture a mutable identifier: on expiry
+    // every outstanding task is ended (there is normally only one).
+    let identifier = UIApplication.shared.beginBackgroundTask(withName: "Ulash.checkpoint") { [weak self] in
+      self?.expireAllBackgroundTasks()
     }
     guard identifier != .invalid else {
       result(nil)
@@ -145,6 +142,12 @@ private final class StorageBridge: NSObject, UIDocumentPickerDelegate,
     }
     finishBackgroundTask(id, expired: false)
     result(nil)
+  }
+
+  private func expireAllBackgroundTasks() {
+    for id in Array(backgroundTasks.keys) {
+      finishBackgroundTask(id, expired: true)
+    }
   }
 
   private func finishBackgroundTask(_ id: Int, expired: Bool) {

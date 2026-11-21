@@ -631,6 +631,28 @@ void main() {
   });
 
   group('failures, missing results and orphans', () {
+    test(
+      'a freshly created outbox journal never deletes existing snapshots',
+      () async {
+        final directory = await Directory.systemTemp.createTemp('outbox-fresh-');
+        try {
+          final files = Directory(p.join(directory.path, 'files'));
+          await files.create(recursive: true);
+          final snapshot = File(
+            p.join(files.path, '0b0c0d0e-1111-4222-8333-944445555777.blob'),
+          );
+          await snapshot.writeAsBytes([1, 2, 3]);
+          // No outbox.sqlite: e.g. a damaged journal was moved aside.
+          final outbox = await DurableOutbox.open(directory);
+          await outbox.close();
+          expect(await snapshot.exists(), isTrue,
+              reason: 'may be the last copy of a user file');
+        } finally {
+          await directory.delete(recursive: true);
+        }
+      },
+    );
+
     test('an oversized body fails and discards its partial payload', () async {
       final directory = Directory(p.join(temp.path, 'inbox'));
       final budget = StorageBudget(
