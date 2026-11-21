@@ -102,19 +102,29 @@ def main() -> None:
     if any(t["attributes"].get("email", "").lower() == email.lower() for t in members):
         print("Account holder is already in the group")
     else:
-        existing = check(s.get(f"{API}/betaTesters", params={"filter[email]": email}),
-                         "find tester")["data"]
-        if existing:
+        # Internal groups take App Store Connect users by e-mail; creating the
+        # tester with the group relationship works even if a tester record for
+        # this e-mail already exists from other apps.
+        created = s.post(f"{API}/betaTesters", json={"data": {
+            "type": "betaTesters",
+            "attributes": {"email": email, "firstName": holder.get("firstName", ""),
+                           "lastName": holder.get("lastName", "")},
+            "relationships": {"betaGroups": {"data": [{"type": "betaGroups", "id": group["id"]}]}},
+        }})
+        if created.status_code >= 400:
+            print(f"create tester with group: HTTP {created.status_code} "
+                  + "; ".join(e.get("detail", "") for e in created.json().get("errors", [])))
+            existing = check(s.get(f"{API}/betaTesters", params={"filter[email]": email}),
+                             "find tester")["data"]
+            if not existing:
+                sys.exit("Could not add the account holder")
             check(s.post(f"{API}/betaGroups/{group['id']}/relationships/betaTesters",
                          json={"data": [{"type": "betaTesters", "id": existing[0]["id"]}]}),
-                  "add tester to group")
-        else:
-            check(s.post(f"{API}/betaTesters", json={"data": {
-                "type": "betaTesters",
-                "attributes": {"email": email, "firstName": holder.get("firstName", ""),
-                               "lastName": holder.get("lastName", "")},
-                "relationships": {"betaGroups": {"data": [{"type": "betaGroups", "id": group["id"]}]}},
-            }}), "create tester")
+                  "add existing tester to group")
+        members = check(s.get(f"{API}/betaGroups/{group['id']}/betaTesters", params={"limit": 200}),
+                        "verify group testers")["data"]
+        if not any(t["attributes"].get("email", "").lower() == email.lower() for t in members):
+            sys.exit("Account holder is not listed in the group after adding")
         print("Added the account holder to the internal group")
 
     # Internal groups with access to all builds get every processed build;
