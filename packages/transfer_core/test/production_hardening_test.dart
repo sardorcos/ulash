@@ -186,7 +186,10 @@ void main() {
         final completed = inbox!.status(done.transferId).files.single;
         expect(completed.state, FileState.committed);
         expect(completed.errorCode, isNull);
-        expect(p.isWithin(newRoot.path, completed.finalPath!), isTrue);
+        expect(
+          p.isWithin(newRoot.resolveSymbolicLinksSync(), completed.finalPath!),
+          isTrue,
+        );
         expect(await File(completed.finalPath!).readAsBytes(), [1, 2, 3]);
 
         final resumed = inbox!.status(partial.transferId);
@@ -203,7 +206,10 @@ void main() {
         );
 
         final prepared = outbox!.get(staged.manifest.fileId);
-        expect(p.isWithin(newRoot.path, prepared.path), isTrue);
+        expect(
+          p.isWithin(newRoot.resolveSymbolicLinksSync(), prepared.path),
+          isTrue,
+        );
         expect(
           await outbox!.read(staged.manifest.fileId).expand((c) => c).toList(),
           [5, 6, 7],
@@ -634,7 +640,9 @@ void main() {
     test(
       'a freshly created outbox journal never deletes existing snapshots',
       () async {
-        final directory = await Directory.systemTemp.createTemp('outbox-fresh-');
+        final directory = await Directory.systemTemp.createTemp(
+          'outbox-fresh-',
+        );
         try {
           final files = Directory(p.join(directory.path, 'files'));
           await files.create(recursive: true);
@@ -645,8 +653,11 @@ void main() {
           // No outbox.sqlite: e.g. a damaged journal was moved aside.
           final outbox = await DurableOutbox.open(directory);
           await outbox.close();
-          expect(await snapshot.exists(), isTrue,
-              reason: 'may be the last copy of a user file');
+          expect(
+            await snapshot.exists(),
+            isTrue,
+            reason: 'may be the last copy of a user file',
+          );
         } finally {
           await directory.delete(recursive: true);
         }

@@ -463,7 +463,10 @@ void main() {
       expect(p.basename(first.finalPath!), '_CON.txt');
       expect(p.basename(second.finalPath!), 'report_photo_.txt');
       expect(second.manifest.displayName, 'report:photo?.txt');
-      expect(p.isWithin(inboxDirectory.path, first.finalPath!), isTrue);
+      expect(
+        p.isWithin(inboxDirectory.resolveSymbolicLinksSync(), first.finalPath!),
+        isTrue,
+      );
     },
   );
 
