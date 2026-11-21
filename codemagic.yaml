@@ -47,7 +47,7 @@ workflows:
       xcode: latest
       cocoapods: default
       groups:
-        - ulash_signing # CERTIFICATE_PRIVATE_KEY (secure)
+        - shared_signing # CERTIFICATE_PRIVATE_KEY (secure, shared key)
       vars:
         BUNDLE_ID: uz.ulash.app
     cache:
@@ -77,11 +77,11 @@ workflows:
           fi
           echo "App Store Connect app id: $APP_ID"
           echo "APP_STORE_APPLE_ID=$APP_ID" >> "$CM_ENV"
-      # Signing: an Apple Distribution certificate created from the secure
-      # CERTIFICATE_PRIVATE_KEY of this app (group ulash_signing) and an App
-      # Store profile for uz.ulash.app, fetched or created via the
-      # integration's API key. Creating the certificate needs a free slot
-      # under Apple's Distribution certificate limit.
+      # Signing: the shared Apple Distribution certificate key
+      # (CERTIFICATE_PRIVATE_KEY in group shared_signing). fetch-signing-files
+      # finds the certificate for that key, or creates it once, and creates
+      # the App Store profile for uz.ulash.app via the integration's API key.
+      # No development certificate is used.
       - name: Set up keychain
         script: keychain initialize
       - name: Fetch App Store signing files
