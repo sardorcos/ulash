@@ -5,11 +5,12 @@ import 'package:desktop_drop/desktop_drop.dart';
 // ignore: deprecated_member_use
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../l10n/app_localizations.dart';
 import 'app_controller.dart';
 import 'app_theme.dart';
+import 'startup_screens.dart';
 import 'ui_format.dart';
 
 /// Actual application UI. The supplied controller is the only source of data.
@@ -27,18 +28,20 @@ class FileTransferApp extends StatelessWidget {
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: controller,
     builder: (context, _) => MaterialApp(
-      title: 'Передача файлов',
+      title: 'Ulash',
       navigatorKey: navigatorKey,
-      locale: const Locale('ru'),
-      supportedLocales: const [Locale('ru')],
-      // Use the localization delegates belonging to the bundled Material API.
-      // ignore: deprecated_member_use
-      localizationsDelegates: GlobalMaterialLocalizations.delegates,
+      locale: controller.effectiveLocale,
+      supportedLocales: AppLocalizations.supportedLocales,
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
       debugShowCheckedModeBanner: false,
       theme: buildTransferTheme(Brightness.light),
       darkTheme: buildTransferTheme(Brightness.dark),
       themeMode: controller.themeMode,
-      home: _TransferShell(controller: controller),
+      home: controller.startupIssue != StartupIssue.none
+          ? StartupIssueScreen(controller: controller)
+          : controller.needsOnboarding
+          ? OnboardingScreen(controller: controller)
+          : _TransferShell(controller: controller),
     ),
   );
 }
@@ -53,18 +56,124 @@ class _TransferShell extends StatefulWidget {
 }
 
 class _TransferShellState extends State<_TransferShell> {
+  AppLocalizations get l => AppLocalizations.of(context);
   int _tab = 0;
   String? _targetPeerId;
   int _historyFilter = 0;
+  int _historyLimit = 100;
   bool _draggingFiles = false;
+  int _shownMessage = 0;
+  final _promptedOffers = <String>{};
+  final _promptedPairings = <String>{};
+  final _inFlight = <String>{};
   AppController get c => widget.controller;
 
-  static const _labels = [
-    'Отправить',
-    'Получить',
-    'Устройства',
-    'История',
-    'Настройки',
+  @override
+  void initState() {
+    super.initState();
+    _shownMessage = c.messageSerial;
+    c.addListener(_onControllerChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant _TransferShell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_onControllerChanged);
+      widget.controller.addListener(_onControllerChanged);
+    }
+  }
+
+  @override
+  void dispose() {
+    c.removeListener(_onControllerChanged);
+    super.dispose();
+  }
+
+  /// Shows each new error/status once, wherever the user has scrolled, and
+  /// brings new pairing requests and incoming offers to the front.
+  void _onControllerChanged() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (c.messageSerial != _shownMessage) {
+        _shownMessage = c.messageSerial;
+        final message = c.errorMessage ?? c.statusMessage;
+        if (message != null && message.isNotEmpty) {
+          final messenger = ScaffoldMessenger.of(context);
+          messenger.hideCurrentSnackBar();
+          messenger.showSnackBar(
+            SnackBar(
+              content: Text(message),
+              behavior: SnackBarBehavior.floating,
+              backgroundColor: c.errorMessage != null
+                  ? Theme.of(context).colorScheme.errorContainer
+                  : null,
+              showCloseIcon: true,
+              closeIconColor: c.errorMessage != null
+                  ? Theme.of(context).colorScheme.onErrorContainer
+                  : null,
+              duration: Duration(seconds: c.errorMessage != null ? 8 : 4),
+            ),
+          );
+        }
+      }
+      _promptPairings();
+      _promptOffers();
+    });
+  }
+
+  void _promptPairings() {
+    for (final request in c.pendingPairings) {
+      if (!_promptedPairings.add(request.id)) continue;
+      HapticFeedback.mediumImpact();
+      showDialog<void>(
+        context: context,
+        builder: (context) =>
+            _PairingRequestDialog(controller: c, request: request),
+      );
+    }
+  }
+
+  void _promptOffers() {
+    final pending = c.pendingTransfers;
+    _promptedOffers.removeWhere(
+      (id) => !pending.any((request) => request.id == id),
+    );
+    if (_tab == 1) {
+      // The Receive page already shows these offers in full.
+      _promptedOffers.addAll(pending.map((request) => request.id));
+      return;
+    }
+    for (final request in pending) {
+      if (!_promptedOffers.add(request.id)) continue;
+      HapticFeedback.mediumImpact();
+      showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        showDragHandle: true,
+        builder: (context) =>
+            _IncomingOfferSheet(controller: c, request: request),
+      );
+    }
+  }
+
+  Future<void> _respondOnce(String key, Future<void> Function() action) async {
+    if (!_inFlight.add(key)) return;
+    setState(() {});
+    try {
+      await _run(action);
+    } finally {
+      _inFlight.remove(key);
+      if (mounted) setState(() {});
+    }
+  }
+
+  List<String> get _labels => [
+    l.navSend,
+    l.navReceive,
+    l.navDevices,
+    l.navHistory,
+    l.navSettings,
   ];
   static const _icons = [
     Icons.arrow_upward_rounded,
@@ -81,12 +190,7 @@ class _TransferShellState extends State<_TransferShell> {
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            c.errorMessage ??
-                'Не удалось выполнить действие. Попробуйте ещё раз.',
-          ),
-        ),
+        SnackBar(content: Text(c.errorMessage ?? l.actionFailedRetry)),
       );
     }
   }
@@ -134,18 +238,36 @@ class _TransferShellState extends State<_TransferShell> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
-                                if (c.errorMessage?.isNotEmpty ?? false) ...[
+                                if (c.localNetworkDenied ||
+                                    c.networkState ==
+                                        NetworkState.permissionRequired) ...[
+                                  _Notice(
+                                    key: const Key('local-network-notice'),
+                                    icon: Icons.wifi_off_rounded,
+                                    error: true,
+                                    text: l.localNetworkNotice,
+                                    action: Wrap(
+                                      spacing: 4,
+                                      children: [
+                                        TextButton(
+                                          onPressed: () =>
+                                              _run(c.openSystemSettings),
+                                          child: Text(l.navSettings),
+                                        ),
+                                        TextButton(
+                                          onPressed: () => _run(c.refreshPeers),
+                                          child: Text(l.retry),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(height: 16),
+                                ] else if (c.errorMessage?.isNotEmpty ??
+                                    false) ...[
                                   _Notice(
                                     icon: Icons.error_outline_rounded,
                                     text: c.errorMessage!,
                                     error: true,
-                                  ),
-                                  const SizedBox(height: 16),
-                                ] else if (c.statusMessage?.isNotEmpty ??
-                                    false) ...[
-                                  _Notice(
-                                    icon: Icons.info_outline_rounded,
-                                    text: c.statusMessage!,
                                   ),
                                   const SizedBox(height: 16),
                                 ],
@@ -162,10 +284,10 @@ class _TransferShellState extends State<_TransferShell> {
                                     _tab != 1) ...[
                                   _Notice(
                                     icon: Icons.inbox_outlined,
-                                    text: 'Входящие файлы ждут вашего подтверждения',
+                                    text: l.incomingWaitingNotice,
                                     action: TextButton(
                                       onPressed: () => setState(() => _tab = 1),
-                                      child: const Text('Посмотреть'),
+                                      child: Text(l.view),
                                     ),
                                   ),
                                   const SizedBox(height: 16),
@@ -174,10 +296,10 @@ class _TransferShellState extends State<_TransferShell> {
                                     _tab != 2) ...[
                                   _Notice(
                                     icon: Icons.devices_other_rounded,
-                                    text: 'Новое устройство запрашивает подключение',
+                                    text: l.pairingWaitingNotice,
                                     action: TextButton(
                                       onPressed: () => setState(() => _tab = 2),
-                                      child: const Text('Проверить'),
+                                      child: Text(l.check),
                                     ),
                                   ),
                                   const SizedBox(height: 16),
@@ -235,7 +357,7 @@ class _TransferShellState extends State<_TransferShell> {
                 const SizedBox(width: 12),
                 const Flexible(
                   child: Text(
-                    'Передача',
+                    'Ulash',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -320,13 +442,13 @@ class _TransferShellState extends State<_TransferShell> {
               color: const Color(0xFF18374B),
               borderRadius: BorderRadius.circular(18),
             ),
-            child: const Column(
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Icon(Icons.lan_outlined, color: Color(0xFF75E1D2), size: 24),
                 SizedBox(height: 12),
                 Text(
-                  'Между вашими\nустройствами',
+                  l.sidebarTagline,
                   style: TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.w600,
@@ -335,7 +457,7 @@ class _TransferShellState extends State<_TransferShell> {
                 ),
                 SizedBox(height: 6),
                 Text(
-                  'Файлы передаются\nпо локальной сети.',
+                  l.sidebarTaglineDetail,
                   style: TextStyle(
                     color: Color(0xFFACC3D2),
                     fontSize: 12,
@@ -369,7 +491,7 @@ class _TransferShellState extends State<_TransferShell> {
         if (!rail) ...[const _BrandMark(size: 34), const SizedBox(width: 12)],
         Expanded(
           child: Text(
-            rail ? _labels[_tab] : 'Передача файлов',
+            rail ? _labels[_tab] : 'Ulash',
             style: Theme.of(context).textTheme.titleMedium,
           ),
         ),
@@ -394,10 +516,10 @@ class _TransferShellState extends State<_TransferShell> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const _PageIntro(
-          eyebrow: 'ЛОКАЛЬНАЯ ПЕРЕДАЧА',
-          title: 'Файлы — на нужном\nустройстве.',
-          subtitle: 'Выберите, что отправить, и кому. Фото, видео и документы останутся в исходном качестве.',
+        _PageIntro(
+          eyebrow: l.sendEyebrow,
+          title: l.sendTitle,
+          subtitle: l.sendSubtitle,
         ),
         const SizedBox(height: 26),
         LayoutBuilder(
@@ -408,10 +530,10 @@ class _TransferShellState extends State<_TransferShell> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   _SectionHeader(
-                    title: '2. Получатель',
-                    subtitle: 'Доступные доверенные устройства',
+                    title: l.recipientStep,
+                    subtitle: l.recipientSubtitle,
                     trailing: IconButton(
-                      tooltip: 'Обновить устройства',
+                      tooltip: l.refreshDevices,
                       onPressed: c.isBusy ? null : () => _run(c.refreshPeers),
                       icon: const Icon(Icons.refresh_rounded),
                     ),
@@ -420,12 +542,12 @@ class _TransferShellState extends State<_TransferShell> {
                   if (available.isEmpty)
                     _EmptyState(
                       icon: Icons.devices_rounded,
-                      title: 'Подключите устройство',
-                      description: 'Откройте приложение на втором устройстве и добавьте его по приглашению.',
+                      title: l.connectDeviceTitle,
+                      description: l.connectDeviceHint,
                       action: OutlinedButton.icon(
                         onPressed: () => setState(() => _tab = 2),
                         icon: const Icon(Icons.add_rounded),
-                        label: const Text('Подключить'),
+                        label: Text(l.connect),
                       ),
                     )
                   else ...[
@@ -446,14 +568,12 @@ class _TransferShellState extends State<_TransferShell> {
                         : null,
                     icon: const Icon(Icons.arrow_upward_rounded, size: 19),
                     label: Text(
-                      selected == null
-                          ? 'Выберите получателя'
-                          : 'Отправить файлы',
+                      selected == null ? l.chooseRecipient : l.sendFiles,
                     ),
                   ),
                   const SizedBox(height: 10),
                   Text(
-                    'Получатель подтвердит передачу на своём устройстве.',
+                    l.recipientWillConfirm,
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -479,7 +599,7 @@ class _TransferShellState extends State<_TransferShell> {
         ),
         if (active.isNotEmpty) ...[
           const SizedBox(height: 28),
-          const _SectionHeader(title: 'Текущие передачи'),
+          _SectionHeader(title: l.currentTransfers),
           const SizedBox(height: 14),
           for (final item in active) ...[
             _transferCard(item),
@@ -505,13 +625,8 @@ class _TransferShellState extends State<_TransferShell> {
             .where((path) => path.isNotEmpty)
             .toList();
         if (details.files.any((file) => file is DropItemDirectory)) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Выберите отдельные файлы. Папки пока не поддерживаются.',
-              ),
-            ),
-          );
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(l.foldersUnsupported)));
         }
         if (files.isNotEmpty) _run(() => c.addSourcePaths(files));
       },
@@ -541,7 +656,7 @@ class _TransferShellState extends State<_TransferShell> {
                           color: Theme.of(context).colorScheme.primary,
                         ),
                         const SizedBox(height: 12),
-                        const Text('Отпустите файлы здесь'),
+                        Text(l.dropFilesHere),
                       ],
                     ),
                   ),
@@ -558,14 +673,14 @@ class _TransferShellState extends State<_TransferShell> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _SectionHeader(
-          title: '1. Файлы',
+          title: l.filesStep,
           subtitle: c.selectedSources.isEmpty
-              ? 'Что хотите отправить?'
-              : fileCountLabel(c.selectedSources.length),
+              ? l.whatToSend
+              : fileCountLabel(l, c.selectedSources.length),
           trailing: c.selectedSources.isEmpty
               ? null
               : IconButton(
-                  tooltip: 'Очистить выбранные файлы',
+                  tooltip: l.clearSelectedFiles,
                   onPressed: c.isBusy ? null : () => _run(c.clearSources),
                   icon: const Icon(Icons.close_rounded),
                 ),
@@ -588,38 +703,55 @@ class _TransferShellState extends State<_TransferShell> {
                 const _FileIllustration(),
                 const SizedBox(height: 22),
                 Text(
-                  'Начнём с файлов',
+                  l.startWithFiles,
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Фото с телефона, рабочий документ\nили целое видео — выбирайте.',
+                  l.startWithFilesHint,
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
                 ),
                 const SizedBox(height: 22),
-                FilledButton.icon(
-                  key: const Key('choose-files'),
-                  onPressed: !c.isBusy && c.capabilities.fileSelection
-                      ? () => _run(c.chooseFiles)
-                      : null,
-                  icon: const Icon(Icons.add_rounded),
-                  label: const Text('Выбрать файлы'),
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 12,
+                  runSpacing: 10,
+                  children: [
+                    if (c.capabilities.mediaSelection)
+                      FilledButton.icon(
+                        key: const Key('choose-media'),
+                        onPressed: !c.isBusy ? () => _run(c.chooseMedia) : null,
+                        icon: const Icon(Icons.photo_library_outlined),
+                        label: Text(l.photosAndVideos),
+                      ),
+                    if (c.capabilities.mediaSelection)
+                      OutlinedButton.icon(
+                        key: const Key('choose-files'),
+                        onPressed: !c.isBusy && c.capabilities.fileSelection
+                            ? () => _run(c.chooseFiles)
+                            : null,
+                        icon: const Icon(Icons.folder_open_outlined),
+                        label: Text(l.files),
+                      )
+                    else
+                      FilledButton.icon(
+                        key: const Key('choose-files'),
+                        onPressed: !c.isBusy && c.capabilities.fileSelection
+                            ? () => _run(c.chooseFiles)
+                            : null,
+                        icon: const Icon(Icons.add_rounded),
+                        label: Text(l.chooseFiles),
+                      ),
+                  ],
                 ),
                 if (c.capabilities.desktopDrop) ...[
                   const SizedBox(height: 12),
                   Text(
-                    'или перетащите их сюда',
+                    l.orDropHere,
                     style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ],
-                if (!c.capabilities.fileSelection) ...[
-                  const SizedBox(height: 12),
-                  const Text(
-                    'Выбор файлов недоступен в этой сборке.',
-                    textAlign: TextAlign.center,
                   ),
                 ],
               ],
@@ -652,13 +784,13 @@ class _TransferShellState extends State<_TransferShell> {
                           const SizedBox(height: 4),
                           Text(
                             switch (source.status) {
-                              SourceStatus.preparing => 'Подготавливаем файл…',
+                              SourceStatus.preparing => l.preparingFile,
                               SourceStatus.failed =>
-                                source.detail ?? 'Не удалось подготовить',
+                                source.detail ?? l.preparationFailed,
                               SourceStatus.ready =>
                                 source.bytes == null
-                                    ? 'Размер уточняется'
-                                    : formatBytes(source.bytes!),
+                                    ? l.sizePending
+                                    : formatBytes(l, source.bytes!),
                             },
                             style: Theme.of(context).textTheme.bodySmall
                                 ?.copyWith(
@@ -683,7 +815,7 @@ class _TransferShellState extends State<_TransferShell> {
                       )
                     else
                       IconButton(
-                        tooltip: 'Убрать ${source.name}',
+                        tooltip: l.removeSource(source.name),
                         onPressed: c.isBusy
                             ? null
                             : () => _run(() => c.removeSource(source.id)),
@@ -701,18 +833,41 @@ class _TransferShellState extends State<_TransferShell> {
             spacing: 16,
             runSpacing: 8,
             children: [
-              OutlinedButton.icon(
-                key: const Key('choose-files'),
-                onPressed: !c.isBusy && c.capabilities.fileSelection
-                    ? () => _run(c.chooseFiles)
-                    : null,
-                icon: const Icon(Icons.add_rounded),
-                label: const Text('Добавить'),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  if (c.capabilities.mediaSelection)
+                    OutlinedButton.icon(
+                      key: const Key('choose-media'),
+                      onPressed: !c.isBusy ? () => _run(c.chooseMedia) : null,
+                      icon: const Icon(Icons.photo_library_outlined),
+                      label: Text(l.photosAndVideos),
+                    ),
+                  OutlinedButton.icon(
+                    key: const Key('choose-files'),
+                    onPressed: !c.isBusy && c.capabilities.fileSelection
+                        ? () => _run(c.chooseFiles)
+                        : null,
+                    icon: const Icon(Icons.add_rounded),
+                    label: Text(
+                      c.capabilities.mediaSelection ? l.files : l.add,
+                    ),
+                  ),
+                ],
               ),
               Text(
                 c.selectedSources.any((source) => source.bytes == null)
-                    ? 'Размер уточняется'
-                    : 'Всего: ${formatBytes(c.selectedSources.fold<int>(0, (sum, source) => sum + source.bytes!))}',
+                    ? l.sizePending
+                    : l.totalSize(
+                        formatBytes(
+                          l,
+                          c.selectedSources.fold<int>(
+                            0,
+                            (sum, source) => sum + source.bytes!,
+                          ),
+                        ),
+                      ),
                 style: Theme.of(context).textTheme.titleSmall,
               ),
             ],
@@ -725,10 +880,10 @@ class _TransferShellState extends State<_TransferShell> {
   Widget _receivePage() => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      const _PageIntro(
-        eyebrow: 'ПОЛУЧЕНИЕ',
-        title: 'Здесь появятся\nваши файлы.',
-        subtitle: 'Оставьте приложение открытым. Отправитель увидит устройство после подключения.',
+      _PageIntro(
+        eyebrow: l.receiveEyebrow,
+        title: l.receiveTitle,
+        subtitle: l.receiveSubtitle,
       ),
       const SizedBox(height: 26),
       _Panel(
@@ -749,7 +904,7 @@ class _TransferShellState extends State<_TransferShell> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        c.receivingEnabled ? 'Приём включён' : 'Приём выключен',
+                        c.receivingEnabled ? l.receivingOn : l.receivingOff,
                         style: TextStyle(
                           color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
@@ -776,18 +931,12 @@ class _TransferShellState extends State<_TransferShell> {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    'Место сохранения: ${c.saveLocationLabel}',
+                    l.saveLocation(c.saveLocationLabel),
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
                 ),
               ],
             ),
-            if (!c.capabilities.receiving) ...[
-              const SizedBox(height: 12),
-              const Text(
-                'Приём недоступен в этой сборке. Подключение к устройствам остаётся доступным.',
-              ),
-            ],
             const SizedBox(height: 16),
             Wrap(
               spacing: 12,
@@ -798,11 +947,11 @@ class _TransferShellState extends State<_TransferShell> {
                       ? _createInvitation
                       : null,
                   icon: const Icon(Icons.qr_code_rounded),
-                  label: const Text('Показать приглашение'),
+                  label: Text(l.showInvitation),
                 ),
                 TextButton(
                   onPressed: () => setState(() => _tab = 2),
-                  child: const Text('Мои устройства'),
+                  child: Text(l.myDevices),
                 ),
               ],
             ),
@@ -814,14 +963,14 @@ class _TransferShellState extends State<_TransferShell> {
         _Panel(
           child: _EmptyState(
             icon: Icons.inbox_outlined,
-            title: 'Входящих предложений пока нет',
+            title: l.noIncomingTitle,
             description: c.receivingEnabled
-                ? 'Когда отправитель выберет это устройство, вы сможете проверить файлы и принять передачу.'
-                : 'Включите приём, когда будете готовы получить файлы.',
+                ? l.noIncomingReady
+                : l.noIncomingOff,
           ),
         )
       else ...[
-        const _SectionHeader(title: 'Входящие предложения'),
+        _SectionHeader(title: l.incomingOffers),
         const SizedBox(height: 14),
         for (final request in c.pendingTransfers) ...[
           _incomingCard(request),
@@ -840,8 +989,10 @@ class _TransferShellState extends State<_TransferShell> {
       children: [
         _SectionHeader(
           title: request.peerName,
-          subtitle:
-              '${fileCountLabel(request.fileNames.length)} · ${formatBytes(request.totalBytes)}',
+          subtitle: l.filesAndSize(
+            fileCountLabel(l, request.fileNames.length),
+            formatBytes(l, request.totalBytes),
+          ),
         ),
         const SizedBox(height: 16),
         for (final name in request.fileNames.take(3))
@@ -863,15 +1014,15 @@ class _TransferShellState extends State<_TransferShell> {
           ),
         if (request.fileNames.length > 3)
           Text(
-            'И ещё ${fileCountLabel(request.fileNames.length - 3)}',
+            l.andMoreFiles(fileCountLabel(l, request.fileNames.length - 3)),
             style: Theme.of(context).textTheme.bodySmall,
           ),
         if (request.expiresAt != null) ...[
           const SizedBox(height: 10),
           Text(
-            'Предложение действует до '
-            '${formatDate(request.expiresAt!, includeSeconds: true)}. '
-            'Без ответа отправителю понадобится создать новое предложение.',
+            l.offerValidUntil(
+              formatDate(l, request.expiresAt!, includeSeconds: true),
+            ),
             key: Key('offer-deadline-${request.id}'),
             style: Theme.of(context).textTheme.bodySmall,
           ),
@@ -883,18 +1034,24 @@ class _TransferShellState extends State<_TransferShell> {
           children: [
             FilledButton.icon(
               key: Key('accept-${request.id}'),
-              onPressed: c.isBusy
+              onPressed: c.isBusy || _inFlight.contains('offer-${request.id}')
                   ? null
-                  : () => _run(() => c.respondToTransfer(request.id, true)),
+                  : () => _respondOnce(
+                      'offer-${request.id}',
+                      () => c.respondToTransfer(request.id, true),
+                    ),
               icon: const Icon(Icons.check_rounded),
-              label: const Text('Принять файлы'),
+              label: Text(l.acceptFiles),
             ),
             OutlinedButton(
               key: Key('reject-${request.id}'),
-              onPressed: c.isBusy
+              onPressed: c.isBusy || _inFlight.contains('offer-${request.id}')
                   ? null
-                  : () => _run(() => c.respondToTransfer(request.id, false)),
-              child: const Text('Отклонить'),
+                  : () => _respondOnce(
+                      'offer-${request.id}',
+                      () => c.respondToTransfer(request.id, false),
+                    ),
+              child: Text(l.decline),
             ),
           ],
         ),
@@ -905,10 +1062,10 @@ class _TransferShellState extends State<_TransferShell> {
   Widget _devicesPage() => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      const _PageIntro(
-        eyebrow: 'ВАШИ УСТРОЙСТВА',
-        title: 'Один раз подключили.\nДальше — просто.',
-        subtitle: 'Добавьте телефон или компьютер, чтобы отправлять файлы без повторной настройки.',
+      _PageIntro(
+        eyebrow: l.devicesEyebrow,
+        title: l.devicesTitle,
+        subtitle: l.devicesSubtitle,
       ),
       const SizedBox(height: 26),
       _Panel(
@@ -916,8 +1073,8 @@ class _TransferShellState extends State<_TransferShell> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _SectionHeader(
-              title: 'Подключить устройство',
-              subtitle: 'Приложение должно быть открыто на обеих сторонах.',
+              title: l.connectDevice,
+              subtitle: l.appOpenBothSides,
             ),
             const SizedBox(height: 20),
             Wrap(
@@ -930,7 +1087,7 @@ class _TransferShellState extends State<_TransferShell> {
                       ? _createInvitation
                       : null,
                   icon: const Icon(Icons.qr_code_rounded),
-                  label: const Text('Создать приглашение'),
+                  label: Text(l.createInvitation),
                 ),
                 OutlinedButton.icon(
                   key: const Key('enter-invitation'),
@@ -938,27 +1095,28 @@ class _TransferShellState extends State<_TransferShell> {
                       ? _enterInvitation
                       : null,
                   icon: const Icon(Icons.link_rounded),
-                  label: const Text('Ввести приглашение'),
+                  label: Text(l.enterInvitation),
                 ),
                 Tooltip(
                   message: c.capabilities.qrScanner
-                      ? 'Сканировать приглашение с другого устройства'
-                      : 'Камера пока недоступна. Используйте текст приглашения.',
+                      ? l.scanInvitationTooltip
+                      : l.cameraUnavailableTooltip,
                   child: OutlinedButton.icon(
                     key: const Key('scan-invitation'),
                     onPressed: !c.isBusy && c.capabilities.qrScanner
                         ? () => _run(c.scanInvitation)
                         : null,
                     icon: const Icon(Icons.qr_code_scanner_rounded),
-                    label: const Text('Сканировать QR'),
+                    label: Text(l.scanQr),
                   ),
                 ),
               ],
             ),
-            if (!c.capabilities.discovery) ...[
+            if (c.deviceCode != null) ...[
               const SizedBox(height: 16),
               Text(
-                'В этой сборке новые устройства подключаются по приглашению.',
+                l.deviceCodeHint(c.deviceCode!),
+                key: const Key('device-code'),
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
@@ -974,13 +1132,14 @@ class _TransferShellState extends State<_TransferShell> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _SectionHeader(
-                title: 'Запрос подключения',
-                subtitle:
-                    '${request.deviceName} · ${platformLabel(request.platform)}',
+                title: l.pairingRequest,
+                subtitle: request.deviceName,
               ),
               const SizedBox(height: 10),
-              const Text(
-                'Подтвердите, если вы только что добавили это устройство.',
+              Text(
+                request.code == null
+                    ? l.pairingConfirmGeneric
+                    : l.pairingConfirmCode(request.code!),
               ),
               const SizedBox(height: 18),
               Wrap(
@@ -989,18 +1148,24 @@ class _TransferShellState extends State<_TransferShell> {
                 children: [
                   FilledButton(
                     key: Key('approve-pair-${request.id}'),
-                    onPressed: c.isBusy
+                    onPressed:
+                        c.isBusy || _inFlight.contains('pair-${request.id}')
                         ? null
-                        : () =>
-                              _run(() => c.respondToPairing(request.id, true)),
-                    child: const Text('Подключить'),
+                        : () => _respondOnce(
+                            'pair-${request.id}',
+                            () => c.respondToPairing(request.id, true),
+                          ),
+                    child: Text(l.connect),
                   ),
                   OutlinedButton(
-                    onPressed: c.isBusy
+                    onPressed:
+                        c.isBusy || _inFlight.contains('pair-${request.id}')
                         ? null
-                        : () =>
-                              _run(() => c.respondToPairing(request.id, false)),
-                    child: const Text('Отклонить'),
+                        : () => _respondOnce(
+                            'pair-${request.id}',
+                            () => c.respondToPairing(request.id, false),
+                          ),
+                    child: Text(l.decline),
                   ),
                 ],
               ),
@@ -1010,21 +1175,21 @@ class _TransferShellState extends State<_TransferShell> {
       ],
       const SizedBox(height: 26),
       _SectionHeader(
-        title: 'Подключённые устройства',
-        subtitle: 'Доступность проверяется приложением',
+        title: l.connectedDevices,
+        subtitle: l.availabilityChecked,
         trailing: IconButton(
-          tooltip: 'Обновить устройства',
+          tooltip: l.refreshDevices,
           onPressed: c.isBusy ? null : () => _run(c.refreshPeers),
           icon: const Icon(Icons.refresh_rounded),
         ),
       ),
       const SizedBox(height: 14),
       if (c.peers.isEmpty)
-        const _Panel(
+        _Panel(
           child: _EmptyState(
             icon: Icons.devices_other_rounded,
-            title: 'Пока только это устройство',
-            description: 'Создайте приглашение или введите приглашение со второго устройства. Оно появится здесь после подтверждения.',
+            title: l.onlyThisDeviceTitle,
+            description: l.onlyThisDeviceHint,
           ),
         )
       else
@@ -1036,7 +1201,7 @@ class _TransferShellState extends State<_TransferShell> {
                 Expanded(child: _PeerCard(peer: peer)),
                 if (peer.isTrusted)
                   IconButton(
-                    tooltip: 'Отключить ${peer.name}',
+                    tooltip: l.disconnectDevice(peer.name),
                     onPressed: () => _confirmRevoke(peer),
                     icon: const Icon(Icons.link_off_rounded),
                   ),
@@ -1061,24 +1226,39 @@ class _TransferShellState extends State<_TransferShell> {
             )
             .toList()
           ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final visible = items.take(_historyLimit).toList();
+    final hasFinished = c.transfers.any((t) => t.isTerminal);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const _PageIntro(
-          eyebrow: 'ИСТОРИЯ',
-          title: 'Всё переданное.\nВ одном месте.',
-          subtitle: 'Статус, получатель и сохранённые файлы. Незавершённые передачи тоже остаются здесь.',
+        _PageIntro(
+          eyebrow: l.historyEyebrow,
+          title: l.historyTitle,
+          subtitle: l.historySubtitle,
         ),
         const SizedBox(height: 24),
         Wrap(
           spacing: 8,
           runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             for (var index = 0; index < 3; index++)
               ChoiceChip(
-                label: Text(['Все', 'Отправленные', 'Полученные'][index]),
+                label: Text(
+                  [l.filterAll, l.filterSent, l.filterReceived][index],
+                ),
                 selected: _historyFilter == index,
-                onSelected: (_) => setState(() => _historyFilter = index),
+                onSelected: (_) => setState(() {
+                  _historyFilter = index;
+                  _historyLimit = 100;
+                }),
+              ),
+            if (hasFinished)
+              TextButton.icon(
+                key: const Key('clear-history'),
+                onPressed: c.isBusy ? null : _confirmClearHistory,
+                icon: const Icon(Icons.delete_sweep_outlined, size: 18),
+                label: Text(l.clearHistory),
               ),
           ],
         ),
@@ -1088,25 +1268,143 @@ class _TransferShellState extends State<_TransferShell> {
             child: _EmptyState(
               icon: Icons.history_rounded,
               title: c.transfers.isEmpty
-                  ? 'История пока пуста'
-                  : 'Таких передач пока нет',
+                  ? l.historyEmptyTitle
+                  : l.historyFilteredEmptyTitle,
               description: c.transfers.isEmpty
-                  ? 'После первой передачи здесь появится её результат.'
-                  : 'Выберите другой фильтр или начните новую передачу.',
+                  ? l.historyEmptyHint
+                  : l.historyFilteredEmptyHint,
               action: OutlinedButton(
                 onPressed: () => setState(() => _tab = 0),
-                child: const Text('Отправить файлы'),
+                child: Text(l.sendFiles),
               ),
             ),
           )
-        else
-          for (final item in items) ...[
+        else ...[
+          for (final item in visible) ...[
             _transferCard(item),
             const SizedBox(height: 12),
           ],
+          if (items.length > visible.length)
+            Center(
+              child: OutlinedButton(
+                key: const Key('history-more'),
+                onPressed: () => setState(() => _historyLimit += 100),
+                child: Text(l.showMore(items.length - visible.length)),
+              ),
+            ),
+        ],
       ],
     );
   }
+
+  Future<void> _confirmClearHistory() async {
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(l.clearHistoryQuestion),
+        content: Text(l.clearHistoryBody),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(l.cancel),
+          ),
+          FilledButton(
+            key: const Key('confirm-clear-history'),
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(l.clear),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true && mounted) await _run(c.clearHistory);
+  }
+
+  Future<void> _confirmDelete(TransferItem item) async {
+    final incoming = item.direction == TransferDirection.incoming;
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(
+          incoming ? l.deleteReceivedQuestion : l.deleteRecordQuestion,
+        ),
+        content: Text(
+          incoming
+              ? l.deleteReceivedBody(
+                  item.title,
+                  formatBytes(l, item.totalBytes),
+                )
+              : l.deleteRecordBody(item.title),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(l.cancel),
+          ),
+          FilledButton(
+            key: Key('confirm-delete-${item.id}'),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(l.delete),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true && mounted) {
+      await _run(() => c.deleteTransfer(item.id));
+    }
+  }
+
+  Future<void> _shareReceived(TransferItem item) async {
+    if (item.receivedFiles.isEmpty) return;
+    final fileId = item.receivedFiles.length == 1
+        ? item.receivedFiles.single.id
+        : await _chooseReceivedFile(item, l.shareFile);
+    if (fileId != null && mounted) {
+      await _run(() => c.shareReceivedFile(item.id, fileId));
+    }
+  }
+
+  Future<String?> _chooseReceivedFile(TransferItem item, String title) =>
+      showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(title),
+          content: SizedBox(
+            width: 440,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 420),
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: item.receivedFiles.length,
+                separatorBuilder: (_, _) => const Divider(height: 10),
+                itemBuilder: (context, index) {
+                  final file = item.receivedFiles[index];
+                  return ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: _FileTypeIcon(name: file.name),
+                    title: Text(
+                      file.name,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(formatBytes(l, file.bytes)),
+                    onTap: () => Navigator.pop(context, file.id),
+                  );
+                },
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(l.close),
+            ),
+          ],
+        ),
+      );
 
   Widget _transferCard(TransferItem item) {
     final scheme = Theme.of(context).colorScheme;
@@ -1140,7 +1438,9 @@ class _TransferShellState extends State<_TransferShell> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '${item.direction == TransferDirection.outgoing ? 'Кому' : 'От кого'}: ${item.peerName}',
+                      item.direction == TransferDirection.outgoing
+                          ? l.toPeer(item.peerName)
+                          : l.fromPeer(item.peerName),
                       style: Theme.of(context).textTheme.bodySmall
                           ?.copyWith(color: scheme.onSurfaceVariant),
                     ),
@@ -1159,7 +1459,7 @@ class _TransferShellState extends State<_TransferShell> {
             alignment: WrapAlignment.spaceBetween,
             children: [
               Text(
-                phaseLabel(item.phase),
+                phaseLabel(l, item.phase),
                 style: TextStyle(
                   color: error ? scheme.error : scheme.primary,
                   fontWeight: FontWeight.w600,
@@ -1167,7 +1467,7 @@ class _TransferShellState extends State<_TransferShell> {
                 ),
               ),
               Text(
-                '${formatBytes(item.transferredBytes)} / ${formatBytes(item.totalBytes)}',
+                '${formatBytes(l, item.transferredBytes)} / ${formatBytes(l, item.totalBytes)}',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
@@ -1183,7 +1483,7 @@ class _TransferShellState extends State<_TransferShell> {
                         item.phase == TransferPhase.verifying
                     ? null
                     : fraction ?? 0,
-                semanticsLabel: phaseLabel(item.phase),
+                semanticsLabel: phaseLabel(l, item.phase),
                 semanticsValue: fraction == null
                     ? null
                     : '${(fraction * 100).round()}%',
@@ -1196,7 +1496,7 @@ class _TransferShellState extends State<_TransferShell> {
             runSpacing: 4,
             children: [
               Text(
-                formatDate(item.createdAt),
+                formatDate(l, item.createdAt),
                 style: Theme.of(context).textTheme.bodySmall
                     ?.copyWith(color: scheme.onSurfaceVariant),
               ),
@@ -1204,7 +1504,7 @@ class _TransferShellState extends State<_TransferShell> {
                   item.bytesPerSecond! > 0 &&
                   item.phase == TransferPhase.transferring)
                 Text(
-                  '${formatBytes(item.bytesPerSecond!)} / с',
+                  l.speedPerSecond(formatBytes(l, item.bytesPerSecond!)),
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
             ],
@@ -1221,7 +1521,9 @@ class _TransferShellState extends State<_TransferShell> {
           if (item.locationLabel?.isNotEmpty ?? false) ...[
             const SizedBox(height: 10),
             Text(
-              '${complete ? 'Сохранено' : 'Папка для файлов'}: ${item.locationLabel}',
+              complete
+                  ? l.savedAt(item.locationLabel!)
+                  : l.filesFolder(item.locationLabel!),
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
@@ -1231,7 +1533,7 @@ class _TransferShellState extends State<_TransferShell> {
             const SizedBox(height: 8),
             Text(
               '${file.name}: ${file.exportDetail ?? ''}'
-              '${file.exportDestination != null && file.exportPhase != ExportPhase.exported ? '\nРанее сохранено: ${file.exportDestination}' : ''}',
+              '${file.exportDestination != null && file.exportPhase != ExportPhase.exported ? '\n${l.previouslySaved(file.exportDestination!)}' : ''}',
               key: Key('export-status-${file.id}'),
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color:
@@ -1247,7 +1549,8 @@ class _TransferShellState extends State<_TransferShell> {
               item.canCancel ||
               item.canRetry ||
               item.canOpen ||
-              item.canExport) ...[
+              item.canExport ||
+              item.canDelete) ...[
             const SizedBox(height: 12),
             Wrap(
               spacing: 8,
@@ -1258,27 +1561,27 @@ class _TransferShellState extends State<_TransferShell> {
                     key: Key('pause-${item.id}'),
                     onPressed: () => _run(() => c.pauseTransfer(item.id)),
                     icon: const Icon(Icons.pause_rounded),
-                    label: const Text('Пауза'),
+                    label: Text(l.pause),
                   ),
                 if (item.canResume)
                   TextButton.icon(
                     key: Key('resume-${item.id}'),
                     onPressed: () => _run(() => c.resumeTransfer(item.id)),
                     icon: const Icon(Icons.play_arrow_rounded),
-                    label: const Text('Продолжить'),
+                    label: Text(l.resume),
                   ),
                 if (item.canCancel)
                   TextButton(
                     key: Key('cancel-${item.id}'),
                     onPressed: () => _run(() => c.cancelTransfer(item.id)),
-                    child: const Text('Отменить'),
+                    child: Text(l.cancelTransfer),
                   ),
                 if (item.canRetry)
                   TextButton.icon(
                     key: Key('retry-${item.id}'),
                     onPressed: c.isBusy ? null : () => _confirmRetry(item),
                     icon: const Icon(Icons.replay_rounded),
-                    label: const Text('Отправить снова'),
+                    label: Text(l.sendAgain),
                   ),
                 if (item.canOpen)
                   TextButton.icon(
@@ -1286,9 +1589,7 @@ class _TransferShellState extends State<_TransferShell> {
                     onPressed: () => _openReceived(item),
                     icon: const Icon(Icons.open_in_new_rounded, size: 18),
                     label: Text(
-                      item.receivedFiles.length > 1
-                          ? 'Открыть файлы'
-                          : 'Открыть файл',
+                      item.receivedFiles.length > 1 ? l.openFiles : l.openFile,
                     ),
                   ),
                 if (item.canExport)
@@ -1298,9 +1599,25 @@ class _TransferShellState extends State<_TransferShell> {
                     icon: const Icon(Icons.save_alt_rounded, size: 18),
                     label: Text(
                       item.receivedFiles.length > 1
-                          ? 'Сохранить копию файла…'
-                          : 'Сохранить копию…',
+                          ? l.saveFileCopyEllipsis
+                          : l.saveCopyEllipsis,
                     ),
+                  ),
+                if (item.canOpen &&
+                    c.capabilities.share &&
+                    item.receivedFiles.isNotEmpty)
+                  TextButton.icon(
+                    key: Key('share-${item.id}'),
+                    onPressed: () => _shareReceived(item),
+                    icon: const Icon(Icons.ios_share_rounded, size: 18),
+                    label: Text(l.share),
+                  ),
+                if (item.canDelete)
+                  TextButton.icon(
+                    key: Key('delete-${item.id}'),
+                    onPressed: c.isBusy ? null : () => _confirmDelete(item),
+                    icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                    label: Text(l.delete),
                   ),
               ],
             ),
@@ -1313,53 +1630,38 @@ class _TransferShellState extends State<_TransferShell> {
   Widget _settingsPage() => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      const _PageIntro(
-        eyebrow: 'НАСТРОЙКИ',
-        title: 'Удобно именно вам.',
-        subtitle: 'Имя устройства, внешний вид и место для полученных файлов.',
+      _PageIntro(
+        eyebrow: l.settingsEyebrow,
+        title: l.settingsTitle,
+        subtitle: l.settingsSubtitle,
       ),
       const SizedBox(height: 26),
       _Panel(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const _SectionHeader(title: 'Это устройство'),
+            _SectionHeader(title: l.thisDevice),
             const SizedBox(height: 18),
             _SettingRow(
               icon: Icons.devices_rounded,
-              title: 'Имя устройства',
-              subtitle: c.deviceName,
-              action: TextButton(
-                onPressed: c.capabilities.rename && !c.isBusy
-                    ? _renameDevice
-                    : null,
-                child: const Text('Изменить'),
-              ),
+              title: l.deviceName,
+              subtitle: c.deviceCode == null
+                  ? c.deviceName
+                  : l.deviceNameWithCode(c.deviceName, c.deviceCode!),
+              action: c.capabilities.rename
+                  ? TextButton(
+                      key: const Key('rename-device'),
+                      onPressed: !c.isBusy ? _renameDevice : null,
+                      child: Text(l.change),
+                    )
+                  : null,
             ),
             const Divider(height: 32),
             _SettingRow(
               icon: Icons.folder_outlined,
-              title: 'Полученные файлы',
+              title: l.receivedFiles,
               subtitle: c.saveLocationLabel,
-              action: TextButton(
-                onPressed: c.capabilities.saveLocation && !c.isBusy
-                    ? () => _run(c.chooseSaveLocation)
-                    : null,
-                child: const Text('Выбрать'),
-              ),
             ),
-            if (!c.capabilities.saveLocation)
-              Padding(
-                padding: const EdgeInsets.only(left: 50, top: 6),
-                child: Text(
-                  c.capabilities.fileExport
-                      ? 'В истории полученных файлов нажмите «Сохранить копию…» и выберите место в системном окне.'
-                      : 'Полученные файлы остаются в приложении. Системное сохранение доступно на поддерживаемых платформах.',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
           ],
         ),
       ),
@@ -1370,7 +1672,7 @@ class _TransferShellState extends State<_TransferShell> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const _SectionHeader(title: 'Внешний вид'),
+            _SectionHeader(title: l.appearance),
             const SizedBox(height: 20),
             Wrap(
               spacing: 10,
@@ -1378,22 +1680,43 @@ class _TransferShellState extends State<_TransferShell> {
               children: [
                 _themeChip(
                   ThemeMode.system,
-                  'Как в системе',
+                  l.themeSystem,
                   Icons.brightness_auto_outlined,
                 ),
                 _themeChip(
                   ThemeMode.light,
-                  'Светлая',
+                  l.themeLight,
                   Icons.light_mode_outlined,
                 ),
-                _themeChip(ThemeMode.dark, 'Тёмная', Icons.dark_mode_outlined),
+                _themeChip(
+                  ThemeMode.dark,
+                  l.themeDark,
+                  Icons.dark_mode_outlined,
+                ),
               ],
             ),
             const Divider(height: 34),
-            const _SettingRow(
-              icon: Icons.language_rounded,
-              title: 'Язык',
-              subtitle: 'Русский · другие языки появятся позже',
+            _SettingRow(icon: Icons.language_rounded, title: l.language),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final (code, label) in [
+                  (null, l.themeSystem),
+                  ('ru', 'Русский'),
+                  ('uz', 'Oʻzbekcha'),
+                  ('en', 'English'),
+                ])
+                  ChoiceChip(
+                    key: Key('locale-${code ?? 'system'}'),
+                    label: Text(label),
+                    selected: c.locale?.languageCode == code,
+                    onSelected: (_) => _run(
+                      () => c.setLocale(code == null ? null : Locale(code)),
+                    ),
+                  ),
+              ],
             ),
           ],
         ),
@@ -1403,21 +1726,68 @@ class _TransferShellState extends State<_TransferShell> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const _SectionHeader(title: 'Подключение'),
+            _SectionHeader(title: l.connection),
             const SizedBox(height: 18),
             _SettingRow(
               icon: Icons.lan_outlined,
-              title: 'Локальная сеть',
-              subtitle: c.networkDetail ?? _networkLabel(c.networkState),
+              title: l.networkReady,
+              subtitle: c.networkDetail ?? _networkLabel(l, c.networkState),
             ),
             const Divider(height: 30),
             _SettingRow(
               icon: Icons.verified_user_outlined,
-              title: 'Доверенные устройства',
-              subtitle: 'Каждое новое устройство подключается с вашим подтверждением.',
+              title: l.trustedDevices,
+              subtitle: l.trustedDevicesHint,
               action: TextButton(
                 onPressed: () => setState(() => _tab = 2),
-                child: const Text('Открыть'),
+                child: Text(l.open),
+              ),
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 18),
+      _Panel(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _SectionHeader(title: l.privacyAndSupport),
+            const SizedBox(height: 18),
+            _SettingRow(
+              icon: Icons.privacy_tip_outlined,
+              title: l.privacy,
+              subtitle: l.privacySummary,
+              action: TextButton(
+                key: const Key('privacy-details'),
+                onPressed: _showPrivacy,
+                child: Text(l.more),
+              ),
+            ),
+            if (c.capabilities.diagnostics) ...[
+              const Divider(height: 30),
+              _SettingRow(
+                icon: Icons.bug_report_outlined,
+                title: l.diagnosticsLog,
+                subtitle: l.diagnosticsHint,
+                action: TextButton(
+                  key: const Key('share-diagnostics'),
+                  onPressed: c.isBusy ? null : () => _run(c.exportDiagnostics),
+                  child: Text(l.navSend),
+                ),
+              ),
+            ],
+            const Divider(height: 30),
+            _SettingRow(
+              icon: Icons.key_off_outlined,
+              title: l.resetKeys,
+              subtitle: l.resetKeysHint,
+              action: TextButton(
+                key: const Key('reset-keys'),
+                style: TextButton.styleFrom(
+                  foregroundColor: Theme.of(context).colorScheme.error,
+                ),
+                onPressed: c.isBusy ? null : _confirmResetKeys,
+                child: Text(l.reset),
               ),
             ),
           ],
@@ -1425,12 +1795,53 @@ class _TransferShellState extends State<_TransferShell> {
       ),
       const SizedBox(height: 20),
       Text(
-        '${c.versionLabel} · Передача файлов',
+        'Ulash ${c.versionLabel}',
+        key: const Key('version-label'),
         style: Theme.of(context).textTheme.bodySmall
             ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
       ),
     ],
   );
+
+  Future<void> _showPrivacy() => showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(l.privacy),
+      content: SingleChildScrollView(child: Text(l.privacyBody)),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(l.close),
+        ),
+      ],
+    ),
+  );
+
+  Future<void> _confirmResetKeys() async {
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(l.resetKeysQuestion),
+        content: Text(l.resetKeysBody),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(l.cancel),
+          ),
+          FilledButton(
+            key: const Key('confirm-reset-keys'),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(l.reset),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true && mounted) await _run(c.resetDeviceKeys);
+  }
 
   Widget _storagePanel() {
     final storage = c.storageOverview;
@@ -1441,10 +1852,10 @@ class _TransferShellState extends State<_TransferShell> {
         children: [
           Row(
             children: [
-              const Expanded(child: _SectionHeader(title: 'Хранилище')),
+              Expanded(child: _SectionHeader(title: l.storage)),
               IconButton(
                 key: const Key('refresh-storage'),
-                tooltip: 'Обновить сведения о месте',
+                tooltip: l.refreshStorage,
                 onPressed: enabled && !c.storageRefreshing
                     ? () => _run(c.refreshStorage)
                     : null,
@@ -1454,22 +1865,26 @@ class _TransferShellState extends State<_TransferShell> {
           ),
           const SizedBox(height: 14),
           if (storage == null)
-            const Text('Сведения о хранилище пока недоступны.')
+            Text(l.storageUnavailable)
           else ...[
             _SettingRow(
               icon: Icons.storage_rounded,
-              title: 'Свободное место',
+              title: l.freeSpace,
               subtitle: storage.availableBytes == null
-                  ? 'Система не сообщила объём. Проверка лимита временных копий работает.'
-                  : '${formatBytes(storage.availableBytes!)} · проверено ${formatDate(storage.checkedAt)}',
+                  ? l.freeSpaceUnknown
+                  : l.freeSpaceChecked(
+                      formatBytes(l, storage.availableBytes!),
+                      formatDate(l, storage.checkedAt),
+                    ),
             ),
             const Divider(height: 28),
             _SettingRow(
               icon: Icons.folder_copy_outlined,
-              title: 'Временные копии',
-              subtitle:
-                  '${formatBytes(storage.temporaryBytes)} уже занято; '
-                  '${formatBytes(storage.reservedBytes)} предусмотрено для начатых передач.',
+              title: l.temporaryCopies,
+              subtitle: l.temporaryUsage(
+                formatBytes(l, storage.temporaryBytes),
+                formatBytes(l, storage.reservedBytes),
+              ),
             ),
             const SizedBox(height: 14),
             if (storage.temporaryQuotaBytes != null)
@@ -1478,13 +1893,10 @@ class _TransferShellState extends State<_TransferShell> {
                     ((storage.temporaryBytes + storage.reservedBytes) /
                             storage.temporaryQuotaBytes!)
                         .clamp(0.0, 1.0),
-                semanticsLabel: 'Использование лимита временного хранилища',
+                semanticsLabel: l.quotaUsageSemantics,
               ),
             const SizedBox(height: 12),
-            Text(
-              'Лимит временного хранилища',
-              style: Theme.of(context).textTheme.titleSmall,
-            ),
+            Text(l.quotaTitle, style: Theme.of(context).textTheme.titleSmall),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
@@ -1493,7 +1905,7 @@ class _TransferShellState extends State<_TransferShell> {
                 for (final gib in const [5, 10, 20, 50])
                   ChoiceChip(
                     key: Key('quota-$gib'),
-                    label: Text('$gib ГиБ'),
+                    label: Text('$gib ${l.unitGiB}'),
                     selected:
                         storage.temporaryQuotaBytes == gib * 1024 * 1024 * 1024,
                     onSelected: enabled
@@ -1506,17 +1918,17 @@ class _TransferShellState extends State<_TransferShell> {
             ),
             const SizedBox(height: 12),
             Text(
-              'Перед записью проверяется запас ${formatBytes(storage.safetyReserveBytes)} '
-              'свободного места. Готовые полученные файлы не входят в этот лимит '
-              'и не удаляются при очистке временных копий.',
+              l.quotaHint(formatBytes(l, storage.safetyReserveBytes)),
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const Divider(height: 28),
             _SettingRow(
               icon: Icons.cleaning_services_outlined,
-              title: 'Неиспользуемые копии',
-              subtitle:
-                  '${storage.unusedFiles.length} файлов · ${formatBytes(storage.unusedBytes)}',
+              title: l.unusedCopies,
+              subtitle: l.unusedCopiesSummary(
+                fileCountLabel(l, storage.unusedFiles.length),
+                formatBytes(l, storage.unusedBytes),
+              ),
             ),
             const SizedBox(height: 10),
             Align(
@@ -1527,23 +1939,22 @@ class _TransferShellState extends State<_TransferShell> {
                     ? _confirmCleanup
                     : null,
                 icon: const Icon(Icons.delete_outline_rounded),
-                label: const Text('Очистить неиспользуемые копии'),
+                label: Text(l.clearUnusedCopies),
               ),
             ),
             const Divider(height: 28),
             _SettingRow(
               icon: Icons.downloading_rounded,
-              title: 'Незавершённый приём',
-              subtitle:
-                  '${storage.incompleteIncoming.length} передач · '
-                  '${formatBytes(storage.incompleteTemporaryBytes)} уже занято; '
-                  '${formatBytes(storage.incompleteReservedBytes)} предусмотрено для продолжения.',
+              title: l.incompleteIncoming,
+              subtitle: l.incompleteSummary(
+                storage.incompleteIncoming.length,
+                formatBytes(l, storage.incompleteTemporaryBytes),
+                formatBytes(l, storage.incompleteReservedBytes),
+              ),
             ),
             const SizedBox(height: 10),
             Text(
-              'Очистка остановит выбранные входящие передачи и удалит их '
-              'незавершённые части. Для них потребуется новая отправка. '
-              'Уже полученные готовые файлы останутся на месте.',
+              l.incompleteHint,
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 10),
@@ -1555,7 +1966,7 @@ class _TransferShellState extends State<_TransferShell> {
                     ? _confirmIncomingCleanup
                     : null,
                 icon: const Icon(Icons.delete_outline_rounded),
-                label: const Text('Очистить незавершённый приём'),
+                label: Text(l.clearIncomplete),
               ),
             ),
           ],
@@ -1573,7 +1984,7 @@ class _TransferShellState extends State<_TransferShell> {
     final accepted = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Удалить временные копии?'),
+        title: Text(l.deleteTemporaryQuestion),
         content: SizedBox(
           width: 440,
           child: SingleChildScrollView(
@@ -1582,21 +1993,18 @@ class _TransferShellState extends State<_TransferShell> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Будет удалено до ${files.length} копий (${formatBytes(bytes)}), '
-                  'не используемых выбранными файлами и незавершёнными передачами. '
-                  'Для новой отправки их потребуется выбрать заново. '
-                  'Исходные и готовые полученные файлы останутся на месте. '
-                  'Если исходный файл уже удалён, временная копия может быть единственной; '
-                  'после очистки восстановить её из приложения нельзя.',
+                  l.deleteTemporaryBody(files.length, formatBytes(l, bytes)),
                 ),
                 const SizedBox(height: 14),
                 for (final file in files.take(10))
                   Padding(
                     padding: const EdgeInsets.only(bottom: 5),
-                    child: Text('${file.name} · ${formatBytes(file.bytes)}'),
+                    child: Text(
+                      l.fileWithSize(file.name, formatBytes(l, file.bytes)),
+                    ),
                   ),
                 if (files.length > 10)
-                  Text('И ещё ${files.length - 10} файлов.'),
+                  Text(l.andMoreFilesDot(files.length - 10)),
               ],
             ),
           ),
@@ -1604,12 +2012,12 @@ class _TransferShellState extends State<_TransferShell> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Оставить'),
+            child: Text(l.keep),
           ),
           FilledButton(
             key: const Key('confirm-cleanup-temporary'),
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Удалить копии'),
+            child: Text(l.deleteCopies),
           ),
         ],
       ),
@@ -1637,7 +2045,7 @@ class _TransferShellState extends State<_TransferShell> {
     final accepted = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Остановить приём и удалить части файлов?'),
+        title: Text(l.stopIncomingQuestion),
         content: SizedBox(
           width: 440,
           child: SingleChildScrollView(
@@ -1646,23 +2054,24 @@ class _TransferShellState extends State<_TransferShell> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Будут остановлены перечисленные передачи: ${transfers.length}. '
-                  'Их незавершённые части сейчас занимают ${formatBytes(bytes)}, '
-                  'ещё ${formatBytes(reserved)} предусмотрено для продолжения. '
-                  'Объём может измениться, если приём ещё идёт. '
-                  'Продолжить эти передачи после очистки нельзя: '
-                  'отправителю потребуется создать новые. '
-                  'Готовые полученные файлы и история сохранятся.',
+                  l.stopIncomingBody(
+                    transfers.length,
+                    formatBytes(l, bytes),
+                    formatBytes(l, reserved),
+                  ),
                 ),
                 const SizedBox(height: 14),
                 for (final item in transfers)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 10),
                     child: Text(
-                      '${item.title}\n${item.peerName} · '
-                      '${fileCountLabel(item.pendingFileCount)} не завершено · '
-                      '${formatBytes(item.temporaryBytes)}\n'
-                      'Готовых файлов останется: ${item.completedFileCount}',
+                      l.incompleteItem(
+                        item.title,
+                        item.peerName,
+                        fileCountLabel(l, item.pendingFileCount),
+                        formatBytes(l, item.temporaryBytes),
+                        item.completedFileCount,
+                      ),
                     ),
                   ),
               ],
@@ -1672,12 +2081,12 @@ class _TransferShellState extends State<_TransferShell> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Оставить'),
+            child: Text(l.keep),
           ),
           FilledButton(
             key: const Key('confirm-cleanup-incoming'),
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Остановить и очистить'),
+            child: Text(l.stopAndClear),
           ),
         ],
       ),
@@ -1695,25 +2104,25 @@ class _TransferShellState extends State<_TransferShell> {
     final accepted = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Создать новую отправку?'),
+        title: Text(l.resendQuestion),
         content: SingleChildScrollView(
           child: Text(
-            '${item.title}\nПолучатель: ${item.peerName}\n\n'
-            'Приложение использует сохранённые подготовленные копии '
-            '(${formatBytes(item.totalBytes)}). Выбирать исходные файлы заново '
-            'не потребуется. Получателю придёт новый запрос, который нужно '
-            'подтвердить. Результат прежней попытки останется в истории.',
+            l.resendBody(
+              item.title,
+              item.peerName,
+              formatBytes(l, item.totalBytes),
+            ),
           ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Оставить'),
+            child: Text(l.keep),
           ),
           FilledButton(
             key: Key('confirm-retry-${item.id}'),
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Отправить новый запрос'),
+            child: Text(l.sendNewRequest),
           ),
         ],
       ),
@@ -1744,7 +2153,7 @@ class _TransferShellState extends State<_TransferShell> {
     final fileId = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Полученные файлы'),
+        title: Text(l.receivedFiles),
         content: SizedBox(
           width: 440,
           child: ConstrainedBox(
@@ -1764,7 +2173,7 @@ class _TransferShellState extends State<_TransferShell> {
                     maxLines: 3,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  subtitle: Text(formatBytes(file.bytes)),
+                  subtitle: Text(formatBytes(l, file.bytes)),
                   trailing: const Icon(Icons.open_in_new_rounded, size: 20),
                   onTap: () => Navigator.pop(context, file.id),
                 );
@@ -1775,7 +2184,7 @@ class _TransferShellState extends State<_TransferShell> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Закрыть'),
+            child: Text(l.close),
           ),
         ],
       ),
@@ -1794,7 +2203,7 @@ class _TransferShellState extends State<_TransferShell> {
       fileId = await showDialog<String>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('Сохранить копию файла'),
+          title: Text(l.saveFileCopyTitle),
           content: SizedBox(
             width: 440,
             child: ConstrainedBox(
@@ -1815,7 +2224,7 @@ class _TransferShellState extends State<_TransferShell> {
                       overflow: TextOverflow.ellipsis,
                     ),
                     subtitle: Text(
-                      '${formatBytes(file.bytes)}\n${file.exportDetail ?? 'Получен в приложении'}',
+                      '${formatBytes(l, file.bytes)}\n${file.exportDetail ?? l.receivedInApp}',
                     ),
                     trailing: const Icon(Icons.save_alt_rounded, size: 20),
                     onTap: () => Navigator.pop(context, file.id),
@@ -1827,7 +2236,7 @@ class _TransferShellState extends State<_TransferShell> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('Закрыть'),
+              child: Text(l.close),
             ),
           ],
         ),
@@ -1850,11 +2259,11 @@ class _TransferShellState extends State<_TransferShell> {
   Future<void> _enterInvitation() async {
     final payload = await showDialog<String>(
       context: context,
-      builder: (_) => const _TextEntryDialog(
-        title: 'Подключиться по приглашению',
-        description: 'На втором устройстве создайте приглашение и скопируйте его сюда целиком.',
-        label: 'Текст приглашения',
-        button: 'Подключиться',
+      builder: (_) => _TextEntryDialog(
+        title: l.pairByInvitation,
+        description: l.pairByInvitationHint,
+        label: l.invitationText,
+        button: l.pairConnect,
         multiline: true,
       ),
     );
@@ -1867,11 +2276,10 @@ class _TransferShellState extends State<_TransferShell> {
     final name = await showDialog<String>(
       context: context,
       builder: (_) => _TextEntryDialog(
-        title: 'Имя устройства',
-        description:
-            'Это имя увидят другие устройства при подключении и передаче.',
-        label: 'Имя',
-        button: 'Сохранить',
+        title: l.deviceName,
+        description: l.renameHint,
+        label: l.name,
+        button: l.save,
         initialValue: c.deviceName,
         maxLength: 80,
       ),
@@ -1885,18 +2293,16 @@ class _TransferShellState extends State<_TransferShell> {
     final accepted = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Отключить ${peer.name}?'),
-        content: const Text(
-          'Для следующей передачи это устройство потребуется подключить заново.',
-        ),
+        title: Text(l.disconnectQuestion(peer.name)),
+        content: Text(l.disconnectBody),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Оставить'),
+            child: Text(l.keep),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Отключить'),
+            child: Text(l.disconnect),
           ),
         ],
       ),
@@ -1928,6 +2334,7 @@ class _TextEntryDialog extends StatefulWidget {
 }
 
 class _TextEntryDialogState extends State<_TextEntryDialog> {
+  AppLocalizations get l => AppLocalizations.of(context);
   late final TextEditingController _text = TextEditingController(
     text: widget.initialValue,
   );
@@ -1979,7 +2386,7 @@ class _TextEntryDialogState extends State<_TextEntryDialog> {
     actions: [
       TextButton(
         onPressed: () => Navigator.pop(context),
-        child: const Text('Отмена'),
+        child: Text(l.cancel),
       ),
       FilledButton(
         onPressed: _text.text.trim().isEmpty
@@ -2000,6 +2407,7 @@ class _InvitationDialog extends StatefulWidget {
 }
 
 class _InvitationDialogState extends State<_InvitationDialog> {
+  AppLocalizations get l => AppLocalizations.of(context);
   late final Timer _timer;
   bool _copied = false;
 
@@ -2026,7 +2434,7 @@ class _InvitationDialogState extends State<_InvitationDialog> {
           invitation?.expiresAt.difference(DateTime.now()).inSeconds ?? 0;
       final expired = remaining <= 0;
       return AlertDialog(
-        title: const Text('Приглашение на устройство'),
+        title: Text(l.invitationTitle),
         content: SizedBox(
           width: 370,
           child: SingleChildScrollView(
@@ -2038,10 +2446,7 @@ class _InvitationDialogState extends State<_InvitationDialog> {
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
                 const SizedBox(height: 8),
-                const Text(
-                  'Отсканируйте QR в приложении на другом устройстве или передайте текст приглашения.',
-                  textAlign: TextAlign.center,
-                ),
+                Text(l.invitationHint, textAlign: TextAlign.center),
                 const SizedBox(height: 22),
                 if (!expired && invitation != null)
                   LayoutBuilder(
@@ -2056,8 +2461,7 @@ class _InvitationDialogState extends State<_InvitationDialog> {
                         size: (size.maxWidth - 28).clamp(120.0, 224.0),
                         backgroundColor: Colors.white,
                         errorCorrectionLevel: QrErrorCorrectLevel.M,
-                        semanticsLabel:
-                            'QR-код временного приглашения на устройство',
+                        semanticsLabel: l.invitationQrSemantics,
                       ),
                     ),
                   )
@@ -2069,8 +2473,10 @@ class _InvitationDialogState extends State<_InvitationDialog> {
                 const SizedBox(height: 18),
                 Text(
                   expired
-                      ? 'Срок приглашения истёк. Создайте новое.'
-                      : 'Действует ещё ${remaining ~/ 60}:${(remaining % 60).toString().padLeft(2, '0')}',
+                      ? l.invitationExpired
+                      : l.invitationRemaining(
+                          '${remaining ~/ 60}:${(remaining % 60).toString().padLeft(2, '0')}',
+                        ),
                   style: TextStyle(
                     color: expired
                         ? Theme.of(context).colorScheme.error
@@ -2092,9 +2498,7 @@ class _InvitationDialogState extends State<_InvitationDialog> {
                     _copied ? Icons.check_rounded : Icons.copy_rounded,
                     size: 18,
                   ),
-                  label: Text(
-                    _copied ? 'Скопировано' : 'Скопировать приглашение',
-                  ),
+                  label: Text(_copied ? l.copied : l.copyInvitation),
                 ),
               ],
             ),
@@ -2103,7 +2507,7 @@ class _InvitationDialogState extends State<_InvitationDialog> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Закрыть'),
+            child: Text(l.close),
           ),
         ],
       );
@@ -2236,6 +2640,7 @@ class _EmptyState extends StatelessWidget {
 
 class _Notice extends StatelessWidget {
   const _Notice({
+    super.key,
     required this.icon,
     required this.text,
     this.error = false,
@@ -2327,7 +2732,7 @@ class _PeerCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '${platformLabel(peer.platform)} · ${peer.isOnline ? 'Доступно' : 'Не в сети'}',
+                      '${platformLabel(context.l10n, peer.platform)} · ${peer.isOnline ? context.l10n.peerAvailable : context.l10n.peerOffline}',
                       style: Theme.of(context).textTheme.bodySmall
                           ?.copyWith(color: scheme.onSurfaceVariant),
                     ),
@@ -2350,7 +2755,7 @@ class _PeerCard extends StatelessWidget {
                 )
               else if (peer.isTrusted)
                 Tooltip(
-                  message: 'Доверенное устройство',
+                  message: context.l10n.trustedDevice,
                   child: Icon(
                     Icons.verified_user_outlined,
                     color: scheme.primary,
@@ -2369,12 +2774,12 @@ class _SettingRow extends StatelessWidget {
   const _SettingRow({
     required this.icon,
     required this.title,
-    required this.subtitle,
+    this.subtitle,
     this.action,
   });
   final IconData icon;
   final String title;
-  final String subtitle;
+  final String? subtitle;
   final Widget? action;
   @override
   Widget build(BuildContext context) => LayoutBuilder(
@@ -2396,13 +2801,15 @@ class _SettingRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(title, style: Theme.of(context).textTheme.titleSmall),
-                const SizedBox(height: 5),
-                Text(
-                  subtitle,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                if (subtitle != null) ...[
+                  const SizedBox(height: 5),
+                  Text(
+                    subtitle!,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
@@ -2567,11 +2974,11 @@ class _FileIllustration extends StatelessWidget {
   );
 }
 
-String _networkLabel(NetworkState state) => switch (state) {
-  NetworkState.starting => 'Подключение…',
-  NetworkState.ready => 'Локальная сеть',
-  NetworkState.unavailable => 'Нет подключения',
-  NetworkState.permissionRequired => 'Нужен доступ к сети',
+String _networkLabel(AppLocalizations l, NetworkState state) => switch (state) {
+  NetworkState.starting => l.networkStarting,
+  NetworkState.ready => l.networkReady,
+  NetworkState.unavailable => l.networkUnavailable,
+  NetworkState.permissionRequired => l.networkPermissionRequired,
 };
 
 class _StatusPill extends StatelessWidget {
@@ -2599,7 +3006,7 @@ class _StatusPill extends StatelessWidget {
           const SizedBox(width: 7),
           Flexible(
             child: Text(
-              _networkLabel(networkState),
+              _networkLabel(context.l10n, networkState),
               style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w600,
@@ -2613,4 +3020,195 @@ class _StatusPill extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Shown on top of whatever is open (including the QR invitation), so a
+/// pairing request can be approved without closing the invitation first.
+class _PairingRequestDialog extends StatefulWidget {
+  const _PairingRequestDialog({
+    required this.controller,
+    required this.request,
+  });
+  final AppController controller;
+  final PairingRequest request;
+
+  @override
+  State<_PairingRequestDialog> createState() => _PairingRequestDialogState();
+}
+
+class _PairingRequestDialogState extends State<_PairingRequestDialog> {
+  AppLocalizations get l => AppLocalizations.of(context);
+  bool _working = false;
+
+  Future<void> _answer(bool accept) async {
+    setState(() => _working = true);
+    try {
+      await widget.controller.respondToPairing(widget.request.id, accept);
+    } finally {
+      if (mounted) Navigator.pop(context);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: widget.controller,
+    builder: (context, _) {
+      final stillPending = widget.controller.pendingPairings.any(
+        (item) => item.id == widget.request.id,
+      );
+      return AlertDialog(
+        icon: const Icon(Icons.devices_other_rounded),
+        title: Text(l.pairingRequest),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              widget.request.deviceName,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            if (widget.request.code != null) ...[
+              const SizedBox(height: 16),
+              Text(
+                widget.request.code!,
+                key: const Key('pairing-request-code'),
+                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                  letterSpacing: 2,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(l.pairOnlyIfCodeMatches, textAlign: TextAlign.center),
+            ],
+            if (!stillPending) ...[
+              const SizedBox(height: 12),
+              Text(l.requestNoLongerActive),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: _working || !stillPending ? null : () => _answer(false),
+            child: Text(l.decline),
+          ),
+          FilledButton(
+            key: Key('dialog-approve-pair-${widget.request.id}'),
+            onPressed: _working || !stillPending ? null : () => _answer(true),
+            child: Text(l.connect),
+          ),
+        ],
+      );
+    },
+  );
+}
+
+class _IncomingOfferSheet extends StatefulWidget {
+  const _IncomingOfferSheet({required this.controller, required this.request});
+  final AppController controller;
+  final IncomingTransfer request;
+
+  @override
+  State<_IncomingOfferSheet> createState() => _IncomingOfferSheetState();
+}
+
+class _IncomingOfferSheetState extends State<_IncomingOfferSheet> {
+  AppLocalizations get l => AppLocalizations.of(context);
+  bool _working = false;
+
+  Future<void> _answer(bool accept) async {
+    setState(() => _working = true);
+    try {
+      await widget.controller.respondToTransfer(widget.request.id, accept);
+    } finally {
+      if (mounted) Navigator.pop(context);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final request = widget.request;
+    return ListenableBuilder(
+      listenable: widget.controller,
+      builder: (context, _) {
+        final stillPending = widget.controller.pendingTransfers.any(
+          (item) => item.id == request.id,
+        );
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  l.incomingFiles,
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  l.offerSummary(
+                    request.peerName,
+                    fileCountLabel(l, request.fileNames.length),
+                    formatBytes(l, request.totalBytes),
+                  ),
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 14),
+                for (final name in request.fileNames.take(4))
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.insert_drive_file_outlined, size: 18),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (request.fileNames.length > 4)
+                  Text(
+                    l.andMoreFiles(
+                      fileCountLabel(l, request.fileNames.length - 4),
+                    ),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                if (!stillPending) ...[
+                  const SizedBox(height: 10),
+                  Text(l.offerNoLongerActive),
+                ],
+                const SizedBox(height: 20),
+                FilledButton.icon(
+                  key: Key('sheet-accept-${request.id}'),
+                  onPressed: _working || !stillPending
+                      ? null
+                      : () => _answer(true),
+                  icon: const Icon(Icons.check_rounded),
+                  label: Text(l.acceptFiles),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton(
+                  key: Key('sheet-reject-${request.id}'),
+                  onPressed: _working || !stillPending
+                      ? null
+                      : () => _answer(false),
+                  child: Text(l.decline),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+extension _L10nContext on BuildContext {
+  AppLocalizations get l10n => AppLocalizations.of(this);
 }

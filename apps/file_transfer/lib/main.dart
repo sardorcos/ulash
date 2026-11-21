@@ -1,16 +1,31 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' show PlatformDispatcher;
 
 // Kept for plugin compatibility during the Flutter 3.50 Material migration.
 // ignore: deprecated_member_use
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+import 'l10n/app_localizations.dart';
+import 'services/diagnostics_log.dart';
+import 'services/platform_permissions.dart';
 import 'services/transfer_app_controller.dart';
 import 'ui/file_transfer_app.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  // Uncaught errors are recorded locally (types and codes only) instead of
+  // disappearing; App Store / Play crash reports cover native crashes.
+  final previous = FlutterError.onError;
+  FlutterError.onError = (details) {
+    DiagnosticsLog.instance.error('flutter', details.exception, details.stack);
+    previous?.call(details);
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    DiagnosticsLog.instance.error('uncaught', error, stack);
+    return true;
+  };
   final navigator = GlobalKey<NavigatorState>();
   final controller = TransferAppController(
     scanCode: Platform.isAndroid || Platform.isIOS
@@ -42,7 +57,7 @@ class _ScannerScreenState extends State<_ScannerScreen> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Подключить устройство')),
+    appBar: AppBar(title: Text(AppLocalizations.of(context).scannerTitle)),
     body: Stack(
       children: [
         MobileScanner(
@@ -58,27 +73,38 @@ class _ScannerScreenState extends State<_ScannerScreen> {
             _found = true;
             Navigator.of(context).pop(payload);
           },
-          errorBuilder: (context, error) => const Center(
+          errorBuilder: (context, error) => Center(
             child: Padding(
-              padding: EdgeInsets.all(24),
-              child: Text(
-                'Камера недоступна. Разрешите доступ в настройках или '
-                'вернитесь и вставьте код подключения вручную.',
-                textAlign: TextAlign.center,
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.no_photography_outlined, size: 48),
+                  const SizedBox(height: 16),
+                  Text(
+                    AppLocalizations.of(context).cameraUnavailable,
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 20),
+                  FilledButton.icon(
+                    onPressed: PlatformPermissions.openSettings,
+                    icon: const Icon(Icons.settings_outlined),
+                    label: Text(AppLocalizations.of(context).openSettings),
+                  ),
+                ],
               ),
             ),
           ),
         ),
-        const Positioned(
+        Positioned(
           left: 24,
           right: 24,
           bottom: 32,
           child: Card(
             child: Padding(
-              padding: EdgeInsets.all(20),
+              padding: const EdgeInsets.all(20),
               child: Text(
-                'Наведите камеру на QR-код в разделе «Получить» '
-                'на другом устройстве. Оба устройства должны быть в одной сети.',
+                AppLocalizations.of(context).scannerHint,
                 textAlign: TextAlign.center,
               ),
             ),

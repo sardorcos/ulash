@@ -127,16 +127,57 @@ Future<List<String>> localIpv4Addresses() async {
     type: InternetAddressType.IPv4,
     includeLoopback: false,
   );
-  final ordinary = interfaces.where(
-    (interface) => !RegExp(
-      r'^(tun|tap|utun|rmnet|pdp|lo)',
-      caseSensitive: false,
-    ).hasMatch(interface.name),
+  return rankLanAddresses([
+    for (final interface in interfaces)
+      for (final address in interface.addresses)
+        (interface.name, address.address),
+  ]);
+}
+
+/// Orders candidate (interface, IPv4) pairs so that the address most likely
+/// reachable by another device on the same Wi-Fi/Ethernet comes first.
+/// Virtual adapters (VPN, Hyper-V/WSL, Docker, VM bridges) and link-local
+/// addresses are excluded; private LAN ranges on Wi-Fi/Ethernet win.
+List<String> rankLanAddresses(List<(String, String)> candidates) {
+  final excluded = RegExp(
+    r'^(tun|tap|utun|ipsec|ppp|rmnet|pdp|ccmni|lo|docker|br-|veth|virbr|vmnet|'
+    r'vboxnet|zt|wg|tailscale|awdl|llw|bridge|anpi|gif|stf)|'
+    r'(vethernet|hyper-v|wsl|virtualbox|vmware|loopback|bluetooth)',
+    caseSensitive: false,
   );
-  return ordinary
-      .expand((interface) => interface.addresses)
-      .where((address) => !address.isLoopback && !address.isLinkLocal)
-      .map((address) => address.address)
-      .toSet()
-      .toList();
+  final preferred = RegExp(
+    r'^(en0|en1|wlan|wlp|wl|eth|enp|eno|ens|ap|swlan|wi-?fi|ethernet|беспровод)',
+    caseSensitive: false,
+  );
+  int score(String name, InternetAddress ip) {
+    final bytes = ip.rawAddress;
+    var value = 0;
+    if (preferred.hasMatch(name)) value += 100;
+    if (bytes[0] == 192 && bytes[1] == 168) value += 40;
+    if (bytes[0] == 10) value += 30;
+    if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) value += 20;
+    // Carrier-grade NAT (cellular) is rarely reachable from the LAN.
+    if (bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127) value -= 50;
+    return value;
+  }
+
+  final scored = <String, int>{};
+  for (final (name, text) in candidates) {
+    final ip = InternetAddress.tryParse(text);
+    if (ip == null ||
+        ip.type != InternetAddressType.IPv4 ||
+        ip.isLoopback ||
+        ip.isLinkLocal ||
+        ip.address == '0.0.0.0' ||
+        excluded.hasMatch(name)) {
+      continue;
+    }
+    final value = score(name, ip);
+    if (!scored.containsKey(ip.address) || scored[ip.address]! < value) {
+      scored[ip.address] = value;
+    }
+  }
+  final ordered = scored.keys.toList()
+    ..sort((a, b) => scored[b]!.compareTo(scored[a]!));
+  return ordered;
 }

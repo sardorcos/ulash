@@ -1,0 +1,802 @@
+{
+  "@@locale": "ru",
+  "unitB": "Б",
+  "unitKiB": "КиБ",
+  "unitMiB": "МиБ",
+  "unitGiB": "ГиБ",
+  "unitTiB": "ТиБ",
+  "filesCount": "{count, plural, one{{count} файл} few{{count} файла} many{{count} файлов} other{{count} файла}}",
+  "@filesCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "platformUnknown": "Устройство",
+  "phasePreparing": "Подготавливаем файлы",
+  "phaseQueued": "В очереди",
+  "phaseRetrying": "Повторяем подключение",
+  "phaseWaitingForConsent": "Ждём подтверждения",
+  "phaseTransferring": "Передаём файлы",
+  "phaseVerifying": "Проверяем файл",
+  "phaseCompleted": "Передача завершена",
+  "phasePaused": "Передача приостановлена",
+  "phaseFailed": "Не удалось завершить",
+  "phaseCancelled": "Передача отменена",
+  "phaseExpired": "Время ожидания истекло",
+  "networkStarting": "Подключение…",
+  "networkReady": "Локальная сеть",
+  "networkUnavailable": "Нет подключения",
+  "networkPermissionRequired": "Нужен доступ к сети",
+  "speedPerSecond": "{value} / с",
+  "@speedPerSecond": {
+    "placeholders": {
+      "value": {
+        "type": "String"
+      }
+    }
+  },
+  "navSend": "Отправить",
+  "navReceive": "Получить",
+  "navDevices": "Устройства",
+  "navHistory": "История",
+  "navSettings": "Настройки",
+  "actionFailedRetry": "Не удалось выполнить действие. Попробуйте ещё раз.",
+  "localNetworkNotice": "Нет доступа к локальной сети. Откройте Настройки → Ulash и включите «Локальная сеть», затем нажмите «Повторить».",
+  "openSettingsShort": "Настройки",
+  "retry": "Повторить",
+  "incomingWaitingNotice": "Входящие файлы ждут вашего подтверждения",
+  "view": "Посмотреть",
+  "pairingWaitingNotice": "Новое устройство запрашивает подключение",
+  "check": "Проверить",
+  "sidebarTagline": "Между вашими\nустройствами",
+  "sidebarTaglineDetail": "Файлы передаются\nпо локальной сети.",
+  "sendEyebrow": "ЛОКАЛЬНАЯ ПЕРЕДАЧА",
+  "sendTitle": "Файлы — на нужном\nустройстве.",
+  "sendSubtitle": "Выберите, что отправить, и кому. Фото, видео и документы останутся в исходном качестве.",
+  "recipientStep": "2. Получатель",
+  "recipientSubtitle": "Доступные доверенные устройства",
+  "refreshDevices": "Обновить устройства",
+  "connectDeviceTitle": "Подключите устройство",
+  "connectDeviceHint": "Откройте приложение на втором устройстве и добавьте его по приглашению.",
+  "connect": "Подключить",
+  "chooseRecipient": "Выберите получателя",
+  "sendFiles": "Отправить файлы",
+  "recipientWillConfirm": "Получатель подтвердит передачу на своём устройстве.",
+  "currentTransfers": "Текущие передачи",
+  "foldersUnsupported": "Выберите отдельные файлы. Папки пока не поддерживаются.",
+  "dropFilesHere": "Отпустите файлы здесь",
+  "filesStep": "1. Файлы",
+  "whatToSend": "Что хотите отправить?",
+  "clearSelectedFiles": "Очистить выбранные файлы",
+  "startWithFiles": "Начнём с файлов",
+  "startWithFilesHint": "Фото с телефона, рабочий документ\nили целое видео — выбирайте.",
+  "photosAndVideos": "Фото и видео",
+  "files": "Файлы",
+  "chooseFiles": "Выбрать файлы",
+  "orDropHere": "или перетащите их сюда",
+  "preparingFile": "Подготавливаем файл…",
+  "preparationFailed": "Не удалось подготовить",
+  "sizePending": "Размер уточняется",
+  "removeSource": "Убрать {name}",
+  "@removeSource": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "add": "Добавить",
+  "totalSize": "Всего: {size}",
+  "@totalSize": {
+    "placeholders": {
+      "size": {
+        "type": "String"
+      }
+    }
+  },
+  "receiveEyebrow": "ПОЛУЧЕНИЕ",
+  "receiveTitle": "Здесь появятся\nваши файлы.",
+  "receiveSubtitle": "Оставьте приложение открытым. Отправитель увидит устройство после подключения.",
+  "receivingOn": "Приём включён",
+  "receivingOff": "Приём выключен",
+  "saveLocation": "Место сохранения: {location}",
+  "@saveLocation": {
+    "placeholders": {
+      "location": {
+        "type": "String"
+      }
+    }
+  },
+  "showInvitation": "Показать приглашение",
+  "myDevices": "Мои устройства",
+  "noIncomingTitle": "Входящих предложений пока нет",
+  "noIncomingReady": "Когда отправитель выберет это устройство, вы сможете проверить файлы и принять передачу.",
+  "noIncomingOff": "Включите приём, когда будете готовы получить файлы.",
+  "incomingOffers": "Входящие предложения",
+  "andMoreFiles": "И ещё {files}",
+  "@andMoreFiles": {
+    "placeholders": {
+      "files": {
+        "type": "String"
+      }
+    }
+  },
+  "offerValidUntil": "Предложение действует до {time}. Без ответа отправителю понадобится создать новое предложение.",
+  "@offerValidUntil": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "acceptFiles": "Принять файлы",
+  "decline": "Отклонить",
+  "devicesEyebrow": "ВАШИ УСТРОЙСТВА",
+  "devicesTitle": "Один раз подключили.\nДальше — просто.",
+  "devicesSubtitle": "Добавьте телефон или компьютер, чтобы отправлять файлы без повторной настройки.",
+  "connectDevice": "Подключить устройство",
+  "appOpenBothSides": "Приложение должно быть открыто на обеих сторонах.",
+  "createInvitation": "Создать приглашение",
+  "enterInvitation": "Ввести приглашение",
+  "scanInvitationTooltip": "Сканировать приглашение с другого устройства",
+  "cameraUnavailableTooltip": "Камера пока недоступна. Используйте текст приглашения.",
+  "scanQr": "Сканировать QR",
+  "deviceCodeHint": "Код этого устройства: {code}. При подключении он должен совпасть с кодом в запросе на другом устройстве.",
+  "@deviceCodeHint": {
+    "placeholders": {
+      "code": {
+        "type": "String"
+      }
+    }
+  },
+  "pairingRequest": "Запрос подключения",
+  "pairingConfirmGeneric": "Подтвердите, если вы только что добавили это устройство.",
+  "pairingConfirmCode": "Подтвердите, только если код {code} совпадает с кодом на подключаемом устройстве.",
+  "@pairingConfirmCode": {
+    "placeholders": {
+      "code": {
+        "type": "String"
+      }
+    }
+  },
+  "connectedDevices": "Подключённые устройства",
+  "availabilityChecked": "Доступность проверяется приложением",
+  "onlyThisDeviceTitle": "Пока только это устройство",
+  "onlyThisDeviceHint": "Создайте приглашение или введите приглашение со второго устройства. Оно появится здесь после подтверждения.",
+  "disconnectDevice": "Отключить {name}",
+  "@disconnectDevice": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "peerAvailable": "Доступно",
+  "peerOffline": "Не в сети",
+  "trustedDevice": "Доверенное устройство",
+  "historyEyebrow": "ИСТОРИЯ",
+  "historyTitle": "Всё переданное.\nВ одном месте.",
+  "historySubtitle": "Статус, получатель и сохранённые файлы. Незавершённые передачи тоже остаются здесь.",
+  "filterAll": "Все",
+  "filterSent": "Отправленные",
+  "filterReceived": "Полученные",
+  "clearHistory": "Очистить историю",
+  "historyEmptyTitle": "История пока пуста",
+  "historyFilteredEmptyTitle": "Таких передач пока нет",
+  "historyEmptyHint": "После первой передачи здесь появится её результат.",
+  "historyFilteredEmptyHint": "Выберите другой фильтр или начните новую передачу.",
+  "showMore": "Показать ещё ({count})",
+  "@showMore": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "clearHistoryQuestion": "Очистить историю?",
+  "clearHistoryBody": "Будут удалены записи о завершённых, отменённых и неудачных передачах, а также их неиспользуемые подготовленные копии. Полученные файлы останутся — их можно удалить по отдельности.",
+  "cancel": "Отмена",
+  "clear": "Очистить",
+  "deleteReceivedQuestion": "Удалить полученные файлы?",
+  "deleteRecordQuestion": "Удалить запись?",
+  "deleteReceivedBody": "{title}\n\nПередача и её файлы ({size}) будут удалены с этого устройства. Копии, которые вы уже сохранили или отправили через «Поделиться», останутся.",
+  "@deleteReceivedBody": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      },
+      "size": {
+        "type": "String"
+      }
+    }
+  },
+  "deleteRecordBody": "{title}\n\nЗапись будет удалена из истории вместе с неиспользуемыми подготовленными копиями. Если исходный файл уже удалён, такая копия могла быть единственной.",
+  "@deleteRecordBody": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      }
+    }
+  },
+  "delete": "Удалить",
+  "shareFile": "Поделиться файлом",
+  "close": "Закрыть",
+  "toPeer": "Кому: {name}",
+  "@toPeer": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "fromPeer": "От кого: {name}",
+  "@fromPeer": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "savedAt": "Сохранено: {location}",
+  "@savedAt": {
+    "placeholders": {
+      "location": {
+        "type": "String"
+      }
+    }
+  },
+  "filesFolder": "Папка для файлов: {location}",
+  "@filesFolder": {
+    "placeholders": {
+      "location": {
+        "type": "String"
+      }
+    }
+  },
+  "previouslySaved": "Ранее сохранено: {destination}",
+  "@previouslySaved": {
+    "placeholders": {
+      "destination": {
+        "type": "String"
+      }
+    }
+  },
+  "pause": "Пауза",
+  "resume": "Продолжить",
+  "cancelTransfer": "Отменить",
+  "sendAgain": "Отправить снова",
+  "openFiles": "Открыть файлы",
+  "openFile": "Открыть файл",
+  "saveFileCopyEllipsis": "Сохранить копию файла…",
+  "saveCopyEllipsis": "Сохранить копию…",
+  "share": "Поделиться",
+  "settingsEyebrow": "НАСТРОЙКИ",
+  "settingsTitle": "Удобно именно вам.",
+  "settingsSubtitle": "Имя устройства, внешний вид и место для полученных файлов.",
+  "thisDevice": "Это устройство",
+  "deviceName": "Имя устройства",
+  "deviceNameWithCode": "{name}\nКод устройства: {code}",
+  "@deviceNameWithCode": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "code": {
+        "type": "String"
+      }
+    }
+  },
+  "change": "Изменить",
+  "receivedFiles": "Полученные файлы",
+  "appearance": "Внешний вид",
+  "themeSystem": "Как в системе",
+  "themeLight": "Светлая",
+  "themeDark": "Тёмная",
+  "language": "Язык",
+  "languageSystem": "Как в системе",
+  "connection": "Подключение",
+  "localNetwork": "Локальная сеть",
+  "trustedDevices": "Доверенные устройства",
+  "trustedDevicesHint": "Каждое новое устройство подключается с вашим подтверждением.",
+  "open": "Открыть",
+  "privacyAndSupport": "Конфиденциальность и поддержка",
+  "privacy": "Конфиденциальность",
+  "privacySummary": "Без аккаунтов, облака, рекламы и аналитики.",
+  "more": "Подробнее",
+  "diagnosticsLog": "Журнал диагностики",
+  "diagnosticsHint": "Коды ошибок без имён файлов и адресов. Отправляется только вами.",
+  "send": "Отправить",
+  "resetKeys": "Сбросить ключи устройства",
+  "resetKeysHint": "Отключит все устройства. Подключить их можно будет заново по QR-коду.",
+  "reset": "Сбросить",
+  "privacyBody": "Ulash передаёт файлы напрямую между вашими устройствами в локальной сети. Файлы не загружаются на серверы, приложение не требует аккаунта и не содержит рекламы, трекинга и аналитики.\n\nСоединения шифруются (TLS) и проверяются по ключу устройства, подтверждённому при подключении. Каждую входящую передачу вы принимаете сами.\n\nКамера используется только для сканирования QR-кода. Доступ к локальной сети нужен, чтобы найти ваши устройства. Журнал диагностики хранится на устройстве и отправляется только по вашему действию.",
+  "resetKeysQuestion": "Сбросить ключи устройства?",
+  "resetKeysBody": "Будут созданы новые ключи, а все подключённые устройства будут забыты. Чтобы снова обмениваться файлами, подключите их заново по QR-коду. Полученные файлы и история останутся.",
+  "versionLabel": "Ulash {version}",
+  "@versionLabel": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "storage": "Хранилище",
+  "refreshStorage": "Обновить сведения о месте",
+  "storageUnavailable": "Сведения о хранилище пока недоступны.",
+  "freeSpace": "Свободное место",
+  "freeSpaceUnknown": "Система не сообщила объём. Проверка лимита временных копий работает.",
+  "freeSpaceChecked": "{size} · проверено {time}",
+  "@freeSpaceChecked": {
+    "placeholders": {
+      "size": {
+        "type": "String"
+      },
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "temporaryCopies": "Временные копии",
+  "temporaryUsage": "{used} уже занято; {reserved} предусмотрено для начатых передач.",
+  "@temporaryUsage": {
+    "placeholders": {
+      "used": {
+        "type": "String"
+      },
+      "reserved": {
+        "type": "String"
+      }
+    }
+  },
+  "quotaUsageSemantics": "Использование лимита временного хранилища",
+  "quotaTitle": "Лимит временного хранилища",
+  "quotaHint": "Перед записью проверяется запас {reserve} свободного места. Готовые полученные файлы не входят в этот лимит и не удаляются при очистке временных копий.",
+  "@quotaHint": {
+    "placeholders": {
+      "reserve": {
+        "type": "String"
+      }
+    }
+  },
+  "unusedCopies": "Неиспользуемые копии",
+  "unusedCopiesSummary": "{files} · {size}",
+  "@unusedCopiesSummary": {
+    "placeholders": {
+      "files": {
+        "type": "String"
+      },
+      "size": {
+        "type": "String"
+      }
+    }
+  },
+  "clearUnusedCopies": "Очистить неиспользуемые копии",
+  "incompleteIncoming": "Незавершённый приём",
+  "incompleteSummary": "{count, plural, one{{count} передача} few{{count} передачи} many{{count} передач} other{{count} передачи}} · {used} уже занято; {reserved} предусмотрено для продолжения.",
+  "@incompleteSummary": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "used": {
+        "type": "String"
+      },
+      "reserved": {
+        "type": "String"
+      }
+    }
+  },
+  "incompleteHint": "Очистка остановит выбранные входящие передачи и удалит их незавершённые части. Для них потребуется новая отправка. Уже полученные готовые файлы останутся на месте.",
+  "clearIncomplete": "Очистить незавершённый приём",
+  "deleteTemporaryQuestion": "Удалить временные копии?",
+  "deleteTemporaryBody": "Будет удалено до {count} копий ({size}), не используемых выбранными файлами и незавершёнными передачами. Для новой отправки их потребуется выбрать заново. Исходные и готовые полученные файлы останутся на месте. Если исходный файл уже удалён, временная копия может быть единственной; после очистки восстановить её из приложения нельзя.",
+  "@deleteTemporaryBody": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "size": {
+        "type": "String"
+      }
+    }
+  },
+  "fileWithSize": "{name} · {size}",
+  "@fileWithSize": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "size": {
+        "type": "String"
+      }
+    }
+  },
+  "andMoreFilesDot": "И ещё {count} файлов.",
+  "@andMoreFilesDot": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "keep": "Оставить",
+  "deleteCopies": "Удалить копии",
+  "stopIncomingQuestion": "Остановить приём и удалить части файлов?",
+  "stopIncomingBody": "Будут остановлены перечисленные передачи: {count}. Их незавершённые части сейчас занимают {used}, ещё {reserved} предусмотрено для продолжения. Объём может измениться, если приём ещё идёт. Продолжить эти передачи после очистки нельзя: отправителю потребуется создать новые. Готовые полученные файлы и история сохранятся.",
+  "@stopIncomingBody": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "used": {
+        "type": "String"
+      },
+      "reserved": {
+        "type": "String"
+      }
+    }
+  },
+  "incompleteItem": "{title}\n{peer} · {files} не завершено · {size}\nГотовых файлов останется: {completed}",
+  "@incompleteItem": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      },
+      "peer": {
+        "type": "String"
+      },
+      "files": {
+        "type": "String"
+      },
+      "size": {
+        "type": "String"
+      },
+      "completed": {
+        "type": "int"
+      }
+    }
+  },
+  "stopAndClear": "Остановить и очистить",
+  "resendQuestion": "Создать новую отправку?",
+  "resendBody": "{title}\nПолучатель: {peer}\n\nПриложение использует сохранённые подготовленные копии ({size}). Выбирать исходные файлы заново не потребуется. Получателю придёт новый запрос, который нужно подтвердить. Результат прежней попытки останется в истории.",
+  "@resendBody": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      },
+      "peer": {
+        "type": "String"
+      },
+      "size": {
+        "type": "String"
+      }
+    }
+  },
+  "sendNewRequest": "Отправить новый запрос",
+  "saveFileCopyTitle": "Сохранить копию файла",
+  "receivedInApp": "Получен в приложении",
+  "pairByInvitation": "Подключиться по приглашению",
+  "pairByInvitationHint": "На втором устройстве создайте приглашение и скопируйте его сюда целиком.",
+  "invitationText": "Текст приглашения",
+  "pairConnect": "Подключиться",
+  "renameHint": "Это имя увидят другие устройства при подключении и передаче.",
+  "name": "Имя",
+  "save": "Сохранить",
+  "disconnectQuestion": "Отключить {name}?",
+  "@disconnectQuestion": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "disconnectBody": "Для следующей передачи это устройство потребуется подключить заново.",
+  "disconnect": "Отключить",
+  "invitationTitle": "Приглашение на устройство",
+  "invitationHint": "Отсканируйте QR в приложении на другом устройстве или передайте текст приглашения.",
+  "invitationQrSemantics": "QR-код временного приглашения на устройство",
+  "invitationExpired": "Срок приглашения истёк. Создайте новое.",
+  "invitationRemaining": "Действует ещё {time}",
+  "@invitationRemaining": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "copied": "Скопировано",
+  "copyInvitation": "Скопировать приглашение",
+  "pairOnlyIfCodeMatches": "Подключайте, только если этот код совпадает с кодом на экране подключаемого устройства.",
+  "requestNoLongerActive": "Запрос больше не активен.",
+  "incomingFiles": "Входящие файлы",
+  "offerSummary": "{peer} · {files} · {size}",
+  "@offerSummary": {
+    "placeholders": {
+      "peer": {
+        "type": "String"
+      },
+      "files": {
+        "type": "String"
+      },
+      "size": {
+        "type": "String"
+      }
+    }
+  },
+  "filesAndSize": "{files} · {size}",
+  "@filesAndSize": {
+    "placeholders": {
+      "files": {
+        "type": "String"
+      },
+      "size": {
+        "type": "String"
+      }
+    }
+  },
+  "offerNoLongerActive": "Предложение больше не активно.",
+  "onbTitle1": "Файлы между вашими устройствами",
+  "onbBody1": "Отправляйте фото, видео и документы с телефона на компьютер и обратно в исходном качестве — напрямую, без облака и без регистрации.",
+  "onbTitle2": "Одна сеть Wi-Fi",
+  "onbBody2": "Устройства должны быть в одной сети. Система попросит разрешить доступ к локальной сети — без него приложение не найдёт ваши устройства.",
+  "onbTitle3": "Только с вашего согласия",
+  "onbBody3": "Новое устройство подключается по QR-коду с подтверждением, а каждую входящую передачу вы принимаете сами. Данные шифруются.",
+  "skip": "Пропустить",
+  "onbStep": "Шаг {current} из {total}",
+  "@onbStep": {
+    "placeholders": {
+      "current": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "start": "Начать",
+  "next": "Далее",
+  "resetKeysStartupBody": "Будут созданы новые ключи. Все ранее подключённые устройства придётся подключить заново по QR-коду. Полученные файлы останутся на устройстве.",
+  "repairQuestion": "Восстановить журнал?",
+  "repairBody": "Повреждённый журнал будет отложен в сторону, приложение начнёт с чистого. История передач из этого журнала станет недоступна. Если вы недавно откатили версию приложения, лучше сначала обновить его.",
+  "repair": "Восстановить",
+  "startupFailedTitle": "Приложение не запустилось",
+  "repairJournal": "Восстановить журнал",
+  "sendDiagnostics": "Отправить журнал диагностики",
+  "scannerTitle": "Подключить устройство",
+  "cameraUnavailable": "Камера недоступна. Разрешите доступ в настройках или вернитесь и вставьте код подключения вручную.",
+  "openSettings": "Открыть настройки",
+  "scannerHint": "Наведите камеру на QR-код в разделе «Получить» на другом устройстве. Оба устройства должны быть в одной сети.",
+  "busyPreparingStorage": "Подготовка защищённого хранилища",
+  "startupKeysFailed": "Не удалось открыть защищённые ключи устройства. Разблокируйте устройство и повторите. Если ключи утрачены (например, после переноса на новый телефон), сбросьте их и подключите устройства заново.",
+  "startupJournalFailed": "Журнал передач повреждён или создан более новой версией приложения. Обновите приложение или восстановите журнал.",
+  "startupFailed": "Не удалось запустить приложение. {reason}",
+  "@startupFailed": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "allowLocalNetwork": "Разрешите доступ к локальной сети в настройках приложения, затем нажмите «Обновить».",
+  "resetKeysFailed": "Не удалось сбросить ключи. Перезапустите устройство и повторите.",
+  "defaultNameIos": "Мой iPhone",
+  "defaultNameAndroid": "Мой Android",
+  "defaultNameWindows": "Мой Windows",
+  "defaultNameLinux": "Мой Linux",
+  "defaultNameOther": "Моё устройство",
+  "discoveryUnavailable": "Автопоиск недоступен. Подключитесь по QR-коду в общей сети.",
+  "saveLocationMobile": "В приложении. Чтобы сохранить файл в другое место, используйте «Поделиться» или «Сохранить копию…» в истории.",
+  "networkDenied": "Доступ к локальной сети запрещён в настройках системы.",
+  "networkNoAddress": "Подключите устройства к одной сети Wi-Fi или Ethernet.",
+  "networkKeepOpen": "Локальная сеть · держите приложение открытым на обоих устройствах во время передачи",
+  "peerKeyVerified": "Ключ устройства проверен",
+  "peerOpenApp": "Откройте приложение на другом устройстве",
+  "peerScanToConnect": "Для первого подключения отсканируйте QR-код",
+  "waitingForRecipient": "Ожидание ответа получателя",
+  "busyChoosingMedia": "Выбор фото и видео",
+  "busyChoosingFiles": "Выбор файлов",
+  "pickerTitle": "Выберите файлы",
+  "busyPreparing": "Подготовка: {name}",
+  "@busyPreparing": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "waitCurrentSendOrPause": "Дождитесь окончания текущей отправки или поставьте её на паузу.",
+  "requestSent": "Запрос на получение отправлен. Подтвердите его на другом устройстве.",
+  "peerUnavailableOrRevoked": "Устройство недоступно или доверие отозвано.",
+  "cancelRetriesExhausted": "Автоматические попытки закончились. Отмена ещё не подтверждена; приложение уточнит результат, когда получатель снова будет доступен.",
+  "connectionLostAutoResume": "Связь прервалась. Подтверждённый прогресс сохранён; передача продолжится автоматически, когда второе устройство снова будет в сети.",
+  "connectionNotRestored": "Связь не восстановилась. Подтверждённый прогресс сохранён. Откройте приложение на обоих устройствах и нажмите «Продолжить».",
+  "cancelRetrying": "Уточняем отмену: повтор {attempt} из {max} через {seconds} с. Результат получателя пока неизвестен.",
+  "@cancelRetrying": {
+    "placeholders": {
+      "attempt": {
+        "type": "int"
+      },
+      "max": {
+        "type": "int"
+      },
+      "seconds": {
+        "type": "String"
+      }
+    }
+  },
+  "connectionRetrying": "Связь прервалась. Повтор {attempt} из {max} через {seconds} с. Подтверждённый прогресс сохранён.",
+  "@connectionRetrying": {
+    "placeholders": {
+      "attempt": {
+        "type": "int"
+      },
+      "max": {
+        "type": "int"
+      },
+      "seconds": {
+        "type": "String"
+      }
+    }
+  },
+  "senderPausedTapResume": "Пауза отправителя. Для продолжения нажмите «Продолжить».",
+  "recipientPaused": "Получатель поставил передачу на паузу.",
+  "consentExpiredNewRequest": "Время ожидания согласия истекло. Для передачи нужен новый запрос.",
+  "receiveNotFinished": "Приём не завершён. Выберите файлы заново для новой отправки.",
+  "partiallySaved": "Сохранено {completed} из {total} файлов. Завершённые результаты доступны у получателя; остальные можно отправить заново.",
+  "@partiallySaved": {
+    "placeholders": {
+      "completed": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "newRequestFromCopies": "Создан новый запрос из сохранённых копий. Получатель должен подтвердить его заново.",
+  "senderPaused": "Пауза отправителя",
+  "receiveAllowed": "Приём разрешён. На отправителе нажмите «Продолжить», если передача остановлена.",
+  "waitCurrentSend": "Дождитесь окончания текущей отправки.",
+  "confirmingCancel": "Уточняем результат отмены у получателя.",
+  "tapResumeToConfirmCancel": "Нажмите «Продолжить», чтобы подтвердить отмену у получателя.",
+  "recipientUnavailableCancel": "Получатель недоступен. Отмена ещё не подтверждена; «Продолжить» повторно уточнит её результат.",
+  "confirmPairingWithCode": "Подтвердите подключение на другом устройстве. Код этого устройства: {code} — он должен совпасть с кодом в запросе.",
+  "@confirmPairingWithCode": {
+    "placeholders": {
+      "code": {
+        "type": "String"
+      }
+    }
+  },
+  "pairedWith": "Подключено: {name}. Теперь можно отправлять файлы.",
+  "@pairedWith": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "pairingApproved": "Подключение подтверждено. Ожидается завершение сопряжения.",
+  "pairingDeclined": "Запрос подключения отклонён.",
+  "trustRevokedCancelUnknown": "Доверие отозвано. Удалённый результат отмены не подтверждён.",
+  "trustRevokedStopped": "Доверие отозвано. Передача остановлена.",
+  "deviceRenamed": "Имя устройства изменено. Подключённые устройства увидят его при следующем подключении.",
+  "transferDeleted": "Передача удалена вместе с её файлами.",
+  "recordDeleted": "Запись удалена из истории.",
+  "historyCleared": "Удалено записей: {count}. Полученные файлы сохранены.",
+  "@historyCleared": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "diagnosticsSaved": "Журнал диагностики сохранён: {path}",
+  "@diagnosticsSaved": {
+    "placeholders": {
+      "path": {
+        "type": "String"
+      }
+    }
+  },
+  "quotaSaved": "Лимит временного хранилища сохранён.",
+  "busyCleaningCopies": "Очистка неиспользуемых копий",
+  "copiesCleared": "Удалено неиспользуемых временных копий: {count}. Полученные файлы сохранены.",
+  "@copiesCleared": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "busyCleaningIncoming": "Очистка незавершённого приёма",
+  "incomingCleared": "Обработано незавершённых передач: {stopped}. Удалено временных файлов: {removed}. Готовые полученные файлы сохранены.",
+  "@incomingCleared": {
+    "placeholders": {
+      "stopped": {
+        "type": "int"
+      },
+      "removed": {
+        "type": "int"
+      }
+    }
+  },
+  "exportNotExported": "Получен в хранилище приложения",
+  "exportInProgress": "Сохранение копии…",
+  "exportDone": "Копия сохранена: {destination}",
+  "@exportDone": {
+    "placeholders": {
+      "destination": {
+        "type": "String"
+      }
+    }
+  },
+  "exportCancelledDetail": "Последнее сохранение отменено",
+  "exportFileChanged": "Файл изменён или перемещён. Сохранение копии остановлено.",
+  "exportFailedDetail": "Не удалось сохранить копию. Полученный файл остаётся в приложении.",
+  "exportUnknownDetail": "Результат сохранения не подтверждён. Проверьте выбранную папку перед повтором.",
+  "exportCancelled": "Сохранение копии отменено. Полученный файл остаётся в приложении.",
+  "cannotOpenFile": "Файл сохранён, но подходящую программу открыть не удалось. Попробуйте «Поделиться» или «Сохранить копию…».",
+  "backgroundedWillResume": "Приложение было свёрнуто. Передача продолжится, когда вы вернётесь в приложение.",
+  "interruptedOnClose": "Передача остановлена при закрытии приложения. Нажмите «Продолжить» для проверки состояния у получателя.",
+  "verifiedAndSaved": "SHA-256 проверен · сохранение подтверждено",
+  "consentNotReceived": "Согласие не получено за 120 секунд. Для передачи нужен новый запрос.",
+  "partSavedTapResume": "{reason} Подтверждённая часть файла сохранена; затем нажмите «Продолжить».",
+  "@partSavedTapResume": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "recipientPausedShort": "Пауза получателя",
+  "consentRequired": "Требуется согласие получателя",
+  "someFilesUnfinished": "Есть незавершённые файлы. Проверенные результаты сохранены.",
+  "receivedFilesMissing": "Полученные файлы удалены или перемещены вне приложения.",
+  "errPeerUnavailable": "Устройство недоступно. Подключите оба устройства к одной сети и откройте приложение.",
+  "errQrExpired": "Срок QR-кода истёк. Создайте новый код на другом устройстве.",
+  "errPairingRejected": "Подключение отклонено на другом устройстве.",
+  "errSelfPairing": "Этот QR-код принадлежит текущему устройству.",
+  "errUnauthorized": "Доверие отозвано или сопряжение не завершено. Подключите устройства заново.",
+  "errConsentRequired": "Получатель ещё не подтвердил приём. Подтвердите запрос и продолжите отправку.",
+  "errOfferExpired": "Срок предложения истёк. Выберите файлы и отправьте новый запрос.",
+  "errTransferPaused": "Передача приостановлена. Продолжение доступно после снятия паузы обеими сторонами.",
+  "errHashMismatch": "Контрольная сумма не совпала. Файл не отмечен как готовый.",
+  "errSourceChanged": "Исходный файл изменился во время подготовки. Выберите его повторно.",
+  "errFileTooLarge": "Размер файла превышает предел — 10 ГиБ.",
+  "errDiskFull": "Недостаточно свободного места с учётом начатых передач и резерва. Освободите место в настройках хранилища и повторите.",
+  "errTempQuotaExceeded": "Достигнут лимит временных копий. Очистите неиспользуемые копии или увеличьте лимит в настройках.",
+  "errQuotaBelowUsage": "Этот лимит меньше объёма временных копий и места для начатых передач. Сначала завершите передачи или освободите место.",
+  "errCapacityUnavailable": "Не удалось определить доступное место. Повторите проверку в настройках хранилища.",
+  "errCommittedFileChanged": "Полученный файл удалён, перемещён или изменён. Сохранение копии остановлено; проверьте файл.",
+  "errExportFailed": "Не удалось сохранить внешнюю копию. Полученный файл остаётся в приложении; выберите другое место или повторите.",
+  "errExportSourceUnavailable": "Полученный файл недоступен для сохранения копии. Проверьте, что он не удалён или перемещён.",
+  "errExportUnsupported": "Системное сохранение не поддерживается на этом устройстве. Файл остаётся в приложении.",
+  "errExportBusy": "Дождитесь завершения текущего сохранения или закройте открытое системное окно.",
+  "errDestinationExists": "Файл с таким именем уже существует. Укажите другое имя или папку.",
+  "errRateLimited": "Получатель временно ограничил число запросов. Повторите через несколько минут.",
+  "errQuotaExceeded": "Передача больше доступного места на устройстве получателя.",
+  "errJournal": "Журнал передач недоступен. Обновите приложение или восстановите журнал.",
+  "errIdentityChanged": "Ключ другого устройства изменился. Удалите его из списка и подключите заново.",
+  "errTransferTooSlow": "Соединение слишком медленное. Передача приостановлена и будет повторена.",
+  "errFileMissing": "Полученный файл удалён или перемещён вне приложения.",
+  "errTransferActive": "Завершите или отмените передачу, прежде чем удалять её.",
+  "errQueueFull": "Очередь заполнена. Завершите или отмените незавершённые передачи.",
+  "errBusy": "Получатель занят другой передачей. Повторите позже.",
+  "errNotFound": "Данные этой передачи недоступны. Проверьте сохранённые файлы или выберите источник заново.",
+  "errHandshake": "Не удалось проверить ключ устройства. Перепроверьте устройство и выполните сопряжение заново.",
+  "errConnectionLost": "Соединение прервано. Откройте приложение на обоих устройствах и продолжите передачу.",
+  "errFormat": "Некорректный QR-код или неподдерживаемый формат данных.",
+  "errFileSystem": "Не удалось прочитать или сохранить файл. Проверьте доступ и свободное место.",
+  "errUnknown": "Что-то пошло не так. Повторите действие. Если ошибка повторяется, отправьте журнал диагностики из настроек.",
+  "errWithCode": "Операция остановлена (код {code}). Данные не отмечены как успешно переданные.",
+  "@errWithCode": {
+    "placeholders": {
+      "code": {
+        "type": "String"
+      }
+    }
+  }
+}

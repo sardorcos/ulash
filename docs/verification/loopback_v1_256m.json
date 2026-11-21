@@ -1,0 +1,49 @@
+{
+  "status": "passed",
+  "mode": "foreground HTTPS push with receiver restart and resume",
+  "size": 268435456,
+  "size_bytes": 268435456,
+  "sha256": "76c420ca14fca22a28e30007e26a123c6475216933e8575d462aa3bff7a6a586",
+  "source_sha256": "76c420ca14fca22a28e30007e26a123c6475216933e8575d462aa3bff7a6a586",
+  "sink_sha256": "76c420ca14fca22a28e30007e26a123c6475216933e8575d462aa3bff7a6a586",
+  "checkpoint_bytes": 4194304,
+  "resumed_from_bytes": 4718592,
+  "host_restarted": true,
+  "manual_pair_approval_checked": true,
+  "receiver_consent_checked": true,
+  "receiver_state": "committed",
+  "prepared_source_verified": true,
+  "committed_wire_receipt_checked": true,
+  "prepared_source_deleted_after_receipt": true,
+  "capacity_adapter": "unavailable in Linux CLI; availableBytes is null",
+  "budget_at_acceptance": {
+    "available_bytes": null,
+    "temporary_bytes": 268435456,
+    "future_reserved_bytes": 268435456,
+    "safety_reserve_bytes": 134217728,
+    "temporary_quota_bytes": 21474836480
+  },
+  "budget_after_restart": {
+    "available_bytes": null,
+    "temporary_bytes": 273154048,
+    "future_reserved_bytes": 263716864,
+    "safety_reserve_bytes": 134217728,
+    "temporary_quota_bytes": 21474836480
+  },
+  "budget_after_receive_commit": {
+    "available_bytes": null,
+    "temporary_bytes": 268435456,
+    "future_reserved_bytes": 0,
+    "safety_reserve_bytes": 134217728,
+    "temporary_quota_bytes": 21474836480
+  },
+  "budget_after_source_cleanup": {
+    "available_bytes": null,
+    "temporary_bytes": 0,
+    "future_reserved_bytes": 0,
+    "safety_reserve_bytes": 134217728,
+    "temporary_quota_bytes": 21474836480
+  },
+  "elapsed_seconds": 19.944,
+  "credentials": "ephemeral memory only; not included in result"
+}

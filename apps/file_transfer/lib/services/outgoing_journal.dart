@@ -71,8 +71,14 @@ class OutgoingJournal {
   OutgoingJournal(Directory root) {
     root.createSync(recursive: true);
     _db = sqlite3.open(p.join(root.path, 'outgoing.sqlite3'));
+    _db.execute('PRAGMA busy_timeout=5000');
     _db.execute('PRAGMA journal_mode=WAL');
     _db.execute('PRAGMA synchronous=FULL');
+    final check = _db.select('PRAGMA quick_check');
+    if (check.isEmpty || check.first.values.first != 'ok') {
+      _db.close();
+      throw const StorageException('JOURNAL_CORRUPT', 'Outgoing journal damaged');
+    }
     _db.execute(
       'CREATE TABLE IF NOT EXISTS jobs ('
       'id TEXT PRIMARY KEY, payload TEXT NOT NULL, created TEXT NOT NULL)',
@@ -81,23 +87,40 @@ class OutgoingJournal {
 
   late final Database _db;
 
-  List<OutgoingJob> recover() {
-    final result = _db
-        .select('SELECT payload FROM jobs ORDER BY created DESC')
-        .map(
-          (row) => OutgoingJob.fromJson(
+  /// Number of rows that could not be read during the last [recover]. Such
+  /// rows are left untouched (never deleted automatically) and skipped.
+  int skippedRows = 0;
+
+  /// [interruptedDetail] is the (localized) explanation stored on jobs that
+  /// were running when the app closed.
+  List<OutgoingJob> recover({
+    String interruptedDetail =
+        'Передача остановлена при закрытии приложения. '
+        'Нажмите «Продолжить» для проверки состояния у получателя.',
+  }) {
+    skippedRows = 0;
+    final result = <OutgoingJob>[];
+    for (final row in _db.select(
+      'SELECT payload FROM jobs ORDER BY created DESC',
+    )) {
+      try {
+        result.add(
+          OutgoingJob.fromJson(
             jsonDecode(row['payload'] as String) as Map<String, dynamic>,
           ),
-        )
-        .toList();
+        );
+      } catch (_) {
+        // One unreadable row (e.g. validation tightened in an update) must
+        // not prevent the app from starting.
+        skippedRows++;
+      }
+    }
     for (final job in result) {
       if (!job.isTerminal &&
           job.localState != 'cancelling' &&
           job.localState != 'failed') {
         job.localState = 'paused';
-        job.detail =
-            'Передача остановлена при закрытии приложения. '
-            'Нажмите «Продолжить» для проверки состояния у получателя.';
+        job.detail = interruptedDetail;
         save(job);
       }
     }
@@ -109,6 +132,8 @@ class OutgoingJournal {
     'ON CONFLICT(id) DO UPDATE SET payload=excluded.payload',
     [job.id, jsonEncode(job.toJson()), job.createdAt.toUtc().toIso8601String()],
   );
+
+  void delete(String id) => _db.execute('DELETE FROM jobs WHERE id=?', [id]);
 
   void close() => _db.close();
 }

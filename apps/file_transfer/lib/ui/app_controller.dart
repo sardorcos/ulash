@@ -22,10 +22,30 @@ abstract class AppController extends ChangeNotifier {
   String? get errorMessage => null;
   String? get statusMessage => null;
   String? get networkDetail => null;
-  String get saveLocationLabel => 'Хранилище приложения';
-  String get versionLabel => 'Альфа-версия';
+  String get saveLocationLabel => '';
+  String get versionLabel => '';
   StorageOverview? get storageOverview => null;
   bool get storageRefreshing => false;
+
+  /// Incremented whenever a new error or status message is published, so the
+  /// interface can show each message once (snackbar) without re-showing it.
+  int get messageSerial => 0;
+
+  /// Why startup failed, if it did. The interface offers matching recovery.
+  StartupIssue get startupIssue => StartupIssue.none;
+  bool get needsOnboarding => false;
+
+  /// Short code of this device's key (compare during pairing).
+  String? get deviceCode => null;
+
+  /// The OS denied local network access; settings must be changed by the user.
+  bool get localNetworkDenied => false;
+
+  /// null = follow the system language.
+  Locale? get locale => null;
+
+  /// The language the interface is shown in (explicit choice or system).
+  Locale get effectiveLocale => locale ?? const Locale('ru');
 
   Future<void> chooseFiles();
   Future<void> removeSource(String sourceId);
@@ -41,7 +61,7 @@ abstract class AppController extends ChangeNotifier {
   Future<void> resumeTransfer(String transferId);
   Future<void> cancelTransfer(String transferId);
   Future<void> retryTransfer(String transferId) =>
-      Future.error(UnsupportedError('Повторная отправка пока недоступна.'));
+      Future.error(UnsupportedError('Not supported by this adapter.'));
   Future<void> revokePeer(String peerId);
   Future<void> renameDevice(String name);
   Future<void> setThemeMode(ThemeMode mode);
@@ -49,29 +69,57 @@ abstract class AppController extends ChangeNotifier {
   // Optional actions remain visibly disabled until a real adapter implements
   // them and enables the corresponding capability.
   Future<void> openTransfer(String transferId) =>
-      Future.error(UnsupportedError('Открытие файла пока недоступно.'));
+      Future.error(UnsupportedError('Not supported by this adapter.'));
   Future<void> openReceivedFile(String transferId, String fileId) =>
-      Future.error(UnsupportedError('Открытие файла пока недоступно.'));
+      Future.error(UnsupportedError('Not supported by this adapter.'));
   Future<void> chooseSaveLocation() =>
-      Future.error(UnsupportedError('Выбор папки пока недоступен.'));
+      Future.error(UnsupportedError('Not supported by this adapter.'));
   Future<void> scanInvitation() =>
-      Future.error(UnsupportedError('Сканирование QR пока недоступно.'));
+      Future.error(UnsupportedError('Not supported by this adapter.'));
   Future<void> addSourcePaths(List<String> paths) =>
-      Future.error(UnsupportedError('Перетаскивание пока недоступно.'));
+      Future.error(UnsupportedError('Not supported by this adapter.'));
   Future<void> exportReceivedFile(String transferId, String fileId) =>
-      Future.error(UnsupportedError('Сохранение копии пока недоступно.'));
+      Future.error(UnsupportedError('Not supported by this adapter.'));
   Future<void> refreshStorage() async {}
+  Future<void> completeOnboarding() async {}
+  Future<void> retryStartup() async {}
+  Future<void> resetDeviceKeys() async {}
+  Future<void> repairStorage() async {}
+  Future<void> openSystemSettings() async {}
+  Future<void> setLocale(Locale? locale) async {}
+  Future<void> chooseMedia() =>
+      Future.error(UnsupportedError('Media selection is unavailable.'));
+  Future<void> deleteTransfer(String transferId) =>
+      Future.error(UnsupportedError('Deleting is unavailable.'));
+  Future<void> clearHistory() =>
+      Future.error(UnsupportedError('Clearing history is unavailable.'));
+  Future<void> shareReceivedFile(String transferId, String fileId) =>
+      Future.error(UnsupportedError('Sharing is unavailable.'));
+  Future<void> exportDiagnostics() =>
+      Future.error(UnsupportedError('Diagnostics are unavailable.'));
   Future<void> setTemporaryQuota(int bytes) =>
-      Future.error(UnsupportedError('Изменение лимита пока недоступно.'));
+      Future.error(UnsupportedError('Not supported by this adapter.'));
   Future<void> clearUnusedTemporary(List<String> fileIds) =>
-      Future.error(UnsupportedError('Очистка пока недоступна.'));
+      Future.error(UnsupportedError('Not supported by this adapter.'));
   Future<void> clearIncompleteIncoming(List<String> transferIds) =>
-      Future.error(
-        UnsupportedError('Очистка входящих передач пока недоступна.'),
-      );
+      Future.error(UnsupportedError('Not supported by this adapter.'));
 }
 
 enum NetworkState { starting, ready, unavailable, permissionRequired }
+
+enum StartupIssue {
+  none,
+
+  /// Protected keys could not be read (locked, lost after a device move, or
+  /// corrupted). Recovery: retry, or reset device keys and pair again.
+  secureStorage,
+
+  /// A local journal is damaged or from a newer app version.
+  journal,
+
+  /// Any other failure; retry is offered.
+  other,
+}
 
 enum DevicePlatform { ios, android, windows, macos, linux, unknown }
 
@@ -106,6 +154,9 @@ class AppCapabilities {
     this.desktopDrop = false,
     this.fileExport = false,
     this.storageManagement = false,
+    this.mediaSelection = false,
+    this.share = false,
+    this.diagnostics = false,
   });
 
   final bool fileSelection;
@@ -118,6 +169,13 @@ class AppCapabilities {
   final bool desktopDrop;
   final bool fileExport;
   final bool storageManagement;
+
+  /// Photos/videos from the system photo library picker.
+  final bool mediaSelection;
+
+  /// System share sheet for received files.
+  final bool share;
+  final bool diagnostics;
 }
 
 @immutable
@@ -177,6 +235,7 @@ class TransferItem {
     this.canRetry = false,
     this.canOpen = false,
     this.canExport = false,
+    this.canDelete = false,
     this.receivedFiles = const [],
   });
 
@@ -198,6 +257,9 @@ class TransferItem {
   final bool canRetry;
   final bool canOpen;
   final bool canExport;
+
+  /// Terminal item that can be removed (incoming: also deletes its files).
+  final bool canDelete;
 
   /// Only verified, committed files that the user can open explicitly.
   final List<ReceivedFile> receivedFiles;
@@ -322,11 +384,15 @@ class PairingRequest {
     required this.id,
     required this.deviceName,
     this.platform = DevicePlatform.unknown,
+    this.code,
   });
 
   final String id;
   final String deviceName;
   final DevicePlatform platform;
+
+  /// Short key code shown on the requesting device too; must match.
+  final String? code;
 }
 
 @immutable

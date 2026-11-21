@@ -153,7 +153,7 @@ void main() {
         expect(delays.map((d) => d.inSeconds), [1, 2, 4, 8, 16]);
         expect(
           h.sender.transfers.single.detail,
-          contains('5 повторных попыток'),
+          contains('продолжится автоматически'),
         );
         await h.sender.resumeTransfer(originalId);
         await _wait(
@@ -341,8 +341,16 @@ void main() {
           h.sender.transfers.where((item) => item.id == oldId).single.phase,
           TransferPhase.cancelled,
         );
-        await h.sender.refreshStorage();
-        expect(h.sender.storageOverview!.temporaryBytes, 0);
+        // Source cleanup runs right after the receipt is recorded; poll.
+        final clock = Stopwatch()..start();
+        while (true) {
+          await h.sender.refreshStorage();
+          if (h.sender.storageOverview!.temporaryBytes == 0) break;
+          if (clock.elapsed > const Duration(seconds: 10)) {
+            fail('Prepared copy was not released after the receipt');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
         expect(waits, 0);
       } finally {
         await h.close();

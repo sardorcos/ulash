@@ -44,6 +44,73 @@ abstract final class PlatformStorage {
     }
   }
 
+  /// Keeps a managed directory (staging parts, prepared outgoing copies,
+  /// received files) out of iCloud/iTunes backups. iOS only; other platforms
+  /// exclude app data through their own manifests and return true. Returns
+  /// false when the native adapter could not apply the flag; callers may retry
+  /// on the next launch but must not treat this as a fatal storage error.
+  /// iOS keeps the flag on the directory, so it must be applied again only if
+  /// the directory is deleted and recreated.
+  static Future<bool> excludeFromBackup(Directory directory) async {
+    if (!Platform.isIOS) return true;
+    try {
+      final value = await channel.invokeMethod<bool>('excludeFromBackup', {
+        'path': directory.absolute.path,
+      });
+      return value ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// Asks iOS for a short grace period after the app leaves the foreground
+  /// (typically up to ~30 s) to flush the current chunk and journal. Returns
+  /// a task id to pass to [endBackgroundTask], or null when no time was
+  /// granted or on other platforms. This never makes a transfer continue in
+  /// the background. Listen to [onBackgroundTaskExpired] to stop promptly.
+  static Future<int?> beginBackgroundTask() async {
+    if (!Platform.isIOS) return null;
+    try {
+      return await channel.invokeMethod<int>('beginBackgroundTask');
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// Ends a grace period started by [beginBackgroundTask]. Safe to call with
+  /// null or an id that has already expired.
+  static Future<void> endBackgroundTask(int? id) async {
+    if (id == null || !Platform.isIOS) return;
+    try {
+      await channel.invokeMethod<void>('endBackgroundTask', {'id': id});
+    } on MissingPluginException {
+      // Nothing to end.
+    } on PlatformException {
+      // The task already expired or was ended.
+    }
+  }
+
+  /// Registers a callback for iOS grace-period expiry (argument: task id).
+  /// The native side has already ended the task when this fires. Only one
+  /// handler is kept; pass null to remove it.
+  static void onBackgroundTaskExpired(void Function(int id)? handler) {
+    channel.setMethodCallHandler(
+      handler == null
+          ? null
+          : (call) async {
+              if (call.method == 'backgroundTaskExpired' &&
+                  call.arguments is int) {
+                handler(call.arguments as int);
+              }
+              return null;
+            },
+    );
+  }
+
   /// The caller must already have validated the committed receive record and
   /// source file. A null result is user cancellation, never successful export.
   /// Native adapters independently reject sources outside managed received data.

@@ -6,6 +6,8 @@ list(APPEND FLUTTER_PLUGIN_LIST
   bonsoir_windows
   desktop_drop
   flutter_secure_storage_windows
+  url_launcher_windows
+  share_plus
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST

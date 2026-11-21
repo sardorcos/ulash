@@ -43,7 +43,11 @@ class NetworkRetryPolicy {
       'TRANSFER_INTERRUPTED' ||
       'REQUEST_TIMEOUT' ||
       'AWAITING_COMMIT' ||
-      'INCOMPLETE_FILE' => true,
+      'INCOMPLETE_FILE' ||
+      // The receiver stopped a too-slow upload at a durable offset, or asked
+      // the sender to slow down; both are safe to retry after a delay.
+      'TRANSFER_TOO_SLOW' ||
+      'RATE_LIMITED' => true,
       'HTTP_ERROR' => const {408, 502, 503, 504}.contains(error.statusCode),
       _ => false,
     };

@@ -25,4 +25,8 @@ class OsSecretStore implements SecretStore {
       _storage.write(key: key, value: value);
   @override
   Future<void> delete(String key) => _storage.delete(key: key);
+
+  /// Explicit, user-confirmed reset only (device keys lost or corrupted).
+  /// Never called automatically: the identity must fail closed otherwise.
+  Future<void> deleteAll() => _storage.deleteAll();
 }

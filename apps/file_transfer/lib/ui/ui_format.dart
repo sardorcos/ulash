@@ -1,8 +1,11 @@
+import 'package:intl/intl.dart';
+
+import '../l10n/app_localizations.dart';
 import 'app_controller.dart';
 
-String formatBytes(num bytes) {
+String formatBytes(AppLocalizations l, num bytes) {
   if (bytes < 0) return '—';
-  const units = ['Б', 'КиБ', 'МиБ', 'ГиБ', 'ТиБ'];
+  final units = [l.unitB, l.unitKiB, l.unitMiB, l.unitGiB, l.unitTiB];
   var value = bytes.toDouble();
   var index = 0;
   while (value >= 1024 && index < units.length - 1) {
@@ -10,44 +13,57 @@ String formatBytes(num bytes) {
     index++;
   }
   final digits = index == 0 || value >= 100 ? 0 : 1;
-  return '${value.toStringAsFixed(digits).replaceAll('.', ',')} ${units[index]}';
+  final text = value.toStringAsFixed(digits);
+  // Russian and Uzbek use a decimal comma.
+  final localized = l.localeName.startsWith('en')
+      ? text
+      : text.replaceAll('.', ',');
+  return '$localized ${units[index]}';
 }
 
-String fileCountLabel(int count) {
-  final mod100 = count % 100;
-  if (mod100 >= 11 && mod100 <= 14) return '$count файлов';
-  return switch (count % 10) {
-    1 => '$count файл',
-    2 || 3 || 4 => '$count файла',
-    _ => '$count файлов',
-  };
-}
+String fileCountLabel(AppLocalizations l, int count) => l.filesCount(count);
 
-String platformLabel(DevicePlatform platform) => switch (platform) {
-  DevicePlatform.ios => 'iOS',
-  DevicePlatform.android => 'Android',
-  DevicePlatform.windows => 'Windows',
-  DevicePlatform.macos => 'macOS',
-  DevicePlatform.linux => 'Linux',
-  DevicePlatform.unknown => 'Устройство',
+String platformLabel(AppLocalizations l, DevicePlatform platform) =>
+    switch (platform) {
+      DevicePlatform.ios => 'iOS',
+      DevicePlatform.android => 'Android',
+      DevicePlatform.windows => 'Windows',
+      DevicePlatform.macos => 'macOS',
+      DevicePlatform.linux => 'Linux',
+      DevicePlatform.unknown => l.platformUnknown,
+    };
+
+String phaseLabel(AppLocalizations l, TransferPhase phase) => switch (phase) {
+  TransferPhase.preparing => l.phasePreparing,
+  TransferPhase.queued => l.phaseQueued,
+  TransferPhase.retrying => l.phaseRetrying,
+  TransferPhase.waitingForConsent => l.phaseWaitingForConsent,
+  TransferPhase.transferring => l.phaseTransferring,
+  TransferPhase.verifying => l.phaseVerifying,
+  TransferPhase.completed => l.phaseCompleted,
+  TransferPhase.paused => l.phasePaused,
+  TransferPhase.failed => l.phaseFailed,
+  TransferPhase.cancelled => l.phaseCancelled,
+  TransferPhase.expired => l.phaseExpired,
 };
 
-String phaseLabel(TransferPhase phase) => switch (phase) {
-  TransferPhase.preparing => 'Подготавливаем файлы',
-  TransferPhase.queued => 'В очереди',
-  TransferPhase.retrying => 'Повторяем подключение',
-  TransferPhase.waitingForConsent => 'Ждём подтверждения',
-  TransferPhase.transferring => 'Передаём файлы',
-  TransferPhase.verifying => 'Проверяем файл',
-  TransferPhase.completed => 'Передача завершена',
-  TransferPhase.paused => 'Передача приостановлена',
-  TransferPhase.failed => 'Не удалось завершить',
-  TransferPhase.cancelled => 'Передача отменена',
-  TransferPhase.expired => 'Время ожидания истекло',
-};
-
-String formatDate(DateTime date, {bool includeSeconds = false}) {
+String formatDate(
+  AppLocalizations l,
+  DateTime date, {
+  bool includeSeconds = false,
+}) {
   final local = date.toLocal();
+  if (l.localeName.startsWith('en')) {
+    try {
+      final day = DateFormat.yMMMd(l.localeName).format(local);
+      final time = includeSeconds
+          ? DateFormat.Hms(l.localeName).format(local)
+          : DateFormat.Hm(l.localeName).format(local);
+      return '$day · $time';
+    } catch (_) {
+      // Date symbols not loaded (outside a localized widget tree).
+    }
+  }
   String pad(int value) => value.toString().padLeft(2, '0');
   return '${pad(local.day)}.${pad(local.month)}.${local.year} · '
       '${pad(local.hour)}:${pad(local.minute)}'

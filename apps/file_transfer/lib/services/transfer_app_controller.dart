@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' show AppExitResponse;
 
 import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart' as picker;
@@ -10,9 +11,12 @@ import 'package:flutter/services.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 import 'package:transfer_core/transfer_core.dart' as core;
+import 'package:sqlite3/sqlite3.dart' show SqliteException;
 import 'package:uuid/uuid.dart';
 
+import '../l10n/app_localizations.dart';
 import '../ui/app_controller.dart';
+import 'diagnostics_log.dart';
 import 'lan_discovery.dart';
 import 'app_runtime.dart';
 import 'outgoing_journal.dart';
@@ -56,7 +60,6 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   bool _picking = false;
   bool _pairing = false;
   bool _receiving = false;
-  bool _refreshing = false;
   bool _disposed = false;
   bool _closing = false;
   bool _receiveWanted = true;
@@ -80,24 +83,77 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   PairingInvitation? _invitation;
   Timer? _peerTimer;
   Timer? _storageTimer;
+  final _hostSubscriptions = <StreamSubscription<dynamic>>[];
+
+  /// Jobs stopped by the app lifecycle or by exhausted network retries. They
+  /// continue automatically (never jobs the user paused manually).
+  final _autoResume = <String>{};
+  final _autoResumeAttempts = <String, int>{};
+  static const _maxAutoResumes = 3;
+  int _messageSerial = 0;
+  StartupIssue _startupIssue = StartupIssue.none;
+  File? _failedJournal;
+  bool _needsOnboarding = false;
+  bool _localNetworkDenied = false;
+  bool _observing = false;
+  String _versionLabel = '1.0.0';
+  Locale? _locale;
+  int _systemUi = 0;
+  Timer? _backgroundTimer;
+  Object? _backgroundTask;
+  bool _keepAwake = false;
+  Directory? _logDirectory;
+  bool _emitScheduled = false;
+  List<core.TransferSnapshot>? _inboxCache;
+  List<TransferItem>? _transfersCache;
 
   Future<void> initialize() => _initialization ??= _initialize();
 
   Future<void> _initialize() async {
-    WidgetsBinding.instance.addObserver(this);
+    if (!_observing) {
+      WidgetsBinding.instance.addObserver(this);
+      _observing = true;
+      _runtime.listenBackgroundExpiry?.call(() {
+        // The OS is ending our background allowance: stop cleanly now.
+        if (_backgroundTimer != null) _stopForBackground();
+      });
+    }
+    _startupIssue = StartupIssue.none;
+    _failedJournal = null;
     try {
-      _busy = 'Подготовка защищённого хранилища';
+      _busy = _l.busyPreparingStorage;
       _emit();
       final root = await _runtime.storageDirectory();
       final data = Directory(p.join(root.path, 'file-transfer-v1'));
       await data.create(recursive: true);
       _dataPath = await data.resolveSymbolicLinks();
-      _identity = await core.DeviceIdentity.loadOrCreate(
-        _secrets,
-        displayName: _runtime.initialDeviceName ?? _defaultName(),
-      );
-      _trusted = core.TrustedPeerStore(_secrets);
-      await _trusted!.load();
+      _logDirectory = Directory(p.join(data.path, 'logs'));
+      await DiagnosticsLog.instance.attach(_logDirectory!);
+      DiagnosticsLog.instance.info('startup');
+      _versionLabel = await _runtime.versionLabel?.call() ?? _versionLabel;
+      // Transfer payloads, journals and received files are device-local and
+      // can be large: keep them out of iCloud/iTunes backups. Keys are
+      // this-device-only too, so a restored device starts consistently clean.
+      try {
+        await _runtime.excludeFromBackup?.call(data);
+      } catch (error, stack) {
+        DiagnosticsLog.instance.error('backup-exclusion', error, stack);
+      }
+      try {
+        _identity = await core.DeviceIdentity.loadOrCreate(
+          _secrets,
+          displayName: await _initialName(),
+        );
+        _trusted = core.TrustedPeerStore(_secrets);
+        await _trusted!.load();
+      } catch (_) {
+        _startupIssue = StartupIssue.secureStorage;
+        rethrow;
+      }
+      final savedLocale = await _secrets.read('transfer.settings.locale');
+      _locale = savedLocale == null || savedLocale.isEmpty
+          ? null
+          : Locale(savedLocale);
       final savedTheme = await _secrets.read('transfer.settings.theme');
       _theme =
           ThemeMode.values
@@ -115,17 +171,32 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
             ? savedQuota!
             : 20 * 1024 * 1024 * 1024,
       );
-      _inbox = await core.DurableInbox.open(
-        Directory(p.join(data.path, 'inbox')),
-        budget: _storageBudget,
+      _inbox = await _openJournal(
+        File(p.join(data.path, 'inbox', 'inbox.sqlite')),
+        () => core.DurableInbox.open(
+          Directory(p.join(data.path, 'inbox')),
+          budget: _storageBudget,
+        ),
       );
-      _outbox = await core.DurableOutbox.open(
-        Directory(p.join(data.path, 'outbox')),
-        budget: _storageBudget,
+      _outbox = await _openJournal(
+        File(p.join(data.path, 'outbox', 'outbox.sqlite')),
+        () => core.DurableOutbox.open(
+          Directory(p.join(data.path, 'outbox')),
+          budget: _storageBudget,
+        ),
       );
-      _journal = OutgoingJournal(Directory(p.join(data.path, 'journal')));
-      _exports = ExportJournal(Directory(p.join(data.path, 'journal')));
-      _jobs.addAll(_journal!.recover());
+      _journal = await _openJournal(
+        File(p.join(data.path, 'journal', 'outgoing.sqlite3')),
+        () async => OutgoingJournal(Directory(p.join(data.path, 'journal'))),
+      );
+      _exports = await _openJournal(
+        File(p.join(data.path, 'journal', 'exports.sqlite3')),
+        () async => ExportJournal(Directory(p.join(data.path, 'journal'))),
+      );
+      _jobs
+        ..clear()
+        ..addAll(_journal!.recover(interruptedDetail: _l.interruptedOnClose));
+      await _pruneHistory();
       await _updateStorageOverview();
       _subscriptions.add(
         _inbox!.changes.listen((_) {
@@ -134,20 +205,23 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         }),
       );
       _subscriptions.add(_trusted!.changes.listen((_) => _emit()));
-      if (!await _runtime.ensurePermission()) {
-        _network = NetworkState.permissionRequired;
-        _error =
-            'Разрешите доступ к локальной сети в настройках приложения, '
-            'затем нажмите «Обновить».';
-      } else {
-        await _synchronizeHost();
-        _peerTimer = Timer.periodic(const Duration(seconds: 12), (_) {
-          _launch(_refreshTrusted());
-        });
+      _needsOnboarding =
+          _runtime.requireOnboarding &&
+          await _secrets.read('transfer.settings.onboarded') != 'true';
+      if (!_needsOnboarding) await _startNetworking();
+    } catch (error, stack) {
+      DiagnosticsLog.instance.error('startup', error, stack);
+      if (_startupIssue == StartupIssue.none) {
+        _startupIssue = _failedJournal != null
+            ? StartupIssue.journal
+            : StartupIssue.other;
       }
-    } catch (error) {
       _network = NetworkState.unavailable;
-      _error = 'Не удалось запустить приложение. ${_friendly(error)}';
+      _setError(switch (_startupIssue) {
+        StartupIssue.secureStorage => _l.startupKeysFailed,
+        StartupIssue.journal => _l.startupJournalFailed,
+        _ => _l.startupFailed(_friendly(error)),
+      });
     } finally {
       _starting = false;
       _busy = null;
@@ -155,12 +229,199 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     }
   }
 
-  static String _defaultName() => switch (Platform.operatingSystem) {
-    'ios' => 'Мой iPhone',
-    'android' => 'Мой Android',
-    'windows' => 'Мой Windows',
-    'linux' => 'Мой Linux',
-    _ => 'Моё устройство',
+  /// Opens one journal and remembers which file failed, so that a confirmed
+  /// repair can move exactly that database aside.
+  Future<T> _openJournal<T>(File file, Future<T> Function() open) async {
+    try {
+      return await open();
+    } catch (error) {
+      final code = error is core.StorageException ? error.code : null;
+      if (error is SqliteException ||
+          code == 'JOURNAL_CORRUPT' ||
+          code == 'JOURNAL_TOO_NEW') {
+        _failedJournal = file;
+        _startupIssue = StartupIssue.journal;
+      }
+      rethrow;
+    }
+  }
+
+  Future<String> _initialName() async {
+    final explicit = _runtime.initialDeviceName;
+    if (explicit != null) return explicit;
+    final model = await _runtime.defaultDeviceName?.call();
+    final clean = model?.replaceAll(RegExp(r'[\x00-\x1f\x7f]'), '').trim();
+    if (clean == null || clean.isEmpty) return _defaultName();
+    return clean.length > 60 ? clean.substring(0, 60) : clean;
+  }
+
+  Future<void> _startNetworking() async {
+    if (!await _runtime.ensurePermission()) {
+      _network = NetworkState.permissionRequired;
+      _setError(_l.allowLocalNetwork);
+      return;
+    }
+    await _synchronizeHost();
+    _updatePeerTimer();
+    _launch(_checkLocalNetwork());
+  }
+
+  void _updatePeerTimer() {
+    final wanted =
+        _foreground &&
+        !_closing &&
+        !_needsOnboarding &&
+        _identity != null &&
+        _network != NetworkState.permissionRequired;
+    if (wanted && _peerTimer == null) {
+      _peerTimer = Timer.periodic(const Duration(seconds: 12), (_) {
+        _launch(_refreshTrusted());
+        _launch(_refreshAddresses());
+      });
+    } else if (!wanted) {
+      _peerTimer?.cancel();
+      _peerTimer = null;
+    }
+  }
+
+  /// The QR address list and the Bonjour record follow network changes
+  /// (Wi-Fi switch, hotspot, VPN) while the app is open.
+  Future<void> _refreshAddresses() async {
+    if (_host == null || _closing) return;
+    final next = await _runtime.addresses();
+    if (next.join(',') == _addresses.join(',')) return;
+    _addresses = next;
+    DiagnosticsLog.instance.info('lan addresses changed (${next.length})');
+    if (_invitation != null) _invitation = null;
+    _emit();
+  }
+
+  Future<void> _checkLocalNetwork() async {
+    final probe = _runtime.localNetworkDenied;
+    if (probe == null || _closing) return;
+    bool? denied;
+    try {
+      denied = await probe();
+    } catch (_) {
+      denied = null;
+    }
+    final wasDenied = _localNetworkDenied;
+    _localNetworkDenied = denied == true;
+    if (_localNetworkDenied) {
+      _network = NetworkState.permissionRequired;
+    } else if (wasDenied && _host != null) {
+      _network = NetworkState.ready;
+    }
+    if (wasDenied != _localNetworkDenied) _emit();
+  }
+
+  @override
+  Future<void> completeOnboarding() async {
+    if (!_needsOnboarding || _closing) return;
+    try {
+      await _secrets.write('transfer.settings.onboarded', 'true');
+    } catch (error, stack) {
+      DiagnosticsLog.instance.error('onboarding', error, stack);
+    }
+    _needsOnboarding = false;
+    _emit();
+    await _guard(_startNetworking);
+  }
+
+  @override
+  Future<void> retryStartup() async {
+    if (_closing) return;
+    final pending = _initialization;
+    if (pending != null) await pending;
+    if (_startupIssue == StartupIssue.none && _identity != null) return;
+    await _releaseStartupResources();
+    _initialization = null;
+    _starting = true;
+    _error = null;
+    _emit();
+    await initialize();
+  }
+
+  Future<void> _releaseStartupResources() async {
+    for (final subscription in _subscriptions) {
+      await subscription.cancel();
+    }
+    _subscriptions.clear();
+    await _stopHostNow();
+    try {
+      await _inbox?.close();
+    } catch (_) {}
+    try {
+      await _outbox?.close();
+    } catch (_) {}
+    try {
+      _journal?.close();
+    } catch (_) {}
+    try {
+      _exports?.close();
+    } catch (_) {}
+    _inbox = null;
+    _outbox = null;
+    _journal = null;
+    _exports = null;
+    _identity = null;
+    _trusted = null;
+    _jobs.clear();
+    _invalidate();
+  }
+
+  @override
+  Future<void> resetDeviceKeys() async {
+    if (_closing) return;
+    DiagnosticsLog.instance.info('device keys reset by user');
+    try {
+      final reset = _runtime.resetSecrets;
+      if (reset != null) {
+        await reset();
+      } else {
+        for (final key in const [
+          'transfer.identity.v1',
+          'transfer.peers.v1',
+          'transfer.peers.v1.host-pairing',
+        ]) {
+          await _secrets.delete(key);
+        }
+      }
+    } catch (error, stack) {
+      DiagnosticsLog.instance.error('reset-keys', error, stack);
+      _setError(_l.resetKeysFailed);
+      _emit();
+      return;
+    }
+    _startupIssue = StartupIssue.other;
+    await retryStartup();
+  }
+
+  @override
+  Future<void> repairStorage() async {
+    final file = _failedJournal;
+    if (file == null || _closing) return;
+    final stamp = DateTime.now().toUtc().millisecondsSinceEpoch;
+    for (final suffix in const ['', '-wal', '-shm']) {
+      final part = File('${file.path}$suffix');
+      try {
+        if (await part.exists()) {
+          await part.rename('${file.path}.damaged-$stamp$suffix');
+        }
+      } catch (error, stack) {
+        DiagnosticsLog.instance.error('repair-journal', error, stack);
+      }
+    }
+    DiagnosticsLog.instance.info('journal moved aside by user');
+    await retryStartup();
+  }
+
+  String _defaultName() => switch (Platform.operatingSystem) {
+    'ios' => _l.defaultNameIos,
+    'android' => _l.defaultNameAndroid,
+    'windows' => _l.defaultNameWindows,
+    'linux' => _l.defaultNameLinux,
+    _ => _l.defaultNameOther,
   };
 
   Future<void> _synchronizeHost() {
@@ -194,15 +455,17 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     }
     _host = host;
     _receiving = true;
-    _network = NetworkState.ready;
-    _subscriptions.add(host.changes.listen((_) => _emit()));
+    _network = _localNetworkDenied
+        ? NetworkState.permissionRequired
+        : NetworkState.ready;
+    _hostSubscriptions.add(host.changes.listen((_) => _emit()));
     if (!_runtime.discoveryEnabled) {
       _launch(_refreshTrusted());
       return;
     }
     final discovery = LanDiscovery();
     _discovery = discovery;
-    _subscriptions.add(
+    _hostSubscriptions.add(
       discovery.changes.listen((items) {
         _discovered
           ..clear()
@@ -214,12 +477,13 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     try {
       await discovery.start(name: deviceName, port: host.port);
       _discoveryIssue = null;
-    } catch (_) {
+    } catch (error, stack) {
+      DiagnosticsLog.instance.error('discovery', error, stack);
       // Foreground HTTPS remains usable via QR when discovery alone fails.
-      _discoveryIssue =
-          'Автопоиск недоступен. Подключитесь по QR-коду в общей сети.';
+      _discoveryIssue = _l.discoveryUnavailable;
       await discovery.close();
       _discovery = null;
+      _launch(_checkLocalNetwork());
     }
     _launch(_refreshTrusted());
   }
@@ -244,29 +508,88 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   @override
   PairingInvitation? get invitation => _invitation;
   @override
-  String get versionLabel => '0.3.0 · техническая альфа';
+  String get versionLabel => _versionLabel;
+  @override
+  int get messageSerial => _messageSerial;
+  @override
+  StartupIssue get startupIssue => _startupIssue;
+  @override
+  bool get needsOnboarding => _needsOnboarding;
+  @override
+  bool get localNetworkDenied => _localNetworkDenied;
+  @override
+  Locale? get locale => _locale;
+
+  static const _languages = {'ru', 'uz', 'en'};
+
+  @override
+  Locale get effectiveLocale {
+    final chosen = _locale;
+    if (chosen != null && _languages.contains(chosen.languageCode)) {
+      return chosen;
+    }
+    final system = _runtime.systemLocale?.call();
+    if (system == null) return const Locale('ru');
+    return _languages.contains(system.languageCode)
+        ? Locale(system.languageCode)
+        : const Locale('en');
+  }
+
+  AppLocalizations? _strings;
+  Locale? _stringsLocale;
+
+  /// Strings for messages the controller produces (status, details, errors).
+  AppLocalizations get _l {
+    final target = effectiveLocale;
+    if (_strings == null || _stringsLocale != target) {
+      _strings = lookupAppLocalizations(target);
+      _stringsLocale = target;
+    }
+    return _strings!;
+  }
+
+  @override
+  void didChangeLocales(List<Locale>? locales) {
+    _strings = null;
+    _emit();
+  }
+
+  @override
+  String? get deviceCode =>
+      _identity == null ? null : shortKeyCode(_identity!.peerId);
+
+  /// Human-comparable code of a device key: first 8 hex digits, grouped.
+  static String shortKeyCode(String peerId) {
+    final hex = peerId.toUpperCase();
+    if (hex.length < 8) return hex;
+    return '${hex.substring(0, 4)}-${hex.substring(4, 8)}';
+  }
+
   @override
   StorageOverview? get storageOverview => _storageOverview;
   @override
   bool get storageRefreshing => _storageRefreshing;
   @override
-  String get saveLocationLabel => _dataPath == null
-      ? 'Хранилище приложения'
+  String get saveLocationLabel =>
+      _dataPath == null || Platform.isAndroid || Platform.isIOS
+      // Mobile sandboxes are not user-visible paths; explain the action.
+      ? _l.saveLocationMobile
       : p.join(_dataPath!, 'inbox', 'received');
   @override
-  String? get networkDetail =>
-      _discoveryIssue ??
-      (_addresses.isEmpty
-          ? 'Подключите устройства к одной сети Wi-Fi или Ethernet. '
-                'В этой сборке используется IPv4.'
-          : 'Локальная сеть · приложение должно оставаться открытым');
+  String? get networkDetail => _localNetworkDenied
+      ? _l.networkDenied
+      : _discoveryIssue ??
+            (_addresses.isEmpty ? _l.networkNoAddress : _l.networkKeepOpen);
   @override
   AppCapabilities get capabilities => AppCapabilities(
     fileSelection: _outbox != null && !_starting,
     receiving: _inbox != null && !_starting,
     pairing: _host != null && !_pairing,
     discovery: _discovery != null && _discoveryIssue == null,
-    rename: false,
+    rename: _identity != null && !_starting,
+    mediaSelection: _runtime.mediaPicker && _outbox != null && !_starting,
+    share: _runtime.shareFiles != null,
+    diagnostics: _dataPath != null,
     fileExport:
         _runtime.exportSupported &&
         _runtime.exportFile != null &&
@@ -293,8 +616,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
             isTrusted: true,
             isOnline: _online.contains(peer.peerId),
             detail: _online.contains(peer.peerId)
-                ? 'Ключ устройства проверен'
-                : 'Откройте приложение на другом устройстве',
+                ? _l.peerKeyVerified
+                : _l.peerOpenApp,
           ),
         )
         .toList();
@@ -307,7 +630,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           platform: _platformOf(candidate.platform),
           isTrusted: false,
           isOnline: true,
-          detail: 'Для первого подключения отсканируйте QR-код',
+          detail: _l.peerScanToConnect,
         ),
       );
     }
@@ -321,32 +644,57 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         (request) => PairingRequest(
           id: request.requestId,
           deviceName: request.displayName,
+          code: shortKeyCode(request.peerId),
+        ),
+      )
+      .toList();
+
+  /// One parsed inbox listing per change notification (the listing parses
+  /// every manifest, so the interface must not trigger it per widget).
+  List<core.TransferSnapshot> _inboxList() =>
+      _inboxCache ??= _inbox?.list() ?? const <core.TransferSnapshot>[];
+
+  bool get _incomingActive =>
+      _inboxList().any((item) => item.state == core.TransferState.transferring);
+
+  void _invalidate() {
+    _inboxCache = null;
+    _transfersCache = null;
+  }
+
+  @override
+  List<IncomingTransfer> get pendingTransfers => _inboxList()
+      .where((item) => item.state == core.TransferState.offered)
+      .map(
+        (item) => IncomingTransfer(
+          id: item.transferId,
+          peerName: _peerName(item.peerId),
+          fileNames: item.manifest.files
+              .map((file) => file.visibleName)
+              .toList(),
+          totalBytes: item.manifest.totalBytes,
+          expiresAt: item.offerExpiresAt,
         ),
       )
       .toList();
 
   @override
-  List<IncomingTransfer> get pendingTransfers =>
-      (_inbox?.list() ?? <core.TransferSnapshot>[])
-          .where((item) => item.state == core.TransferState.offered)
-          .map(
-            (item) => IncomingTransfer(
-              id: item.transferId,
-              peerName: _peerName(item.peerId),
-              fileNames: item.manifest.files
-                  .map((file) => file.displayName)
-                  .toList(),
-              totalBytes: item.manifest.totalBytes,
-              expiresAt: item.offerExpiresAt,
-            ),
-          )
-          .toList();
+  List<TransferItem> get transfers =>
+      _transfersCache ??= List.unmodifiable(_buildTransfers());
 
-  @override
-  List<TransferItem> get transfers {
+  List<TransferItem> _buildTransfers() {
     final result = <TransferItem>[];
-    for (final item in _inbox?.list() ?? <core.TransferSnapshot>[]) {
+    for (final item in _inboxList()) {
       final terminal = _terminal(item);
+      final committed = item.files
+          .where((file) => file.state == core.FileState.committed)
+          .toList();
+      // A committed file deleted or moved outside the app cannot be opened,
+      // shared or exported any more.
+      final available = committed
+          .where((file) => file.errorCode != 'FILE_MISSING')
+          .toList();
+      final allMissing = committed.isNotEmpty && available.isEmpty;
       result.add(
         TransferItem(
           id: 'in:${item.transferId}',
@@ -358,10 +706,9 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           transferredBytes: item.durableBytes,
           createdAt: item.createdAt,
           fileCount: item.files.length,
-          detail: _snapshotDetail(item),
+          detail: allMissing ? _l.receivedFilesMissing : _snapshotDetail(item),
           locationLabel: saveLocationLabel,
-          receivedFiles: item.files
-              .where((file) => file.state == core.FileState.committed)
+          receivedFiles: available
               .map((file) => _receivedFile(item.transferId, file))
               .toList(),
           canPause:
@@ -374,12 +721,9 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
                   (item.state == core.TransferState.paused &&
                       !item.pausedBySource)),
           canCancel: !terminal,
-          canOpen: item.files.any(
-            (file) => file.state == core.FileState.committed,
-          ),
-          canExport:
-              capabilities.fileExport &&
-              item.files.any((file) => file.state == core.FileState.committed),
+          canOpen: available.isNotEmpty,
+          canExport: capabilities.fileExport && available.isNotEmpty,
+          canDelete: terminal,
         ),
       );
     }
@@ -411,7 +755,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           detail:
               job.detail ??
               (snapshot == null
-                  ? 'Ожидание ответа получателя'
+                  ? _l.waitingForRecipient
                   : _snapshotDetail(snapshot)),
           canPause:
               !job.isTerminal &&
@@ -423,6 +767,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
               !_running.contains(job.id),
           canCancel: !job.isTerminal && job.localState != 'cancelling',
           canRetry: _canRetryPrepared(job),
+          canDelete: job.isTerminal && !_running.contains(job.id),
         ),
       );
     }
@@ -431,16 +776,43 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   }
 
   @override
-  Future<void> chooseFiles() => _guard(() async {
+  Future<void> chooseFiles() => _pickAndStage(media: false);
+
+  @override
+  Future<void> chooseMedia() => _pickAndStage(media: true);
+
+  /// Runs [action] while a system sheet (picker, share, export, viewer) is in
+  /// front of the app. On Android such a sheet stops the activity; that must
+  /// not be mistaken for the user leaving the app.
+  Future<T> _withSystemUi<T>(Future<T> Function() action) async {
+    _systemUi++;
+    try {
+      return await action();
+    } finally {
+      _systemUi--;
+    }
+  }
+
+  Future<void> _pickAndStage({required bool media}) => _guard(() async {
     if (_outbox == null || isBusy) return;
     _picking = true;
-    _busy = 'Выбор файлов';
+    _busy = media ? _l.busyChoosingMedia : _l.busyChoosingFiles;
     _emit();
+    var usedPickerCache = false;
     try {
-      final picked = await picker.FilePicker.pickFiles(
-        dialogTitle: 'Выберите файлы',
+      final picked = await _withSystemUi(
+        () => picker.FilePicker.pickFiles(
+          dialogTitle: _l.pickerTitle,
+          type: media ? picker.FileType.media : picker.FileType.any,
+          // Original quality: no compression or transcoding of photos/videos.
+          darwinOptions: const picker.DarwinOptions(
+            assetRepresentationMode:
+                picker.DarwinAssetRepresentationMode.current,
+          ),
+        ),
       );
       if (_closing || picked.isEmpty) return;
+      usedPickerCache = Platform.isAndroid || Platform.isIOS;
       _preparing = true;
       for (final item in picked) {
         if (_sources.length >= core.TransferLimits.maxFiles) {
@@ -455,7 +827,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
             status: SourceStatus.preparing,
           ),
         );
-        _busy = 'Подготовка: ${item.name}';
+        _busy = _l.busyPreparing(item.name);
         _emit();
         try {
           final path = item.path;
@@ -471,7 +843,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           );
           _sources[index] = SelectedSource(
             id: prepared.manifest.fileId,
-            name: prepared.manifest.displayName,
+            name: prepared.manifest.visibleName,
             bytes: prepared.manifest.sizeBytes,
           );
         } catch (error) {
@@ -484,6 +856,15 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       _picking = false;
       _preparing = false;
       _busy = null;
+      // The picker copied the selection into the app cache; the immutable
+      // outbox copy is now the only one we need. Originals are untouched.
+      if (usedPickerCache) {
+        try {
+          await picker.FilePicker.clearTemporaryFiles();
+        } catch (error, stack) {
+          DiagnosticsLog.instance.error('picker-cache', error, stack);
+        }
+      }
     }
   });
 
@@ -495,13 +876,13 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     try {
       for (final path in paths) {
         if (_sources.length >= core.TransferLimits.maxFiles) break;
-        _busy = 'Подготовка: ${p.basename(path)}';
+        _busy = _l.busyPreparing(p.basename(path));
         _emit();
         final prepared = await _outbox!.stageFile(File(path));
         _sources.add(
           SelectedSource(
             id: prepared.manifest.fileId,
-            name: prepared.manifest.displayName,
+            name: prepared.manifest.visibleName,
             bytes: prepared.manifest.sizeBytes,
           ),
         );
@@ -539,8 +920,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       throw const core.StorageException('QUEUE_FULL', 'Queue is full');
     }
     if (_running.isNotEmpty) {
-      _status =
-          'Дождитесь окончания текущей отправки или поставьте её на паузу.';
+      _status = _l.waitCurrentSendOrPause;
       return;
     }
     final peer = _trusted?.byId(peerId);
@@ -565,8 +945,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     ); // Persist the idempotency key before the first request.
     _jobs.insert(0, job);
     _sources.clear();
-    _status =
-        'Запрос на получение отправлен. Подтвердите его на другом устройстве.';
+    _status = _l.requestSent;
     _emit();
     _launch(_runJob(job));
   });
@@ -590,7 +969,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         final peer = _trusted?.byId(job.peerId);
         if (peer == null || peer.endpoint == null) {
           if (job.localState != 'cancelling') job.localState = 'paused';
-          job.detail = 'Устройство недоступно или доверие отозвано.';
+          job.detail = _l.peerUnavailableOrRevoked;
           break;
         }
         final client = core.CoreClient.forPeer(peer);
@@ -614,24 +993,28 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           delay = _retryPolicy.delayBeforeRetry(++retries);
           if (delay == null) {
             if (job.localState != 'cancelling') job.localState = 'paused';
+            // The peer did not answer: only a fresh successful probe may
+            // mark it reachable again and continue this job.
+            _online.remove(job.peerId);
+            final attempts = _autoResumeAttempts[job.id] ?? 0;
+            final automatic = attempts < _maxAutoResumes;
+            if (automatic) _autoResume.add(job.id);
             job.detail = job.localState == 'cancelling'
-                ? 'Автоматические попытки закончились. Отмена ещё не '
-                      'подтверждена; «Продолжить» уточнит результат у получателя.'
-                : 'Связь не восстановилась после ${_retryPolicy.maxRetries} '
-                      'повторных попыток. Подтверждённый прогресс сохранён. '
-                      'Откройте приложение на обоих устройствах и нажмите '
-                      '«Продолжить».';
+                ? _l.cancelRetriesExhausted
+                : automatic
+                ? _l.connectionLostAutoResume
+                : _l.connectionNotRestored;
             break;
           }
           if (job.localState != 'cancelling') job.localState = 'retry_wait';
           final seconds = (delay.inMilliseconds / 1000).toStringAsFixed(1);
           job.detail = job.localState == 'cancelling'
-              ? 'Уточняем отмену: повтор $retries из '
-                    '${_retryPolicy.maxRetries} через $seconds с. '
-                    'Результат получателя пока неизвестен.'
-              : 'Связь прервалась. Повтор $retries из '
-                    '${_retryPolicy.maxRetries} через $seconds с. '
-                    'Подтверждённый прогресс сохранён.';
+              ? _l.cancelRetrying(retries, _retryPolicy.maxRetries, seconds)
+              : _l.connectionRetrying(
+                  retries,
+                  _retryPolicy.maxRetries,
+                  seconds,
+                );
           _save(job);
         } finally {
           client.close();
@@ -646,8 +1029,34 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       _outgoingRuns.remove(job.id);
       _activeClients.remove(job.id);
       _running.remove(job.id);
+      if (job.isTerminal) {
+        _autoResume.remove(job.id);
+        _autoResumeAttempts.remove(job.id);
+      }
       _save(job);
       if (job.isTerminal) await _cleanupJobSources(job);
+      _scheduleAutoResume();
+    }
+  }
+
+  /// Continues one job that the lifecycle or the network interrupted, once
+  /// its peer is reachable again. Manual pauses are never resumed here.
+  void _scheduleAutoResume() {
+    if (_closing || _disposed || !_foreground || _running.isNotEmpty) return;
+    for (final id in _autoResume.toList()) {
+      final job = _jobs.where((item) => item.id == id).firstOrNull;
+      if (job == null ||
+          job.isTerminal ||
+          (job.localState != 'paused' && job.localState != 'cancelling')) {
+        _autoResume.remove(id);
+        continue;
+      }
+      if (!_online.contains(job.peerId)) continue;
+      _autoResume.remove(id);
+      _autoResumeAttempts[id] = (_autoResumeAttempts[id] ?? 0) + 1;
+      DiagnosticsLog.instance.info('auto-resume');
+      _launch(_runJob(job));
+      return;
     }
   }
 
@@ -697,8 +1106,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       if (job.snapshot!.pausedBySource) {
         if (!run.resumeSource) {
           job.localState = 'paused';
-          job.detail =
-              'Пауза отправителя. Для продолжения нажмите «Продолжить».';
+          job.detail = _l.senderPausedTapResume;
           return;
         }
         _applySnapshot(job, await client.resume(job.remoteId!));
@@ -709,7 +1117,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       if (!_canRun(job, run)) return;
       if (job.snapshot!.pausedBySink) {
         job.localState = 'paused';
-        job.detail = 'Получатель поставил передачу на паузу.';
+        job.detail = _l.recipientPaused;
         return;
       }
       // Progress shown in the interface comes only from the Sink's journal.
@@ -775,20 +1183,16 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         job.localState = 'rejected';
       case core.TransferState.expired:
         job.localState = 'expired';
-        job.detail =
-            'Время ожидания согласия истекло. Для передачи нужен новый запрос.';
+        job.detail = _l.consentExpiredNewRequest;
       case core.TransferState.failed:
         job.localState = 'failed';
-        job.detail =
-            'Приём не завершён. Выберите файлы заново для новой отправки.';
+        job.detail = _l.receiveNotFinished;
       case core.TransferState.partiallyCompleted:
         job.localState = 'partially_completed';
         final completed = snapshot.files
             .where((file) => file.state == core.FileState.committed)
             .length;
-        job.detail =
-            'Сохранено $completed из ${snapshot.files.length} файлов. '
-            'Завершённые результаты доступны у получателя; остальные можно отправить заново.';
+        job.detail = _l.partiallySaved(completed, snapshot.files.length);
       default:
         break;
     }
@@ -852,8 +1256,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     final previous = _job(transferId);
     if (!_canRetryPrepared(previous)) return;
     if (_running.isNotEmpty) {
-      _status =
-          'Дождитесь окончания текущей отправки или поставьте её на паузу.';
+      _status = _l.waitCurrentSendOrPause;
       return;
     }
     if (_jobs.where((job) => !job.isTerminal).length >= 10) {
@@ -875,9 +1278,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     );
     _journal!.save(job);
     _jobs.insert(0, job);
-    _status =
-        'Создан новый запрос из сохранённых копий. Получатель должен '
-        'подтвердить его заново.';
+    _status = _l.newRequestFromCopies;
     _emit();
     _launch(_runJob(job));
   });
@@ -890,9 +1291,10 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     }
     final job = _job(transferId);
     if (job.isTerminal || job.localState == 'cancelling') return;
+    _autoResume.remove(job.id);
     _outgoingRuns[job.id]?.cancel();
     job.localState = 'paused';
-    job.detail = 'Пауза отправителя';
+    job.detail = _l.senderPaused;
     _save(job);
     _activeClients[job.id]?.close();
     final peer = _trusted?.byId(job.peerId);
@@ -912,14 +1314,17 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   Future<void> resumeTransfer(String transferId) => _guard(() async {
     if (transferId.startsWith('in:')) {
       await _inbox!.resume(transferId.substring(3));
-      _status = 'Приём разрешён. На отправителе нажмите «Продолжить», если передача остановлена.';
+      _status = _l.receiveAllowed;
       return;
     }
     final job = _job(transferId);
+    if (_running.contains(job.id)) return;
     if (_running.isNotEmpty) {
-      _status = 'Дождитесь окончания текущей отправки.';
+      _setStatus(_l.waitCurrentSend);
       return;
     }
+    _autoResume.remove(job.id);
+    _autoResumeAttempts.remove(job.id);
     await _refreshTrusted();
     _launch(_runJob(job, resumeSource: true));
   });
@@ -934,14 +1339,13 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     if (job.isTerminal) return;
     _outgoingRuns[job.id]?.cancel();
     job.localState = 'cancelling';
-    job.detail = 'Уточняем результат отмены у получателя.';
+    job.detail = _l.confirmingCancel;
     _save(job);
     _activeClients[job.id]?.close();
     if (job.remoteId == null) {
       // An offer response may have been lost. Reconcile the same request ID
       // before cancelling; do not assume the remote offer does not exist.
-      job.detail =
-          'Нажмите «Продолжить», чтобы подтвердить отмену у получателя.';
+      job.detail = _l.tapResumeToConfirmCancel;
       _save(job);
       return;
     }
@@ -951,9 +1355,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     try {
       _applySnapshot(job, await control.cancel(job.remoteId!));
     } catch (_) {
-      job.detail =
-          'Получатель недоступен. Отмена ещё не подтверждена; '
-          '«Продолжить» повторно уточнит её результат.';
+      job.detail = _l.recipientUnavailableCancel;
     } finally {
       control.close();
       _save(job);
@@ -961,7 +1363,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   });
 
   OutgoingJob _job(String value) =>
-      _jobs.firstWhere((job) => 'out:${job.id}' == value);
+      _jobs.where((job) => 'out:${job.id}' == value).firstOrNull ??
+      (throw const core.StorageException('NOT_FOUND', 'Unknown transfer'));
 
   @override
   Future<void> respondToTransfer(String transferId, bool accept) =>
@@ -988,7 +1391,11 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     if (_addresses.isEmpty) {
       throw const core.NetworkException('NO_LAN_ADDRESS', 'No LAN');
     }
-    final invite = _host!.createInvite(hostAddress: _addresses.first);
+    // Several ranked addresses: the scanner tries each, so a wrong first
+    // guess (VPN, virtual adapter, hotspot) does not break pairing.
+    final invite = _host!.createInvite(
+      hostAddresses: _addresses.take(core.PairingInvite.maxEndpoints).toList(),
+    );
     _invitation = PairingInvitation(
       payload: invite.encode(),
       expiresAt: DateTime.now().add(Duration(seconds: invite.ttlSeconds)),
@@ -1002,25 +1409,59 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     if (invite.serverPin == _identity!.serverPin) {
       throw const core.NetworkException('SELF_PAIRING', 'Same device');
     }
-    final client = core.CoreClient(
-      endpoint: invite.endpoint,
-      serverPin: invite.serverPin,
-    );
     _pairing = true;
-    _pairingClient = client;
-    _status = 'Подтвердите подключение на другом устройстве.';
+    _setStatus(_l.confirmPairingWithCode(deviceCode ?? ''));
     _emit();
+    core.CoreClient? client;
     try {
       _addresses = await _runtime.addresses();
       final local = _host == null || _addresses.isEmpty
           ? null
           : Uri(scheme: 'https', host: _addresses.first, port: _host!.port);
-      await client.requestPairing(
-        invite,
-        identity: _identity!,
-        peers: _trusted!,
-        localEndpoint: local,
-      );
+      // Try each advertised address; only the pinned key authenticates.
+      Object? lastError;
+      for (final endpoint in invite.endpoints) {
+        final candidate = core.CoreClient(
+          endpoint: endpoint,
+          serverPin: invite.serverPin,
+        );
+        _pairingClient = candidate;
+        try {
+          await candidate.requestPairing(
+            invite,
+            identity: _identity!,
+            peers: _trusted!,
+            localEndpoint: local,
+          );
+          client = candidate;
+          break;
+        } on SocketException catch (error) {
+          lastError = error;
+          candidate.close();
+        } on TimeoutException catch (error) {
+          lastError = error;
+          candidate.close();
+        } on HttpException catch (error) {
+          lastError = error;
+          candidate.close();
+        } on HandshakeException catch (error) {
+          // A different TLS server at this address: try the next candidate.
+          lastError = error;
+          candidate.close();
+        } on core.NetworkException catch (error) {
+          if (error.code != 'IDENTITY_CHANGED' &&
+              error.code != 'ENDPOINT_CHANGED') {
+            candidate.close();
+            rethrow;
+          }
+          lastError = error;
+          candidate.close();
+        }
+      }
+      if (client == null) {
+        throw lastError ??
+            const core.NetworkException('PEER_UNAVAILABLE', 'Unreachable');
+      }
       // The remote clock is not a local timer. The Host validates expiry;
       // a monotonic local deadline only bounds how long this UI waits.
       final waiting = Stopwatch()..start();
@@ -1033,15 +1474,15 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         );
         if (peer != null) {
           _online.add(peer.peerId);
-          _status =
-              'Подключено: ${peer.displayName}. Теперь можно отправлять файлы.';
+          _status = _l.pairedWith(peer.displayName);
           return;
         }
         await Future<void>.delayed(const Duration(seconds: 1));
       }
       throw const core.NetworkException('PAIRING_EXPIRED', 'Pairing timed out');
     } finally {
-      client.close();
+      client?.close();
+      _pairingClient?.close();
       _pairing = false;
       _pairingClient = null;
     }
@@ -1049,7 +1490,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
 
   @override
   Future<void> scanInvitation() => _guard(() async {
-    final text = await scanCode?.call();
+    final text = await _withSystemUi(() async => scanCode?.call());
     if (text != null) await pairFromText(text);
   });
   @override
@@ -1060,9 +1501,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         } else {
           await _host!.rejectPairing(requestId);
         }
-        _status = accept
-            ? 'Подключение подтверждено. Ожидается завершение сопряжения.'
-            : 'Запрос подключения отклонён.';
+        _status = accept ? _l.pairingApproved : _l.pairingDeclined;
         _launch(_refreshTrusted());
       });
 
@@ -1074,11 +1513,18 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       return;
     }
     if (_host == null) await _synchronizeHost();
+    _updatePeerTimer();
+    await _checkLocalNetwork();
     await _refreshTrusted();
   });
-  Future<void> _refreshTrusted() async {
-    if (_refreshing || _trusted == null || _closing || _disposed) return;
-    _refreshing = true;
+  Future<void>? _refreshInFlight;
+
+  /// Concurrent callers share one probe, so nobody acts on stale reachability.
+  Future<void> _refreshTrusted() => _refreshInFlight ??= _refreshTrustedNow()
+      .whenComplete(() => _refreshInFlight = null);
+
+  Future<void> _refreshTrustedNow() async {
+    if (_trusted == null || _closing || _disposed) return;
     try {
       for (final peer in _trusted!.list()) {
         final candidates = <Uri>{
@@ -1118,9 +1564,9 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         }
       }
     } finally {
-      _refreshing = false;
       _emit();
     }
+    _scheduleAutoResume();
   }
 
   @override
@@ -1139,6 +1585,10 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   Future<void> _stopHostNow() async {
     _invitation = null;
     _receiving = false;
+    for (final subscription in _hostSubscriptions) {
+      await subscription.cancel();
+    }
+    _hostSubscriptions.clear();
     await _discovery?.close();
     _discovery = null;
     _discovered.clear();
@@ -1160,8 +1610,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       _activeClients[job.id]?.close();
       if (job.localState != 'cancelling') job.localState = 'paused';
       job.detail = job.localState == 'cancelling'
-          ? 'Доверие отозвано. Удалённый результат отмены не подтверждён.'
-          : 'Доверие отозвано. Передача остановлена.';
+          ? _l.trustRevokedCancelUnknown
+          : _l.trustRevokedStopped;
       _save(job);
     }
     // Stop transmission before an OS secret-store write can block. If that
@@ -1170,15 +1620,168 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     await (_host?.revoke(peerId) ?? _trusted!.revoke(peerId));
   });
   @override
-  Future<void> renameDevice(String name) async {
-    _status = 'Переименование появится в следующей сборке.';
-    _emit();
+  Future<void> renameDevice(String name) => _guard(() async {
+    final identity = _identity;
+    if (identity == null) return;
+    final clean = name.trim();
+    if (clean.isEmpty || clean == identity.displayName) return;
+    _identity = await identity.rename(_secrets, clean);
+    // The host, invitations and Bonjour record carry the name: restart them.
+    await _restartHost();
+    _setStatus(_l.deviceRenamed);
+  });
+
+  Future<void> _restartHost() {
+    final next = _hostLifecycle.then((_) async {
+      await _stopHostNow();
+      if (_receiveWanted && _foreground && !_closing && _identity != null) {
+        await _startHostNow();
+      }
+    });
+    _hostLifecycle = next.catchError((Object _) {});
+    return next;
   }
 
   @override
   Future<void> setThemeMode(ThemeMode mode) => _guard(() async {
     await _secrets.write('transfer.settings.theme', mode.name);
     _theme = mode;
+  });
+
+  @override
+  Future<void> setLocale(Locale? locale) => _guard(() async {
+    await _secrets.write(
+      'transfer.settings.locale',
+      locale?.languageCode ?? '',
+    );
+    _locale = locale;
+  });
+
+  @override
+  Future<void> openSystemSettings() => _guard(() async {
+    await _runtime.openSystemSettings?.call();
+  });
+
+  @override
+  Future<void> deleteTransfer(String transferId) => _guard(() async {
+    if (transferId.startsWith('in:')) {
+      final id = transferId.substring(3);
+      await _inbox!.deleteTransfer(id);
+      _exports?.deleteTransfer(id);
+      _setStatus(_l.transferDeleted);
+      return;
+    }
+    final job = _job(transferId);
+    if (!job.isTerminal || _running.contains(job.id)) return;
+    await _removeJob(job);
+    _setStatus(_l.recordDeleted);
+  });
+
+  /// Removes a finished outgoing record and its prepared copies that no
+  /// selection or other unfinished job uses. The interface confirms first,
+  /// including the warning that such a copy may be the last one.
+  Future<void> _removeJob(OutgoingJob job) async {
+    _jobs.remove(job);
+    _journal?.delete(job.id);
+    _autoResume.remove(job.id);
+    _autoResumeAttempts.remove(job.id);
+    for (final file in job.manifest.files) {
+      if (_unusedSource(file.fileId) &&
+          !_jobs.any(
+            (other) => other.manifest.files.any((f) => f.fileId == file.fileId),
+          ) &&
+          (_outbox?.list().any((item) => item.manifest.fileId == file.fileId) ??
+              false)) {
+        await _outbox!.remove(file.fileId);
+      }
+    }
+  }
+
+  @override
+  Future<void> clearHistory() => _guard(() async {
+    var removed = 0;
+    for (final job in _jobs.where((job) => job.isTerminal).toList()) {
+      if (_running.contains(job.id)) continue;
+      await _removeJob(job);
+      removed++;
+    }
+    for (final item in _inboxList()) {
+      // Completed incoming transfers own received files: they are deleted only
+      // individually, never by a bulk history action.
+      if (_terminal(item) &&
+          item.state != core.TransferState.completed &&
+          item.state != core.TransferState.partiallyCompleted) {
+        await _inbox!.deleteTransfer(item.transferId);
+        _exports?.deleteTransfer(item.transferId);
+        removed++;
+      }
+    }
+    _setStatus(_l.historyCleared(removed));
+  });
+
+  /// Keeps the history bounded: finished outgoing records and unsuccessful
+  /// incoming records older than 90 days are removed at startup. Received
+  /// files are never removed automatically.
+  Future<void> _pruneHistory() async {
+    final limit = DateTime.now().subtract(const Duration(days: 90));
+    try {
+      for (final job
+          in _jobs
+              .where((job) => job.isTerminal && job.createdAt.isBefore(limit))
+              .toList()) {
+        await _removeJob(job);
+      }
+      for (final item in _inbox?.list() ?? const <core.TransferSnapshot>[]) {
+        if (_terminal(item) &&
+            item.state != core.TransferState.completed &&
+            item.state != core.TransferState.partiallyCompleted &&
+            item.createdAt.isBefore(limit)) {
+          await _inbox!.deleteTransfer(item.transferId);
+          _exports?.deleteTransfer(item.transferId);
+        }
+      }
+    } catch (error, stack) {
+      DiagnosticsLog.instance.error('prune-history', error, stack);
+    }
+    _invalidate();
+  }
+
+  @override
+  Future<void> shareReceivedFile(String transferId, String fileId) => _guard(
+    () async {
+      final share = _runtime.shareFiles;
+      if (share == null || !transferId.startsWith('in:')) return;
+      final snapshot = _inbox!.status(transferId.substring(3));
+      final file = snapshot.files
+          .where(
+            (item) =>
+                item.fileId == fileId && item.state == core.FileState.committed,
+          )
+          .firstOrNull;
+      if (file == null) {
+        throw const core.StorageException('NOT_FOUND', 'No committed file');
+      }
+      final saved = await _committedFile(file);
+      await _withSystemUi(() => share([saved]));
+    },
+  );
+
+  @override
+  Future<void> exportDiagnostics() => _guard(() async {
+    final data = _dataPath;
+    if (data == null) return;
+    final snapshot = await DiagnosticsLog.instance.exportSnapshot(
+      Directory(p.join(data, 'logs', 'export')),
+    );
+    if (snapshot == null) {
+      throw const core.StorageException('EXPORT_FAILED', 'No diagnostics');
+    }
+    final share = _runtime.shareFiles;
+    if (share != null) {
+      await _withSystemUi(() => share([snapshot]));
+    } else {
+      _setStatus(_l.diagnosticsSaved(snapshot.path));
+    }
   });
 
   static const _quotaOptions = <int>[
@@ -1216,7 +1819,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           unused.map(
             (file) => TemporaryFileItem(
               id: file.manifest.fileId,
-              name: file.manifest.displayName,
+              name: file.manifest.visibleName,
               bytes: file.manifest.sizeBytes,
             ),
           ),
@@ -1277,7 +1880,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         await _storageBudget!.setTemporaryQuotaBytes(previous);
         rethrow;
       }
-      _status = 'Лимит временного хранилища сохранён.';
+      _status = _l.quotaSaved;
     } finally {
       _changingQuota = false;
       await _updateStorageOverview();
@@ -1288,7 +1891,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   Future<void> clearUnusedTemporary(List<String> fileIds) => _guard(() async {
     if (isBusy || _outbox == null) return;
     _cleaning = true;
-    _busy = 'Очистка неиспользуемых копий';
+    _busy = _l.busyCleaningCopies;
     _emit();
     var count = 0;
     try {
@@ -1302,8 +1905,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         await _outbox!.remove(id);
         count++;
       }
-      _status =
-          'Удалено неиспользуемых временных копий: $count. Полученные файлы сохранены.';
+      _status = _l.copiesCleared(count);
     } finally {
       _cleaning = false;
       _busy = null;
@@ -1316,7 +1918,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       _guard(() async {
         if (isBusy || _inbox == null) return;
         _cleaning = true;
-        _busy = 'Очистка незавершённого приёма';
+        _busy = _l.busyCleaningIncoming;
         _emit();
         var stopped = 0;
         var removedFiles = 0;
@@ -1331,10 +1933,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
             stopped++;
             removedFiles += result.removedFileCount;
           }
-          _status =
-              'Обработано незавершённых передач: $stopped. '
-              'Удалено временных файлов: $removedFiles. '
-              'Готовые полученные файлы сохранены.';
+          _status = _l.incomingCleared(stopped, removedFiles);
         } finally {
           _cleaning = false;
           _busy = null;
@@ -1358,20 +1957,20 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           };
     return ReceivedFile(
       id: file.fileId,
-      name: file.manifest.displayName,
+      name: file.manifest.visibleName,
       bytes: file.manifest.sizeBytes,
       exportPhase: phase,
       exportDestination: success?.destinationLabel,
       exportDetail: switch (phase) {
-        ExportPhase.notExported => 'Получен в хранилище приложения',
-        ExportPhase.exporting => 'Сохранение копии…',
-        ExportPhase.exported => 'Копия сохранена: ${record!.destinationLabel}',
-        ExportPhase.cancelled => 'Последнее сохранение отменено',
+        ExportPhase.notExported => _l.exportNotExported,
+        ExportPhase.exporting => _l.exportInProgress,
+        ExportPhase.exported => _l.exportDone(record!.destinationLabel ?? ''),
+        ExportPhase.cancelled => _l.exportCancelledDetail,
         ExportPhase.failed =>
           record?.errorCode == 'COMMITTED_FILE_CHANGED'
-              ? 'Файл изменён или перемещён. Сохранение копии остановлено.'
-              : 'Не удалось сохранить копию. Полученный файл остаётся в приложении.',
-        ExportPhase.unknown => 'Результат сохранения не подтверждён. Проверьте выбранную папку перед повтором.',
+              ? _l.exportFileChanged
+              : _l.exportFailedDetail,
+        ExportPhase.unknown => _l.exportUnknownDetail,
       },
     );
   }
@@ -1446,20 +2045,21 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         _exports!.finish(record.id, ExportState.cancelled);
         return;
       }
-      final result = await _runtime.exportFile!(
-        source: source,
-        displayName: p.basename(source.path),
-        mimeType:
-            file.manifest.mimeType != null &&
-                RegExp(r'^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$')
-                    .hasMatch(file.manifest.mimeType!)
-            ? file.manifest.mimeType
-            : 'application/octet-stream',
+      final result = await _withSystemUi(
+        () => _runtime.exportFile!(
+          source: source,
+          displayName: p.basename(source.path),
+          mimeType:
+              file.manifest.mimeType != null &&
+                  RegExp(r'^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$')
+                      .hasMatch(file.manifest.mimeType!)
+              ? file.manifest.mimeType
+              : 'application/octet-stream',
+        ),
       );
       if (result == null) {
         _exports!.finish(record.id, ExportState.cancelled);
-        _status =
-            'Сохранение копии отменено. Полученный файл остаётся в приложении.';
+        _status = _l.exportCancelled;
       } else {
         copyReported = true;
         _exports!.finish(
@@ -1468,7 +2068,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           destinationLabel: result.destinationLabel,
           platformReference: result.platformReference,
         );
-        _status = 'Копия сохранена: ${result.destinationLabel}';
+        _status = _l.exportDone(result.destinationLabel);
       }
     } catch (error) {
       final code = error is core.StorageException
@@ -1510,7 +2110,11 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     if (!transferId.startsWith('in:')) return;
     final snapshot = _inbox!.status(transferId.substring(3));
     final file = snapshot.files
-        .where((item) => item.state == core.FileState.committed)
+        .where(
+          (item) =>
+              item.state == core.FileState.committed &&
+              item.errorCode != 'FILE_MISSING',
+        )
         .firstOrNull;
     if (file != null) await openReceivedFile(transferId, file.fileId);
   });
@@ -1533,9 +2137,9 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         }
         // Only an explicit user action may launch the system's file handler.
         final saved = await _committedFile(file);
-        final result = await OpenFilex.open(saved.path);
+        final result = await _withSystemUi(() => OpenFilex.open(saved.path));
         if (result.type != ResultType.done) {
-          _error = 'Файл сохранён, но подходящую программу открыть не удалось.';
+          _setError(_l.cannotOpenFile);
         }
       });
 
@@ -1543,20 +2147,116 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (!_runtime.mobileLifecycle || _closing) return;
     if (state == AppLifecycleState.paused) {
-      _foreground = false;
-      for (final job in _jobs.where((job) => _running.contains(job.id))) {
-        _outgoingRuns[job.id]?.cancel();
-        // Preserve cancellation intent even when backgrounding interrupts it.
-        if (job.localState != 'cancelling') job.localState = 'paused';
-        job.detail = 'Приложение свёрнуто. Для продолжения откройте его на обоих устройствах.';
-        _save(job);
-        _activeClients[job.id]?.close();
-      }
-      _launch(_synchronizeHost());
+      // A picker, share sheet, viewer or export dialog of our own stops the
+      // Android activity too; the user has not left the app.
+      if (_systemUi > 0) return;
+      _enterBackground();
     } else if (state == AppLifecycleState.resumed) {
-      _foreground = true;
-      if (!_starting && _identity != null) _launch(_guard(_synchronizeHost));
+      _resumeForeground();
     }
+  }
+
+  /// A running transfer gets a short, OS-sanctioned grace period (iOS
+  /// background task) so that briefly switching apps does not interrupt it.
+  /// After that the work stops cleanly at a durable checkpoint.
+  void _enterBackground() {
+    if (!_foreground || _backgroundTimer != null) return;
+    final grace = _runtime.backgroundGrace;
+    if (grace > Duration.zero && (_running.isNotEmpty || _incomingActive)) {
+      _backgroundTimer = Timer(grace, _stopForBackground);
+      _launch(_acquireBackgroundTask());
+      DiagnosticsLog.instance.info('background grace started');
+      return;
+    }
+    _stopForBackground();
+  }
+
+  Future<void> _acquireBackgroundTask() async {
+    final begin = _runtime.beginBackgroundTask;
+    if (begin == null || _backgroundTask != null) return;
+    try {
+      _backgroundTask = await begin();
+    } catch (error, stack) {
+      DiagnosticsLog.instance.error('background-task', error, stack);
+    }
+    // The app may have returned while the platform call was in flight.
+    if (_backgroundTimer == null && _foreground) {
+      await _releaseBackgroundTask();
+    }
+  }
+
+  Future<void> _releaseBackgroundTask() async {
+    final token = _backgroundTask;
+    _backgroundTask = null;
+    if (token == null) return;
+    try {
+      await _runtime.endBackgroundTask?.call(token);
+    } catch (error, stack) {
+      DiagnosticsLog.instance.error('background-task-end', error, stack);
+    }
+  }
+
+  void _stopForBackground() {
+    _backgroundTimer?.cancel();
+    _backgroundTimer = null;
+    if (!_foreground || _closing) return;
+    _foreground = false;
+    for (final job in _jobs.where((job) => _running.contains(job.id))) {
+      _outgoingRuns[job.id]?.cancel();
+      // Preserve cancellation intent even when backgrounding interrupts it.
+      if (job.localState != 'cancelling') job.localState = 'paused';
+      _autoResume.add(job.id);
+      job.detail = _l.backgroundedWillResume;
+      _save(job);
+      _activeClients[job.id]?.close();
+    }
+    // Reachability is unknown after a background period; re-probe on return.
+    _online.clear();
+    _updatePeerTimer();
+    _launch(_synchronizeHost().whenComplete(_releaseBackgroundTask));
+    DiagnosticsLog.instance.info('stopped for background');
+  }
+
+  void _resumeForeground() {
+    final graceRunning = _backgroundTimer != null;
+    _backgroundTimer?.cancel();
+    _backgroundTimer = null;
+    _launch(_releaseBackgroundTask());
+    if (graceRunning || _foreground) {
+      // Nothing was interrupted; just re-check what the user may have changed
+      // in Settings meanwhile.
+      _launch(_checkLocalNetwork());
+      return;
+    }
+    _foreground = true;
+    if (_starting || _identity == null || _needsOnboarding) return;
+    _launch(
+      _guard(() async {
+        await _synchronizeHost();
+        _updatePeerTimer();
+        await _checkLocalNetwork();
+        await _refreshTrusted();
+      }),
+    );
+  }
+
+  /// Desktop: close the HTTPS host and journals before the process exits.
+  @override
+  Future<AppExitResponse> didRequestAppExit() async {
+    try {
+      await shutdown().timeout(const Duration(seconds: 5));
+    } catch (_) {
+      /* Exit anyway; journals are crash-consistent. */
+    }
+    return AppExitResponse.exit;
+  }
+
+  void _setError(String message) {
+    _error = message;
+  }
+
+  void _setStatus(String message) {
+    _status = message;
   }
 
   Future<void> _guard(Future<void> Function() action) {
@@ -1572,7 +2272,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     _error = null;
     try {
       await action();
-    } catch (error) {
+    } catch (error, stack) {
+      DiagnosticsLog.instance.error('action', error, stack);
       if (!_closing) _error = _friendly(error);
     } finally {
       _refreshStorageSoon();
@@ -1583,7 +2284,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   void _launch(Future<void> action) {
     late final Future<void> task;
     task = action
-        .catchError((Object error) {
+        .catchError((Object error, StackTrace stack) {
+          DiagnosticsLog.instance.error('task', error, stack);
           if (!_closing) {
             _error = _friendly(error);
             _emit();
@@ -1593,8 +2295,34 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     _backgroundTasks.add(task);
   }
 
+  String? _lastMessage;
+
+  /// Change notifications are coalesced per microtask: a burst of progress
+  /// events rebuilds the interface once.
   void _emit() {
-    if (!_closing && !_disposed) notifyListeners();
+    _invalidate();
+    if (_closing || _disposed || _emitScheduled) return;
+    _emitScheduled = true;
+    scheduleMicrotask(() {
+      _emitScheduled = false;
+      if (_closing || _disposed) return;
+      final message = _error ?? _status;
+      if (message != null && message != _lastMessage) _messageSerial++;
+      _lastMessage = message;
+      _updateKeepAwake();
+      notifyListeners();
+    });
+  }
+
+  /// Keep the screen on while bytes are moving, so auto-lock does not send
+  /// the app to the background in the middle of a large transfer.
+  void _updateKeepAwake() {
+    final wanted =
+        !_closing && _foreground && (_running.isNotEmpty || _incomingActive);
+    if (wanted == _keepAwake) return;
+    _keepAwake = wanted;
+    final toggle = _runtime.setKeepAwake;
+    if (toggle != null) unawaited(toggle(wanted).catchError((Object _) {}));
   }
 
   Future<void> shutdown() => _shutdown ??= _shutdownNow();
@@ -1604,7 +2332,12 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     _foreground = false;
     _peerTimer?.cancel();
     _storageTimer?.cancel();
-    WidgetsBinding.instance.removeObserver(this);
+    _backgroundTimer?.cancel();
+    if (_keepAwake) {
+      _keepAwake = false;
+      await _runtime.setKeepAwake?.call(false).catchError((Object _) {});
+    }
+    if (_observing) WidgetsBinding.instance.removeObserver(this);
     _pairingClient?.close();
     for (final run in _outgoingRuns.values) {
       run.cancel();
@@ -1622,6 +2355,10 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     for (final subscription in _subscriptions) {
       await subscription.cancel();
     }
+    await _releaseBackgroundTask();
+    if (_logDirectory != null) {
+      await DiagnosticsLog.instance.detach(_logDirectory!);
+    }
     _disposed = true;
     await _inbox?.close();
     await _outbox?.close();
@@ -1630,11 +2367,10 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   }
 
   String _peerName(String peerId) =>
-      _trusted?.byId(peerId)?.displayName ?? 'Устройство';
-  static String _title(core.TransferManifest manifest) =>
-      manifest.files.length == 1
-      ? manifest.files.single.displayName
-      : '${manifest.files.length} файлов';
+      _trusted?.byId(peerId)?.displayName ?? _l.platformUnknown;
+  String _title(core.TransferManifest manifest) => manifest.files.length == 1
+      ? manifest.files.single.visibleName
+      : _l.filesCount(manifest.files.length);
   static bool _terminal(core.TransferSnapshot snapshot) => {
     core.TransferState.completed,
     core.TransferState.partiallyCompleted,
@@ -1668,28 +2404,29 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     };
   }
 
-  static String? _snapshotDetail(core.TransferSnapshot value) {
+  String? _snapshotDetail(core.TransferSnapshot value) {
     if (value.state == core.TransferState.completed) {
-      return 'SHA-256 проверен · сохранение подтверждено';
+      return _l.verifiedAndSaved;
     }
     if (value.state == core.TransferState.expired) {
-      return 'Согласие не получено за 120 секунд. Для передачи нужен новый запрос.';
+      return _l.consentNotReceived;
     }
     final spaceError = value.files
         .map((file) => file.errorCode)
         .where((code) => code == 'DISK_FULL' || code == 'TEMP_QUOTA_EXCEEDED')
         .firstOrNull;
     if (spaceError != null) {
-      return '${_friendly(core.StorageException(spaceError, ''))} '
-          'Подтверждённая часть файла сохранена; затем нажмите «Продолжить».';
+      return _l.partSavedTapResume(
+        _friendly(core.StorageException(spaceError, '')),
+      );
     }
-    if (value.pausedBySink) return 'Пауза получателя';
-    if (value.pausedBySource) return 'Пауза отправителя';
+    if (value.pausedBySink) return _l.recipientPausedShort;
+    if (value.pausedBySource) return _l.senderPaused;
     if (value.state == core.TransferState.offered) {
-      return 'Требуется согласие получателя';
+      return _l.consentRequired;
     }
     if (value.files.any((file) => file.errorCode != null)) {
-      return 'Есть незавершённые файлы. Проверенные результаты сохранены.';
+      return _l.someFilesUnfinished;
     }
     return null;
   }
@@ -1697,7 +2434,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   static DevicePlatform _platformOf(String value) =>
       DevicePlatform.values.where((item) => item.name == value).firstOrNull ??
       DevicePlatform.unknown;
-  static String _friendly(Object error) {
+  String _friendly(Object error) {
     final code = error is core.NetworkException
         ? error.code
         : error is core.StorageException
@@ -1706,50 +2443,53 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         ? error.code
         : null;
     return switch (code) {
-      'PEER_UNAVAILABLE' || 'NO_LAN_ADDRESS' => 'Устройство недоступно. Подключите оба устройства к одной сети и откройте приложение.',
-      'PAIRING_EXPIRED' || 'INVITE_EXPIRED' =>
-        'Срок QR-кода истёк. Создайте новый код на другом устройстве.',
-      'PAIRING_REJECTED' => 'Подключение отклонено на другом устройстве.',
-      'SELF_PAIRING' => 'Этот QR-код принадлежит текущему устройству.',
-      'UNAUTHORIZED' => 'Доверие отозвано или сопряжение не завершено. Подключите устройства заново.',
-      'CONSENT_REQUIRED' || 'CONSENT_TIMEOUT' => 'Получатель ещё не подтвердил приём. Подтвердите запрос и продолжите отправку.',
-      'OFFER_EXPIRED' || 'TRANSFER_EXPIRED' =>
-        'Срок предложения истёк. Выберите файлы и отправьте новый запрос.',
-      'TRANSFER_PAUSED' => 'Передача приостановлена. Продолжение доступно после снятия паузы обеими сторонами.',
-      'HASH_MISMATCH' || 'INTEGRITY_MISMATCH' =>
-        'Контрольная сумма не совпала. Файл не отмечен как готовый.',
-      'SOURCE_CHANGED' =>
-        'Исходный файл изменился во время подготовки. Выберите его повторно.',
-      'FILE_TOO_LARGE' => 'Размер файла превышает предел этой сборки — 10 ГиБ.',
-      'DISK_FULL' || 'STORAGE_FULL' => 'Недостаточно свободного места с учётом начатых передач и резерва. Освободите место в настройках хранилища и повторите.',
-      'TEMP_QUOTA_EXCEEDED' => 'Достигнут лимит временных копий. Очистите неиспользуемые копии или увеличьте лимит в настройках.',
-      'TEMP_QUOTA_BELOW_USAGE' => 'Этот лимит меньше объёма временных копий и места для начатых передач. Сначала завершите передачи или освободите место.',
-      'CAPACITY_UNAVAILABLE' => 'Не удалось определить доступное место. Повторите проверку в настройках хранилища.',
-      'COMMITTED_FILE_CHANGED' => 'Полученный файл удалён, перемещён или изменён. Сохранение копии остановлено; проверьте файл.',
-      'EXPORT_INTERRUPTED' => 'Результат сохранения не подтверждён. Проверьте выбранную папку перед повтором.',
-      'EXPORT_FAILED' || 'EXPORT_IO' || 'EXPORT_UNAVAILABLE' => 'Не удалось сохранить внешнюю копию. Полученный файл остаётся в приложении; выберите другое место или повторите.',
-      'EXPORT_SOURCE_UNAVAILABLE' => 'Полученный файл недоступен для сохранения копии. Проверьте, что он не удалён или перемещён.',
-      'EXPORT_UNSUPPORTED' => 'Системное сохранение не поддерживается на этом устройстве. Файл остаётся в приложении.',
-      'EXPORT_BUSY' => 'Дождитесь завершения текущего сохранения или закройте открытое системное окно.',
-      'DESTINATION_EXISTS' || 'EXPORT_DESTINATION_EXISTS' =>
-        'Файл с таким именем уже существует. Укажите другое имя или папку.',
-      'QUEUE_FULL' =>
-        'Очередь заполнена. Завершите или отмените незавершённые передачи.',
-      'BUSY' ||
-      'WRITER_BUSY' => 'Получатель занят другой передачей. Повторите позже.',
-      'STORAGE_MISSING' || 'NOT_FOUND' => 'Данные этой передачи недоступны. Проверьте сохранённые файлы или выберите источник заново.',
+      'PEER_UNAVAILABLE' || 'NO_LAN_ADDRESS' => _l.errPeerUnavailable,
+      'PAIRING_EXPIRED' || 'INVITE_EXPIRED' => _l.errQrExpired,
+      'PAIRING_REJECTED' => _l.errPairingRejected,
+      'SELF_PAIRING' => _l.errSelfPairing,
+      'UNAUTHORIZED' => _l.errUnauthorized,
+      'CONSENT_REQUIRED' || 'CONSENT_TIMEOUT' => _l.errConsentRequired,
+      'OFFER_EXPIRED' || 'TRANSFER_EXPIRED' => _l.errOfferExpired,
+      'TRANSFER_PAUSED' => _l.errTransferPaused,
+      'HASH_MISMATCH' || 'INTEGRITY_MISMATCH' => _l.errHashMismatch,
+      'SOURCE_CHANGED' => _l.errSourceChanged,
+      'FILE_TOO_LARGE' => _l.errFileTooLarge,
+      'DISK_FULL' || 'STORAGE_FULL' => _l.errDiskFull,
+      'TEMP_QUOTA_EXCEEDED' => _l.errTempQuotaExceeded,
+      'TEMP_QUOTA_BELOW_USAGE' => _l.errQuotaBelowUsage,
+      'CAPACITY_UNAVAILABLE' => _l.errCapacityUnavailable,
+      'COMMITTED_FILE_CHANGED' => _l.errCommittedFileChanged,
+      'EXPORT_INTERRUPTED' => _l.exportUnknownDetail,
+      'EXPORT_FAILED' ||
+      'EXPORT_IO' ||
+      'EXPORT_UNAVAILABLE' => _l.errExportFailed,
+      'EXPORT_SOURCE_UNAVAILABLE' => _l.errExportSourceUnavailable,
+      'EXPORT_UNSUPPORTED' => _l.errExportUnsupported,
+      'EXPORT_BUSY' => _l.errExportBusy,
+      'DESTINATION_EXISTS' ||
+      'EXPORT_DESTINATION_EXISTS' => _l.errDestinationExists,
+      'RATE_LIMITED' => _l.errRateLimited,
+      'QUOTA_EXCEEDED' => _l.errQuotaExceeded,
+      'JOURNAL_CORRUPT' || 'JOURNAL_TOO_NEW' => _l.errJournal,
+      'IDENTITY_CHANGED' => _l.errIdentityChanged,
+      'TRANSFER_TOO_SLOW' => _l.errTransferTooSlow,
+      'FILE_MISSING' => _l.errFileMissing,
+      'TRANSFER_ACTIVE' => _l.errTransferActive,
+      'QUEUE_FULL' => _l.errQueueFull,
+      'BUSY' || 'WRITER_BUSY' => _l.errBusy,
+      'STORAGE_MISSING' || 'NOT_FOUND' => _l.errNotFound,
       _ =>
         error is HandshakeException
-            ? 'Не удалось проверить ключ устройства. Перепроверьте устройство и выполните сопряжение заново.'
+            ? _l.errHandshake
             : error is SocketException || error is TimeoutException
-            ? 'Соединение прервано. Откройте приложение на обоих устройствах и продолжите передачу.'
+            ? _l.errConnectionLost
             : error is FormatException
-            ? 'Некорректный QR-код или неподдерживаемый формат данных.'
+            ? _l.errFormat
             : error is FileSystemException
-            ? 'Не удалось прочитать или сохранить файл. Проверьте доступ и свободное место.'
+            ? _l.errFileSystem
             : code == null
-            ? 'Операция недоступна. Проверьте системные разрешения и повторите.'
-            : 'Операция остановлена ($code). Данные не отмечены как успешно переданные.',
+            ? _l.errUnknown
+            : _l.errWithCode(code),
     };
   }
 }

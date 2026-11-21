@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart';
+import 'package:transfer_core/transfer_core.dart' show StorageException;
 import 'package:uuid/uuid.dart';
 
 /// A system export is independent of the network's committed receipt.
@@ -34,8 +35,14 @@ class ExportJournal {
   ExportJournal(Directory root) {
     root.createSync(recursive: true);
     _db = sqlite3.open(p.join(root.path, 'exports.sqlite3'));
+    _db.execute('PRAGMA busy_timeout=5000');
     _db.execute('PRAGMA journal_mode=WAL');
     _db.execute('PRAGMA synchronous=FULL');
+    final check = _db.select('PRAGMA quick_check');
+    if (check.isEmpty || check.first.values.first != 'ok') {
+      _db.close();
+      throw const StorageException('JOURNAL_CORRUPT', 'Export journal damaged');
+    }
     _db.execute('''
       CREATE TABLE IF NOT EXISTS exports (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,6 +140,10 @@ class ExportJournal {
     platformReference: row['platform_reference'] as String?,
     errorCode: row['error_code'] as String?,
   );
+
+  /// Removes export history of a deleted transfer.
+  void deleteTransfer(String transferId) =>
+      _db.execute('DELETE FROM exports WHERE transfer_id=?', [transferId]);
 
   void close() => _db.close();
 }
