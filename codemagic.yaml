@@ -47,7 +47,7 @@ workflows:
       xcode: latest
       cocoapods: default
       groups:
-        - ulash_signing # CERTIFICATE_PRIVATE_KEY (secure)
+        - ulash_signing # CERTIFICATE_PRIVATE_KEY (kept for manual signing)
       vars:
         BUNDLE_ID: uz.ulash.app
     cache:
@@ -77,18 +77,25 @@ workflows:
           fi
           echo "App Store Connect app id: $APP_ID"
           echo "APP_STORE_APPLE_ID=$APP_ID" >> "$CM_ENV"
-      - name: Set up keychain
-        script: keychain initialize
-      - name: Fetch App Store signing files
+      # Signing: Apple cloud-managed distribution signing through the
+      # integration's API key. It does not consume one of the account's
+      # limited Distribution certificates and stores no private key.
+      - name: Prepare signing
         script: |
-          app-store-connect fetch-signing-files "$BUNDLE_ID" \
-            --type IOS_APP_STORE \
-            --strict-match-identifier \
-            --create
-      - name: Install certificates and profiles
-        script: |
-          keychain add-certificates
-          xcode-project use-profiles
+          set -euo pipefail
+          for v in APP_STORE_CONNECT_KEY_IDENTIFIER APP_STORE_CONNECT_ISSUER_ID APP_STORE_CONNECT_PRIVATE_KEY; do
+            if [ -z "${!v:-}" ]; then echo "$v is not provided by the integration" >&2; exit 1; fi
+          done
+          mkdir -p "$HOME/private_keys"
+          KEY_PATH="$HOME/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_IDENTIFIER}.p8"
+          printf '%s\n' "$APP_STORE_CONNECT_PRIVATE_KEY" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          TEAM_ID=$(app-store-connect bundle-ids list --bundle-id-identifier "$BUNDLE_ID" --strict-match-identifier --platform IOS --json \
+            | python3 -c 'import json,sys; a=json.load(sys.stdin)[0].get("attributes",{}); print(a.get("seedId") or a.get("seed_id") or "")')
+          if [ -z "$TEAM_ID" ]; then echo "Could not determine the team ID" >&2; exit 1; fi
+          echo "Team ID: $TEAM_ID"
+          echo "ASC_KEY_PATH=$KEY_PATH" >> "$CM_ENV"
+          echo "TEAM_ID=$TEAM_ID" >> "$CM_ENV"
       - name: Build IPA
         script: |
           set -euo pipefail
@@ -97,7 +104,7 @@ workflows:
           BUILD_NAME=$(grep -E '^version:' pubspec.yaml | sed -E 's/^version:[[:space:]]*([^+[:space:]]+).*/\1/')
           # The first upload has no builds yet; any API error is printed.
           if ! LATEST=$(app-store-connect get-latest-build-number "$APP_STORE_APPLE_ID"); then
-            echo "warning: could not read the latest build number" >&2
+            echo "No previous build number found; using a timestamp." >&2
             LATEST=0
           fi
           case "$LATEST" in ''|*[!0-9]*) LATEST=0 ;; esac
@@ -107,14 +114,44 @@ workflows:
           BUILD_NUMBER=$((LATEST + 1))
           if [ "$STAMP" -gt "$BUILD_NUMBER" ]; then BUILD_NUMBER=$STAMP; fi
           echo "Building $BUILD_NAME ($BUILD_NUMBER)"
-          flutter --no-version-check build ipa --release \
-            --build-name="$BUILD_NAME" \
-            --build-number="$BUILD_NUMBER" \
-            --export-options-plist=/Users/builder/export_options.plist
+          flutter --no-version-check build ios --release --config-only --no-codesign --no-pub \
+            --build-name="$BUILD_NAME" --build-number="$BUILD_NUMBER"
+          mkdir -p "$CM_BUILD_DIR/build"
+          cd ios
+          AUTH=(-allowProvisioningUpdates
+            -authenticationKeyPath "$ASC_KEY_PATH"
+            -authenticationKeyID "$APP_STORE_CONNECT_KEY_IDENTIFIER"
+            -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID")
+          xcodebuild archive \
+            -workspace Runner.xcworkspace -scheme Runner -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$CM_BUILD_DIR/build/Runner.xcarchive" \
+            "${AUTH[@]}" DEVELOPMENT_TEAM="$TEAM_ID" CODE_SIGN_STYLE=Automatic \
+            | xcpretty || { echo "archive failed" >&2; exit 1; }
+          cat > "$CM_BUILD_DIR/build/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>export</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>teamID</key><string>${TEAM_ID}</string>
+            <key>uploadSymbols</key><true/>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict></plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath "$CM_BUILD_DIR/build/Runner.xcarchive" \
+            -exportOptionsPlist "$CM_BUILD_DIR/build/ExportOptions.plist" \
+            -exportPath "$CM_BUILD_DIR/build/ipa" \
+            "${AUTH[@]}"
+          ls -la "$CM_BUILD_DIR/build/ipa"
+      - name: Remove API key
+        script: rm -rf "$HOME/private_keys"
     artifacts:
-      - apps/file_transfer/build/ios/ipa/*.ipa
+      - build/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
-      - apps/file_transfer/build/ios/archive/Runner.xcarchive/dSYMs/*.dSYM
+      - build/Runner.xcarchive/dSYMs/*.dSYM
     publishing:
       app_store_connect:
         auth: integration
