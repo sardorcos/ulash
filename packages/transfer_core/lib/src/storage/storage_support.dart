@@ -101,7 +101,8 @@ Future<void> validateManagedDirectory(
   bool create = false,
 }) async {
   final absolute = p.normalize(p.absolute(directory.path));
-  if (absolute != root.path) requireContainedPath(root, absolute);
+  // p.equals/p.isWithin compare case-insensitively on Windows.
+  if (!p.equals(absolute, root.path)) requireContainedPath(root, absolute);
   if (await FileSystemEntity.type(root.path, followLinks: false) !=
       FileSystemEntityType.directory) {
     throw const StorageException(
@@ -446,6 +447,11 @@ final class _FileJob {
   final int maxBytes;
 }
 
+/// Runs [job] in a background isolate. Cancellation (a throwing [check]) is
+/// cooperative: the worker is asked to stop, closes its file handles and
+/// exits, and only then does this future fail. Callers may therefore delete
+/// the files right away (Windows refuses to delete open files). A worker
+/// that does not stop within 10 s is killed as a last resort.
 Future<({int length, String sha256})> _runFileWorker(
   _FileJob job, {
   void Function()? check,
@@ -455,50 +461,41 @@ Future<({int length, String sha256})> _runFileWorker(
   final port = ReceivePort();
   final errors = ReceivePort();
   final exits = ReceivePort();
-  final completer = Completer<({int length, String sha256})>();
+  final exited = Completer<void>();
+  final cancelRequested = Completer<void>();
+  ({int length, String sha256})? value;
+  Object? failure;
+  SendPort? control;
   Isolate? isolate;
   Timer? poller;
-  void finish({({int length, String sha256})? value, Object? error}) {
-    if (completer.isCompleted) return;
-    poller?.cancel();
-    if (error != null) {
-      isolate?.kill(priority: Isolate.immediate);
-      completer.completeError(error);
-    } else {
-      completer.complete(value!);
-    }
+
+  void cancel(Object error) {
+    if (cancelRequested.isCompleted) return;
+    failure = error;
+    control?.send('cancel');
+    cancelRequested.complete();
   }
 
   port.listen((message) {
-    if (message is int) {
-      onProgress?.call(message);
+    if (message is SendPort) {
+      control = message;
+      if (cancelRequested.isCompleted) message.send('cancel');
+    } else if (message is int) {
+      if (!cancelRequested.isCompleted) onProgress?.call(message);
     } else if (message is List && message.length == 2) {
-      finish(value: (length: message[0] as int, sha256: message[1] as String));
+      value = (length: message[0] as int, sha256: message[1] as String);
     } else if (message is List && message.length == 3) {
-      finish(
-        error: StorageException(message[1] as String, message[2] as String),
-      );
+      failure ??= StorageException(message[1] as String, message[2] as String);
     }
   });
   errors.listen((_) {
-    finish(
-      error: const StorageException(
-        'STORAGE_FAILURE',
-        'Background file operation failed.',
-      ),
+    failure ??= const StorageException(
+      'STORAGE_FAILURE',
+      'Background file operation failed.',
     );
   });
   exits.listen((_) {
-    // The result message is normally delivered first; give it a moment in
-    // case the exit notification overtakes it.
-    Timer(const Duration(milliseconds: 50), () {
-      finish(
-        error: const StorageException(
-          'STORAGE_FAILURE',
-          'Background file operation stopped.',
-        ),
-      );
-    });
+    if (!exited.isCompleted) exited.complete();
   });
   try {
     isolate = await Isolate.spawn(
@@ -513,39 +510,83 @@ Future<({int length, String sha256})> _runFileWorker(
         try {
           check();
         } catch (error) {
-          finish(error: error);
+          poller?.cancel();
+          cancel(error);
         }
       });
     }
-    return await completer.future;
+    await Future.any([exited.future, cancelRequested.future]);
+    if (!exited.isCompleted) {
+      // Cancelled: wait for the worker to close its files and exit.
+      await exited.future.timeout(
+        const Duration(seconds: 10),
+        onTimeout: () async {
+          isolate?.kill(priority: Isolate.immediate);
+          await exited.future.timeout(
+            const Duration(seconds: 2),
+            onTimeout: () {},
+          );
+        },
+      );
+    }
+    if (value == null && failure == null) {
+      // The exit notice uses another port; let a pending result land.
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
   } finally {
     poller?.cancel();
     port.close();
     errors.close();
     exits.close();
   }
+  final error = failure;
+  if (error != null) throw error;
+  final result = value;
+  if (result == null) {
+    throw const StorageException(
+      'STORAGE_FAILURE',
+      'Background file operation stopped.',
+    );
+  }
+  return result;
 }
 
+/// Reads with an explicit handle (not a stream) so that every exit path,
+/// including cancellation, closes the files before the result is reported.
 Future<void> _fileWorker((SendPort, _FileJob) message) async {
   final (reply, job) = message;
+  final control = ReceivePort();
+  var cancelled = false;
+  control.listen((_) => cancelled = true);
+  reply.send(control.sendPort);
+  RandomAccessFile? input;
   RandomAccessFile? output;
+  Object response;
   try {
-    final collector = DigestCollector();
-    final digest = sha256.startChunkedConversion(collector);
+    input = await File(job.source).open();
     if (job.kind == _FileJobKind.copy) {
       output = await File(job.destination!).open(mode: FileMode.write);
     }
+    final collector = DigestCollector();
+    final digest = sha256.startChunkedConversion(collector);
     var length = 0;
     var reported = 0;
-    await for (final chunk in File(job.source).openRead()) {
+    Object? stopped;
+    while (true) {
+      if (cancelled) {
+        stopped = [0, 'PREPARATION_CANCELLED', 'Preparation cancelled.'];
+        break;
+      }
+      final chunk = await input.read(1024 * 1024);
+      if (chunk.isEmpty) break;
       length += chunk.length;
       if (job.kind == _FileJobKind.copy && length > job.maxBytes) {
-        reply.send([
+        stopped = [
           0,
           'SOURCE_CHANGED',
           'Source length changed during preparation.',
-        ]);
-        return;
+        ];
+        break;
       }
       digest.add(chunk);
       await output?.writeFrom(chunk);
@@ -554,18 +595,31 @@ Future<void> _fileWorker((SendPort, _FileJob) message) async {
         reply.send(length);
       }
     }
-    digest.close();
-    await output?.flush();
-    await output?.close();
-    output = null;
-    reply.send(length);
-    reply.send([length, collector.value!.toString()]);
+    if (stopped != null) {
+      response = stopped;
+    } else {
+      digest.close();
+      await output?.flush();
+      reply.send(length);
+      response = [length, collector.value!.toString()];
+    }
   } on FileSystemException catch (error) {
     final mapped = storageIoError(error);
-    reply.send([0, mapped.code, mapped.message]);
+    response = [0, mapped.code, mapped.message];
   } finally {
-    await output?.close();
+    try {
+      await input?.close();
+    } catch (_) {
+      /* Already closed. */
+    }
+    try {
+      await output?.close();
+    } catch (_) {
+      /* Already closed. */
+    }
+    control.close();
   }
+  reply.send(response);
 }
 
 /// OS error numbers that mean "no space" (or per-user quota) differ per OS.

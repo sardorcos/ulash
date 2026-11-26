@@ -37,6 +37,14 @@ FileManifest fileFor(
   relativeDirectory: folder,
 );
 
+/// A temp directory under its canonical name. Stores canonicalise their
+/// roots (on Windows, `C:\Users\RUNNER~1` becomes `C:\Users\runneradmin`),
+/// so expected paths must be built from the same form.
+Future<Directory> canonicalTemp(String prefix) async {
+  final created = await Directory.systemTemp.createTemp(prefix);
+  return Directory(await created.resolveSymbolicLinks());
+}
+
 /// Raw HTTP/1.1 exchange over TLS that accepts any certificate: lets tests
 /// speak to the host the way a hostile or minimal client would.
 Future<SecureSocket> rawTls(Uri endpoint) => SecureSocket.connect(
@@ -154,7 +162,7 @@ void main() {
     }
 
     setUp(() async {
-      temp = await Directory.systemTemp.createTemp('transfer-1-2-');
+      temp = await canonicalTemp('transfer-1-2-');
       inbox = await DurableInbox.open(
         Directory(p.join(temp.path, 'inbox')),
         checkpointBytes: 65536,
@@ -684,7 +692,7 @@ void main() {
         );
 
     setUp(() async {
-      temp = await Directory.systemTemp.createTemp('transfer-received-');
+      temp = await canonicalTemp('transfer-received-');
       inboxDirectory = Directory(p.join(temp.path, 'inbox'));
       received = Directory(p.join(temp.path, 'Received'));
       wall = DateTime(2026, 11, 26, 14, 5);
@@ -1019,7 +1027,7 @@ void main() {
   group('background hashing and outbox staging', () {
     late Directory temp;
     setUp(() async {
-      temp = await Directory.systemTemp.createTemp('transfer-hash-');
+      temp = await canonicalTemp('transfer-hash-');
     });
     tearDown(() => temp.delete(recursive: true));
 
@@ -1054,6 +1062,52 @@ void main() {
         throwsA(storageCode('SOURCE_CHANGED')),
       );
     });
+
+    test('a cancelled worker closes its file handles before failing', () async {
+      final source = File(p.join(temp.path, 'large.bin'));
+      final sink = source.openSync(mode: FileMode.write);
+      final block = List<int>.filled(1024 * 1024, 7);
+      for (var index = 0; index < 48; index++) {
+        sink.writeFromSync(block);
+      }
+      sink.closeSync();
+      final destination = File(p.join(temp.path, 'large.copy'));
+      List<String> openTargets() => [
+        for (final entry in Directory('/proc/self/fd').listSync())
+          if (entry is Link)
+            () {
+              try {
+                return entry.targetSync();
+              } on FileSystemException {
+                return '';
+              }
+            }(),
+      ];
+      var calls = 0;
+      void stopSoon() {
+        if (++calls > 1) {
+          throw const StorageException('PREPARATION_CANCELLED', 'stop');
+        }
+      }
+
+      await expectLater(
+        copyAndHashIsolated(
+          source,
+          destination,
+          maxBytes: 1 << 30,
+          check: stopSoon,
+          pollInterval: const Duration(milliseconds: 1),
+        ),
+        throwsA(storageCode('PREPARATION_CANCELLED')),
+      );
+      // The future fails only after the worker closed both files, so the
+      // caller can delete them at once (required on Windows).
+      final open = openTargets();
+      expect(open, isNot(contains(source.path)));
+      expect(open, isNot(contains(destination.path)));
+      destination.deleteSync();
+      source.deleteSync();
+    }, skip: Platform.isLinux ? false : 'inspects /proc/self/fd');
 
     test('adopting a temporary moves it; originals are copied', () async {
       final outbox = await DurableOutbox.open(
