@@ -1582,6 +1582,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   // ---------------------------------------------------------------- web share
 
   WebShareServer? _web;
+  String? _webHost;
   final _webAsks = <String, (WebUploadAsk, Completer<bool>, DateTime)>{};
   List<_WebBatch>? _webBatchCache;
 
@@ -1591,7 +1592,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   WebShareState? get webShare {
     final web = _web;
     if (web == null || !web.running || web.expiresAt == null) return null;
-    final host = _addresses.isEmpty ? '127.0.0.1' : _addresses.first;
+    final host =
+        _webHost ?? (_addresses.isEmpty ? '127.0.0.1' : _addresses.first);
     return WebShareState(
       url: web.urlFor(host),
       expiresAt: web.expiresAt!,
@@ -1635,7 +1637,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
             );
           }(),
     ];
-    final server = WebShareServer(
+    late final WebShareServer server;
+    server = WebShareServer(
       files: files,
       allowUpload: allowUpload,
       uploadDirectory: Directory(p.join(_webRoot.path, _stampNow())),
@@ -1655,12 +1658,23 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       onUploadAsk: _onWebUploadAsk,
       onFileStored: _onWebFileStored,
       onChanged: _emit,
+      onStopped: () => _onWebStopped(server),
+      ttl: _runtime.webShareTtl,
+      availableBytes: () async {
+        final probe = _runtime.availableBytes;
+        if (probe == null || _dataPath == null) return null;
+        return probe(Directory(_dataPath!));
+      },
     );
+    // Listen only on the address printed in the link (the same LAN
+    // interface), not on cellular/hotspot/VPN interfaces.
+    final host = _addresses.first;
     await server.start(
-      address: _runtime.webShareAddress,
+      address: _runtime.webShareAddress ?? InternetAddress.tryParse(host),
       preferredPort: _runtime.webSharePort,
     );
     _web = server;
+    _webHost = host;
     DiagnosticsLog.instance.info('web share started (upload=$allowUpload)');
   });
 
@@ -1670,12 +1684,28 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   Future<void> _stopWebShareNow() async {
     final web = _web;
     _web = null;
-    for (final (_, decision, _) in _webAsks.values) {
+    _webHost = null;
+    _clearWebAsks();
+    await web?.stop();
+    _emit();
+  }
+
+  /// The server stopped (its own 10-minute expiry included): requests that
+  /// can no longer be accepted disappear at once.
+  void _onWebStopped(WebShareServer server) {
+    if (identical(_web, server)) {
+      _web = null;
+      _webHost = null;
+    }
+    _clearWebAsks();
+    _emit();
+  }
+
+  void _clearWebAsks() {
+    for (final (_, decision, _) in _webAsks.values.toList()) {
       if (!decision.isCompleted) decision.complete(false);
     }
     _webAsks.clear();
-    await web?.stop();
-    _emit();
   }
 
   Future<bool> _onWebUploadAsk(WebUploadAsk ask) {

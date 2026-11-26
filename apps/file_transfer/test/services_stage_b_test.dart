@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_transfer/l10n/app_localizations.dart';
@@ -121,12 +122,15 @@ class _Node {
     bool discovery = false,
     bool platformHooks = false,
     List<IntakeItem> intake = const [],
+    Duration webShareTtl = const Duration(minutes: 10),
   }) async {
     final dir = root ?? await Directory.systemTemp.createTemp('ulash-b-');
     final hooks = _Hooks()..intake.addAll(intake);
     final controller = TransferAppController(
       runtime: AppRuntime(
         secrets: core.MemorySecretStore(),
+        webSharePort: 0,
+        webShareTtl: webShareTtl,
         storageDirectory: () async => dir,
         ensurePermission: () async => true,
         addresses: () async => ['127.0.0.1'],
@@ -624,4 +628,48 @@ void main() {
       await dir.delete(recursive: true);
     }
   });
+
+  test(
+    'the browser share listens on the link address; its own expiry clears '
+    'pending upload requests',
+    () => _realNetwork(() async {
+      final node = await _Node.create(
+        'Web',
+        webShareTtl: const Duration(seconds: 2),
+      );
+      try {
+        await node.controller.startWebShare(allowUpload: true);
+        final share = node.controller.webShare!;
+        expect(share.url.host, '127.0.0.1');
+        final http = HttpClient();
+        final request = await http.postUrl(share.url.resolve('ask'));
+        request.write(
+          jsonEncode({
+            'files': [
+              {'name': 'a.txt', 'size': 3},
+            ],
+          }),
+        );
+        // Refused either with 403 or by the connection closing on stop.
+        final reply = request.close().then(
+          (response) => response.statusCode,
+          onError: (Object _) => 403,
+        );
+        await _waitUntil(
+          () => node.controller.pendingWebUploads.isNotEmpty,
+          reason: 'upload request shown',
+        );
+        await _waitUntil(
+          () => node.controller.webShare == null,
+          reason: 'share stops by itself',
+        );
+        expect(node.controller.pendingWebUploads, isEmpty);
+        expect(await reply, 403);
+        http.close(force: true);
+      } finally {
+        await node.close();
+      }
+    }),
+    timeout: const Timeout(Duration(seconds: 30)),
+  );
 }

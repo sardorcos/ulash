@@ -130,7 +130,9 @@ final class CoreHost {
     _guard = guard;
     final server = HttpServer.listenOn(guard);
     server.autoCompress = false;
-    server.idleTimeout = const Duration(seconds: 15);
+    // Longer than the client's keep-alive (20 s), so the client always
+    // retires an idle connection first and never reuses one being closed.
+    server.idleTimeout = const Duration(seconds: 30);
     _server = server;
     _inboxSubscription = inbox.changes.listen((_) => _emit());
     server.listen(
@@ -152,6 +154,7 @@ final class CoreHost {
     String? hostAddress,
     List<String>? hostAddresses,
     Duration ttl = const Duration(seconds: 120),
+    bool requireCommitment = false,
   }) {
     final hosts = [?hostAddress, ...?hostAddresses];
     final uris = hosts.isEmpty
@@ -164,6 +167,7 @@ final class CoreHost {
       uris.first,
       ttl: ttl,
       additionalEndpoints: uris.skip(1).toList(),
+      requireCommitment: requireCommitment,
     );
   }
 
@@ -215,7 +219,12 @@ final class CoreHost {
     List<String>? hostAddresses,
   }) {
     closeNearbyPairing();
-    final invite = createInvite(hostAddresses: hostAddresses, ttl: ttl);
+    // Published invitations are not secret: commit/reveal only.
+    final invite = createInvite(
+      hostAddresses: hostAddresses,
+      ttl: ttl,
+      requireCommitment: true,
+    );
     _nearbyInvite = invite;
     _nearbyDeadline = _clock() + ttl;
     _emit();
@@ -385,6 +394,18 @@ final class CoreHost {
       final result = await pairing.request(body, secret);
       _emit();
       return _json(request, result, status: 202);
+    }
+    if (parts.length == 5 &&
+        parts[1] == 'pairing' &&
+        parts[2] == 'requests' &&
+        parts[4] == 'reveal' &&
+        method == 'POST') {
+      final secret = _auth(request, 'Invite');
+      pairing.preauthorizeReveal(parts[3], secret);
+      final body = await _body(request, maxBytes: 1024);
+      final result = await pairing.reveal(parts[3], body, secret);
+      _emit();
+      return _json(request, result);
     }
     if (parts.length == 4 &&
         parts[1] == 'pairing' &&
@@ -798,7 +819,9 @@ final class CoreHost {
     'FORBIDDEN' ||
     'CONSENT_REQUIRED' ||
     'PAIRING_REJECTED' ||
+    'COMMITMENT_MISMATCH' ||
     'PEER_REVOKED' => 403,
+    'UPGRADE_REQUIRED' => 426,
     'NOT_FOUND' => 404,
     'METHOD_NOT_ALLOWED' => 405,
     'INVITE_EXPIRED' || 'EXPIRED' => 410,
@@ -996,11 +1019,37 @@ final class _ConnectionGuard extends Stream<Socket> implements ServerSocket {
       _drop(victim);
     }
     while (_connections.length >= maxConnections) {
-      final victim = _connections.where((c) => !c.authenticated).firstOrNull;
+      final victim = _globalVictim();
       if (victim == null) return false;
       _drop(victim);
     }
     return true;
+  }
+
+  /// At the global cap: the oldest unauthenticated connection of the address
+  /// holding the most connections, so one flooding address cannot push out
+  /// everyone else. Addresses with at most two connections are spared while
+  /// any other candidate exists (they never hold the maximum then);
+  /// authenticated connections are never victims.
+  _GuardedConnection? _globalVictim() {
+    final perAddress = <String, int>{};
+    for (final connection in _connections) {
+      perAddress.update(connection.address, (n) => n + 1, ifAbsent: () => 1);
+    }
+    _GuardedConnection? best;
+    var bestCount = 0;
+    for (final candidate in _connections) {
+      if (candidate.authenticated) continue;
+      final count = perAddress[candidate.address]!;
+      // Iterating oldest first: keep the first (oldest) of the top address.
+      if (best == null || count > bestCount) {
+        best = candidate;
+        bestCount = count;
+      }
+    }
+    // When every address holds at most two (a widely distributed flood) the
+    // oldest unauthenticated connection goes rather than refusing newcomers.
+    return best;
   }
 
   _GuardedConnection? _of(HttpRequest request) {

@@ -27,6 +27,8 @@ final class PendingPairing {
     required this.state,
     required this.expiresAt,
     this.sas,
+    this.legacy = false,
+    this.legacyCode,
   });
   final String requestId;
   final String pairingId;
@@ -36,18 +38,33 @@ final class PendingPairing {
   final String state;
   final DateTime expiresAt;
 
-  /// Six-digit verification code; the joining device shows the same value
-  /// (see [PairingInvite.sasFor]). Approve only when both codes match.
+  /// Six-digit commit/reveal verification code ([pairingSasV2]); the joining
+  /// device shows the same value (`PairingProgress.sas`). Approve only when
+  /// both codes match. Null for [legacy] requests.
   final String? sas;
+
+  /// A 1.0/1.1 joiner without commit/reveal (accepted only for QR
+  /// invitations). There is no six-digit code; compare [legacyCode] instead.
+  final bool legacy;
+
+  /// For [legacy] requests: the joiner's key code (`ABCD-1234`, see
+  /// [shortFingerprint]) that older apps show.
+  final String? legacyCode;
   @override
   String toString() => 'PendingPairing($requestId, $state)';
 }
 
 final class _Invitation {
-  _Invitation(this.digest, this.expiresAt, this.monotonicDeadline);
+  _Invitation(
+    this.digest,
+    this.expiresAt,
+    this.monotonicDeadline, {
+    this.requireCommitment = false,
+  });
   final String digest;
   final DateTime expiresAt;
   final Duration monotonicDeadline;
+  final bool requireCommitment;
   String? requestId;
 }
 
@@ -141,10 +158,14 @@ final class PairingService {
     return changed;
   }
 
+  /// [requireCommitment]: refuse legacy (1.0/1.1) joiners for this
+  /// invitation. Required for invitations that are published on the network
+  /// (nearby pairing), where the invitation itself is not secret.
   PairingInvite createInvite(
     Uri endpoint, {
     Duration ttl = const Duration(seconds: 120),
     List<Uri>? additionalEndpoints,
+    bool requireCommitment = false,
   }) {
     if (ttl.inSeconds < 1 || ttl.inSeconds > 120) {
       throw ArgumentError('Invitation lifetime must be 1–120 seconds');
@@ -161,6 +182,7 @@ final class PairingService {
       tokenDigest(secret),
       DateTime.now().toUtc().add(ttl),
       _clock.elapsed + ttl,
+      requireCommitment: requireCommitment,
     );
     return PairingInvite(
       inviteId: id,
@@ -173,11 +195,14 @@ final class PairingService {
     );
   }
 
+  /// Requests awaiting a decision. A commit/reveal request appears only once
+  /// the joiner revealed its nonce (before that no code exists to compare).
   List<PendingPairing> get pending => _requests.values
       .where(
         (p) =>
             (p['state'] == 'waiting' || p['state'] == 'approved') &&
-            !_expired(p),
+            !_expired(p) &&
+            !_awaitingReveal(p),
       )
       .map(
         (p) => PendingPairing(
@@ -189,14 +214,28 @@ final class PairingService {
           state: p['state'] as String,
           expiresAt: DateTime.parse(p['expiresAt'] as String),
           sas: _sasOf(p),
+          legacy: _isLegacy(p),
+          legacyCode: _isLegacy(p)
+              ? shortFingerprint(p['peerId'] as String)
+              : null,
         ),
       )
       .toList(growable: false);
 
+  static bool _isLegacy(Map<String, dynamic> request) =>
+      request['commitment'] == null;
+
+  static bool _awaitingReveal(Map<String, dynamic> request) =>
+      !_isLegacy(request) && request['joinerNonce'] == null;
+
   String? _sasOf(Map<String, dynamic> request) {
+    final hostNonce = request['hostNonce'];
+    final joinerNonce = request['joinerNonce'];
+    if (hostNonce is! String || joinerNonce is! String) return null;
     try {
-      return pairingSas(
-        inviteDigest: request['inviteDigest'] as String,
+      return pairingSasV2(
+        hostNonce: hostNonce,
+        joinerNonce: joinerNonce,
         hostPin: identity.serverPin,
         joinerPin: request['serverPin'] as String,
       );
@@ -204,6 +243,72 @@ final class PairingService {
       return null;
     }
   }
+
+  /// Pre-check for the reveal endpoint before its body is read.
+  void preauthorizeReveal(String requestId, String? secret) {
+    final request = _requests[requestId];
+    if (request == null) {
+      throw const PairingException('UNAUTHORIZED', 'Invalid invitation');
+    }
+    _checkInviteAuth(request, secret);
+  }
+
+  /// Second step of commit/reveal: the joiner discloses the nonce it
+  /// committed to, after it received the host nonce. A nonce that does not
+  /// match the commitment rejects the request for good (one attempt per
+  /// invitation). Idempotent for the same nonce.
+  Future<Map<String, dynamic>> reveal(
+    String requestId,
+    Map<String, dynamic> body,
+    String? secret,
+  ) => _serial(() async {
+    final request = _get(requestId);
+    _checkInviteAuth(request, secret);
+    if (body.keys.any((key) => key != 'nonce')) {
+      throw const PairingException(
+        'INVALID_REQUEST',
+        'Unexpected pairing fields',
+      );
+    }
+    final nonce = body['nonce'];
+    final commitment = request['commitment'];
+    if (commitment is! String) {
+      throw const PairingException(
+        'INVALID_REQUEST',
+        'Request did not use commit/reveal',
+      );
+    }
+    if (nonce is! String || !isCanonicalToken(nonce)) {
+      throw const PairingException('INVALID_REQUEST', 'Invalid nonce');
+    }
+    final known = request['joinerNonce'];
+    if (known is String) {
+      if (!constantTimeEqual(known, nonce)) {
+        throw const PairingException(
+          'COMMITMENT_MISMATCH',
+          'Nonce does not match the commitment',
+        );
+      }
+      return _response(request);
+    }
+    _checkPending(request);
+    if (request['state'] != 'waiting') {
+      throw const PairingException('CONFLICT', 'Pairing is not pending');
+    }
+    if (!constantTimeEqual(pairingCommitment(nonce), commitment)) {
+      request['state'] = 'rejected';
+      request['issuedToken'] = null;
+      request['reverseToken'] = null;
+      await _persist();
+      throw const PairingException(
+        'COMMITMENT_MISMATCH',
+        'Nonce does not match the commitment',
+      );
+    }
+    request['joinerNonce'] = nonce;
+    await _persist();
+    return _response(request);
+  });
 
   /// Cheap pre-check before any request body is read: the secret must be a
   /// canonical token whose digest belongs to a live invitation or to a known
@@ -271,6 +376,7 @@ final class PairingService {
       'displayName',
       'reverseToken',
       'endpoint',
+      'commitment',
     };
     if (body.keys.any((key) => !fields.contains(key))) {
       throw const PairingException(
@@ -299,6 +405,12 @@ final class PairingService {
     if (body['endpoint'] != null) {
       validateEndpoint(Uri.parse(body['endpoint'] as String));
     }
+    final commitment = body['commitment'];
+    if (commitment != null &&
+        (commitment is! String ||
+            !RegExp(r'^[0-9a-f]{64}$').hasMatch(commitment))) {
+      throw const PairingException('INVALID_REQUEST', 'Invalid commitment');
+    }
     final bodyDigest = tokenDigest(canonicalJson(body));
     final old = _requests[requestId];
     if (old != null) {
@@ -323,6 +435,12 @@ final class PairingService {
     }
     if (invite.requestId != null && invite.requestId != requestId) {
       throw const PairingException('CONFLICT', 'Invitation already reserved');
+    }
+    if (invite.requireCommitment && commitment == null) {
+      throw const PairingException(
+        'UPGRADE_REQUIRED',
+        'This pairing requires an updated app on the joining device',
+      );
     }
     for (final stale in _requests.values) {
       if ((stale['state'] == 'waiting' || stale['state'] == 'approved') &&
@@ -350,6 +468,8 @@ final class PairingService {
       'state': 'waiting',
       'expiresAt': invite.expiresAt.toIso8601String(),
       'issuedToken': null,
+      // Chosen after the joiner committed to its nonce, before it reveals.
+      if (commitment != null) 'hostNonce': randomToken(),
     };
     _requests[requestId] = data;
     _deadlines[requestId] = invite.monotonicDeadline;
@@ -366,6 +486,12 @@ final class PairingService {
     }
     if (request['state'] != 'waiting') {
       throw const PairingException('CONFLICT', 'Pairing cannot be approved');
+    }
+    if (_awaitingReveal(request)) {
+      throw const PairingException(
+        'SAS_PENDING',
+        'The verification code is not available yet',
+      );
     }
     request['issuedToken'] = randomToken();
     request['state'] = 'approved';
@@ -480,6 +606,9 @@ final class PairingService {
       'hostPin': identity.serverPin,
       'displayName': identity.displayName,
       'expiresAt': request['expiresAt'],
+      if (request['hostNonce'] != null) 'hostNonce': request['hostNonce'],
+      if (request['commitment'] != null)
+        'revealed': request['joinerNonce'] != null,
       if (request['state'] == 'approved') 'credential': request['issuedToken'],
     };
   }

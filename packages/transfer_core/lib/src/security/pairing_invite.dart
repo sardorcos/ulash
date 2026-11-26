@@ -13,6 +13,7 @@ final class PairingInvite {
     required Uri endpoint,
     List<Uri>? endpoints,
     this.ttlSeconds = 120,
+    this.discovered = false,
   }) : endpoint = validateEndpoint(endpoint),
        endpoints = _endpointList(endpoint, endpoints) {
     if (!RegExp(r'^[A-Za-z0-9_-]{1,100}$').hasMatch(inviteId) ||
@@ -40,6 +41,13 @@ final class PairingInvite {
   final List<Uri> endpoints;
   final int ttlSeconds;
 
+  /// True for an invitation fetched over the network (nearby pairing) rather
+  /// than scanned from the host's screen. Its key is not authenticated by the
+  /// QR code, so pairing requires the commit/reveal code
+  /// ([CoreClient.requestPairing] never falls back to the legacy scheme).
+  /// Not part of the encoded invitation.
+  final bool discovered;
+
   static const int maxEndpoints = 4;
 
   static List<Uri> _endpointList(Uri first, List<Uri>? extra) {
@@ -54,8 +62,8 @@ final class PairingInvite {
     return List.unmodifiable(result);
   }
 
-  /// The six-digit verification code for pairing this invitation with the
-  /// joining device's key ([joinerPin]); the host shows the same code.
+  /// Superseded invitation-bound code (see [pairingSas]); 1.2 hosts do not
+  /// show it. Use `PairingProgress.sas` from `CoreClient.requestPairing`.
   String sasFor(String joinerPin) => pairingSas(
     inviteDigest: tokenDigest(inviteSecret),
     hostPin: hostPin,

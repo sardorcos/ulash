@@ -339,28 +339,38 @@ void main() {
       },
     );
 
-    test('both screens derive the same six-digit code', () async {
+    test('both screens derive the same commit/reveal code', () async {
       final invite = host.createInvite();
-      await client.requestPairing(
+      final progress = await client.requestPairing(
         invite,
         identity: senderIdentity,
         peers: senderPeers,
       );
+      expect(progress.legacy, isFalse);
+      expect(progress.legacyCode, isNull);
+      expect(progress.sas, matches(RegExp(r'^[0-9]{6}$')));
       final pending = host.pendingPairings.single;
-      expect(pending.sas, matches(RegExp(r'^[0-9]{6}$')));
-      expect(invite.sasFor(senderIdentity.serverPin), pending.sas);
-      // A different joining key (an interceptor) yields a different code.
-      final attacker = await DeviceIdentity.generate(displayName: 'Mallory');
-      expect(invite.sasFor(attacker.serverPin), isNot(pending.sas));
+      expect(pending.legacy, isFalse);
+      expect(pending.sas, progress.sas);
       expect(pending.displayName, 'Sender');
       expect(
-        () => pairingSas(
-          inviteDigest: 'xyz',
-          hostPin: receiverIdentity.serverPin,
-          joinerPin: senderIdentity.serverPin,
-        ),
-        throwsA(anything),
+        (await client.pendingPairingCode(senderPeers))?.code,
+        progress.sas,
       );
+      // Retrying the same request (e.g. after a restart) keeps the code.
+      final again = await client.requestPairing(
+        invite,
+        identity: senderIdentity,
+        peers: senderPeers,
+      );
+      expect(again.sas, progress.sas);
+      expect(host.pendingPairings, hasLength(1));
+      await host.approvePairing(pending.requestId);
+      final peer = await client.completePairing(
+        identity: senderIdentity,
+        peers: senderPeers,
+      );
+      expect(peer?.peerId, receiverIdentity.peerId);
     });
 
     test('peer names are sanitized at pairing', () async {
@@ -391,15 +401,14 @@ void main() {
         expect(fetched.inviteId, opened.inviteId);
         expect(fetched.hostPin, receiverIdentity.serverPin);
         expect(fetched.endpoint, endpoint);
-        await client.requestPairing(
+        expect(fetched.discovered, isTrue);
+        final progress = await client.requestPairing(
           fetched,
           identity: senderIdentity,
           peers: senderPeers,
         );
-        expect(
-          host.pendingPairings.single.sas,
-          fetched.sasFor(senderIdentity.serverPin),
-        );
+        expect(progress.legacy, isFalse);
+        expect(host.pendingPairings.single.sas, progress.sas);
         host.closeNearbyPairing();
         await expectLater(
           CoreClient.fetchNearbyInvite(endpoint),

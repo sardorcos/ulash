@@ -31,22 +31,37 @@ String sanitizeDisplayText(String input) => stripInvisibleNameCharacters(
   input.replaceAll(RegExp('[\u2028\u2029]'), ' '),
 ).replaceAll(RegExp(r'\s+'), ' ').trim();
 
-const _executableExtensions = {
-  'exe', 'com', 'bat', 'cmd', 'ps1', 'psm1', 'vbs', 'vbe', 'js', 'jse', //
-  'wsf', 'wsh', 'hta', 'msi', 'msix', 'appx', 'scr', 'pif', 'lnk', 'url', //
-  'reg', 'cpl', 'jar', 'dll', 'sys', 'app', 'command', 'sh', 'workflow', //
-  'apk', 'ipa',
+/// Lower-case extensions (without the dot) of files that may run code when
+/// opened: Windows/macOS executables, scripts, installers, shortcuts, disk
+/// images and document formats that host active content. Native code
+/// (share extensions, Android) should mirror this list.
+const Set<String> executableFileExtensions = {
+  // Windows executables, libraries and installers.
+  'exe', 'com', 'scr', 'pif', 'cpl', 'dll', 'sys', 'msi', 'msix', 'appx', //
+  'msixbundle', 'appxbundle', 'appinstaller', 'xll', //
+  // Scripts and script hosts.
+  'bat', 'cmd', 'ps1', 'psm1', 'ps1xml', 'vbs', 'vbe', 'js', 'jse', 'wsf', //
+  'wsh', 'wsc', 'hta', 'sh', 'command', 'workflow', 'jar', //
+  // Shortcuts, registry and shell locations.
+  'lnk', 'url', 'reg', 'website', 'search-ms', 'settingcontent-ms', //
+  'library-ms', 'diagcab', //
+  // Disk images (mounting exposes executables) and active documents.
+  'iso', 'img', 'vhd', 'vhdx', 'chm', 'mht', 'mhtml', //
+  // Mobile and macOS bundles.
+  'app', 'apk', 'ipa',
 };
 
-/// True when opening a file with this name may run code (Windows/macOS
-/// executables, scripts, installers, shortcuts). The UI warns or refuses
-/// instead of launching such files directly.
+/// True when opening a file with this name may run code (see
+/// [executableFileExtensions]). The UI warns or refuses instead of launching
+/// such files directly. Trailing dots and spaces, which Windows ignores, do
+/// not hide the extension.
 bool isPotentiallyExecutable(String fileName) {
-  final name = sanitizeDisplayText(fileName).toLowerCase();
+  final name = sanitizeDisplayText(
+    fileName,
+  ).toLowerCase().replaceAll(RegExp(r'[. ]+$'), '');
   final dot = name.lastIndexOf('.');
   if (dot < 0 || dot == name.length - 1) return false;
-  final extension = name.substring(dot + 1).replaceAll(RegExp(r'[. ]+$'), '');
-  return _executableExtensions.contains(extension);
+  return executableFileExtensions.contains(name.substring(dot + 1));
 }
 
 /// Validates an optional folder path inside a transfer (protocol minor 1):
