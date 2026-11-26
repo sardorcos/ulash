@@ -1,6 +1,8 @@
 import json, sys, re
 sys.path.insert(0, sys.argv[1])
 from catalog import E
+import catalog_app  # noqa: F401  (registers entries into E)
+import catalog_ui  # noqa: F401
 out = sys.argv[2]
 keys = [k for k,*_ in E]
 dups = {k for k in keys if keys.count(k) > 1}
