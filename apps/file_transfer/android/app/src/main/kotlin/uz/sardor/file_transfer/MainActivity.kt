@@ -1,12 +1,22 @@
 package uz.sardor.file_transfer
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipDescription
+import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.os.PersistableBundle
+import android.provider.MediaStore
+import android.view.WindowManager
+import android.webkit.MimeTypeMap
 import android.os.StatFs
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
@@ -20,6 +30,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
 import java.nio.file.Files
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -32,6 +43,10 @@ class MainActivity : FlutterActivity() {
     private val exportExecutor = Executors.newSingleThreadExecutor()
     private var pendingExport: ExportRequest? = null
     private var storageChannel: MethodChannel? = null
+    private var intakeChannel: MethodChannel? = null
+    private val ioExecutor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val handledExtra = "uz.ulash.intent_handled"
 
     private data class ExportRequest(
         val source: File,
@@ -60,6 +75,216 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
+            "file_transfer/device").setMethodCallHandler { call, result ->
+            when (call.method) {
+                "saveToPhotos" -> saveToPhotos(call, result)
+                "setSecureScreen" -> {
+                    val enabled = call.argument<Boolean>("enabled") ?: false
+                    if (enabled) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                    else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                    result.success(true)
+                }
+                "copySensitive" -> copySensitive(call, result)
+                else -> result.notImplemented()
+            }
+        }
+        intakeChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
+            "file_transfer/intake").also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "takePending" -> ioExecutor.execute {
+                        val items = takePending()
+                        mainHandler.post { result.success(items) }
+                    }
+                    "pendingCount" -> ioExecutor.execute {
+                        val count = intakeRoot().walkTopDown().count { it.isFile }
+                        mainHandler.post { result.success(count) }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        }
+        handleIncoming(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncoming(intent)
+    }
+
+    // ----- Intake: "Share → Ulash" and "Open with Ulash" -----
+
+    private fun intakeRoot(): File = File(cacheDir, "intake")
+    private fun takenRoot(): File = File(cacheDir, "intake-taken")
+
+    /** Copies shared content URIs into the app cache and tells Dart. */
+    private fun handleIncoming(intent: Intent?) {
+        if (intent == null || intent.getBooleanExtra(handledExtra, false)) return
+        val uris = mutableListOf<Uri>()
+        var text: String? = null
+        when (intent.action) {
+            Intent.ACTION_SEND -> {
+                streamExtra(intent)?.let { uris.add(it) }
+                if (uris.isEmpty()) text = intent.getStringExtra(Intent.EXTRA_TEXT)
+            }
+            Intent.ACTION_SEND_MULTIPLE -> uris.addAll(streamListExtra(intent))
+            Intent.ACTION_VIEW -> intent.data?.takeIf { it.scheme == "content" }?.let { uris.add(it) }
+            else -> return
+        }
+        intent.putExtra(handledExtra, true)
+        if (uris.isEmpty() && text.isNullOrBlank()) return
+        ioExecutor.execute {
+            val batch = File(intakeRoot(), UUID.randomUUID().toString())
+            batch.mkdirs()
+            var copied = 0
+            for (uri in uris) {
+                try {
+                    val name = safeName(queryDisplayName(uri) ?: uri.lastPathSegment ?: "file")
+                    val target = uniqueFile(File(batch, name))
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        target.outputStream().use { output -> input.copyTo(output, 64 * 1024) }
+                        copied++
+                    }
+                } catch (_: Exception) {
+                    // A provider that fails or revokes access is skipped.
+                }
+            }
+            if (!text.isNullOrBlank()) {
+                try {
+                    uniqueFile(File(batch, "Text.txt")).writeText(text!!)
+                    copied++
+                } catch (_: Exception) { }
+            }
+            if (copied == 0) batch.deleteRecursively()
+            else mainHandler.post { intakeChannel?.invokeMethod("intakeAvailable", null) }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun streamExtra(intent: Intent): Uri? =
+        if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        else intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+
+    @Suppress("DEPRECATION")
+    private fun streamListExtra(intent: Intent): List<Uri> =
+        (if (Build.VERSION.SDK_INT >= 33)
+            intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        else intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)) ?: emptyList()
+
+    /** Returns each pending file once as {path, name}; Dart stages and deletes them. */
+    private fun takePending(): List<Map<String, String>> {
+        val result = mutableListOf<Map<String, String>>()
+        val batches = intakeRoot().listFiles()?.filter { it.isDirectory } ?: return result
+        for (batch in batches) {
+            val destination = File(takenRoot(), UUID.randomUUID().toString())
+            destination.mkdirs()
+            for (file in batch.listFiles()?.filter { it.isFile } ?: emptyList()) {
+                val target = uniqueFile(File(destination, file.name))
+                if (file.renameTo(target)) {
+                    result.add(mapOf("path" to target.absolutePath, "name" to target.name))
+                }
+            }
+            batch.deleteRecursively()
+        }
+        return result
+    }
+
+    private fun safeName(raw: String): String {
+        val cleaned = raw.replace('/', '_').replace('\\', '_').replace(':', '_').trim()
+        return if (cleaned.isEmpty() || cleaned.startsWith(".")) "file$cleaned" else cleaned
+    }
+
+    private fun uniqueFile(file: File): File {
+        if (!file.exists()) return file
+        val base = file.nameWithoutExtension
+        val ext = file.extension
+        var index = 2
+        while (true) {
+            val candidate = File(file.parentFile, if (ext.isEmpty()) "$base $index" else "$base $index.$ext")
+            if (!candidate.exists()) return candidate
+            index++
+        }
+    }
+
+    // ----- Photos, secure clipboard -----
+
+    /** Adds a received photo/video to the gallery (Pictures|Movies/Ulash). No permission on API 29+. */
+    private fun saveToPhotos(call: MethodCall, result: MethodChannel.Result) {
+        val path = call.argument<String>("path")
+        val isVideo = call.argument<String>("kind") == "video"
+        if (path.isNullOrBlank()) {
+            result.success("failed")
+            return
+        }
+        ioExecutor.execute {
+            val outcome = try {
+                val source = File(path).canonicalFile
+                val appRoots = listOfNotNull(filesDir, getExternalFilesDir(null), cacheDir)
+                    .map { it.canonicalFile }
+                require(appRoots.any { isWithin(source, it) } && source.isFile)
+                val mime = MimeTypeMap.getSingleton()
+                    .getMimeTypeFromExtension(source.extension.lowercase())
+                    ?: if (isVideo) "video/mp4" else "image/jpeg"
+                val collection = if (isVideo)
+                    MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                else MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, source.name)
+                    put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                    put(MediaStore.MediaColumns.RELATIVE_PATH,
+                        if (isVideo) "Movies/Ulash" else "Pictures/Ulash")
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val item = contentResolver.insert(collection, values)
+                    ?: throw IOException("MediaStore insert failed")
+                try {
+                    contentResolver.openOutputStream(item)?.use { output ->
+                        FileInputStream(source).use { input -> input.copyTo(output, 64 * 1024) }
+                    } ?: throw IOException("No output stream")
+                    contentResolver.update(item, ContentValues().apply {
+                        put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    }, null, null)
+                    "saved"
+                } catch (error: Exception) {
+                    contentResolver.delete(item, null, null)
+                    throw error
+                }
+            } catch (_: Exception) {
+                "failed"
+            }
+            mainHandler.post { result.success(outcome) }
+        }
+    }
+
+    /** Copies a pairing invitation without exposing it to clipboard previews; clears it later. */
+    private fun copySensitive(call: MethodCall, result: MethodChannel.Result) {
+        val text = call.argument<String>("text")
+        if (text == null) {
+            result.success(false)
+            return
+        }
+        val seconds = (call.argument<Int>("seconds") ?: 120).coerceIn(10, 600)
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = ClipData.newPlainText("Ulash", text)
+        clip.description.extras = PersistableBundle().apply {
+            if (Build.VERSION.SDK_INT >= 33) putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+            else putBoolean("android.content.extra.IS_SENSITIVE", true)
+        }
+        clipboard.setPrimaryClip(clip)
+        mainHandler.postDelayed({
+            try {
+                val current = clipboard.primaryClip
+                if (current != null && current.itemCount > 0 &&
+                    current.getItemAt(0).text?.toString() == text) {
+                    clipboard.clearPrimaryClip()
+                }
+            } catch (_: Exception) {
+                // Without focus Android may refuse to read the clipboard; skip.
+            }
+        }, seconds * 1000L)
+        result.success(true)
     }
 
     private fun lanPermissionGranted(): Boolean = Build.VERSION.SDK_INT < 37 ||
@@ -125,9 +350,15 @@ class MainActivity : FlutterActivity() {
 
     private fun validateSource(path: String): File {
         val source = File(path).absoluteFile
-        val root = File(filesDir, "file-transfer-v1/inbox/received").canonicalFile
+        // Received files live under the app's private data root (and, from
+        // 1.2, may also live under its external files dir "Ulash").
+        val roots = listOfNotNull(
+            File(filesDir, "file-transfer-v1").canonicalFile,
+            getExternalFilesDir(null)?.let { File(it, "Ulash").canonicalFile },
+        )
         val canonical = source.canonicalFile
-        if (!isWithin(canonical, root) || canonical == root ||
+        val root = roots.firstOrNull { isWithin(canonical, it) }
+        if (root == null || canonical == root ||
             !canonical.isFile || !canonical.canRead()) {
             throw IOException("The received file is unavailable.")
         }
@@ -274,7 +505,10 @@ class MainActivity : FlutterActivity() {
         pendingExport = null
         storageChannel?.setMethodCallHandler(null)
         storageChannel = null
+        intakeChannel?.setMethodCallHandler(null)
+        intakeChannel = null
         exportExecutor.shutdownNow()
+        ioExecutor.shutdown()
         pendingNetworkPermission?.error("REQUEST_INTERRUPTED", "Permission request interrupted.", null)
         pendingNetworkPermission = null
         super.onDestroy()

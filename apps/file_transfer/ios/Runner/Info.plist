@@ -8,18 +8,34 @@
 	<string>ru</string>
 	<key>CFBundleDisplayName</key>
 	<string>Ulash</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Any file</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.data</string>
+				<string>public.content</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
 	<key>CFBundleLocalizations</key>
 	<array>
 		<string>ru</string>
 		<string>uz</string>
 		<string>en</string>
 	</array>
-	<key>CFBundleInfoDictionaryVersion</key>
-	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>Ulash</string>
 	<key>CFBundlePackageType</key>
@@ -36,6 +52,20 @@
 	<string>public.app-category.utilities</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_xferapp._tcp</string>
+	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Камера нужна только для сканирования QR-кода, чтобы подключить ваше устройство.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Ulash находит ваши устройства в общей сети Wi-Fi и передаёт выбранные файлы напрямую, без интернета и облака.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Нужно, чтобы сохранить полученные фото и видео в «Фото», когда вы сами это выберете.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Доступ нужен, чтобы выбрать фото и видео для отправки на ваше устройство.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -59,6 +89,8 @@
 	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>UIFileSharingEnabled</key>
+	<true/>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
@@ -76,17 +108,5 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Ulash находит ваши устройства в общей сети Wi-Fi и передаёт выбранные файлы напрямую, без интернета и облака.</string>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_xferapp._tcp</string>
-	</array>
-	<key>NSCameraUsageDescription</key>
-	<string>Камера нужна только для сканирования QR-кода, чтобы подключить ваше устройство.</string>
-	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Нужно, чтобы сохранить полученные фото и видео в «Фото», когда вы сами это выберете.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Доступ нужен, чтобы выбрать фото и видео для отправки на ваше устройство.</string>
 </dict>
 </plist>

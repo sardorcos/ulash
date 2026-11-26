@@ -25,8 +25,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: verify-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A push supersedes an earlier push to the same ref, but never cancels a
+  # manually dispatched native build.
+  group: verify-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 env:
   CI: true
@@ -44,6 +46,23 @@ jobs:
         run: python3 scripts/install_flutter_ci.py --destination "${{ runner.temp }}/transfer-sdk"
       - name: Analyze and test
         run: python3 scripts/verify.py
+
+  # Paths, "disk full" codes and file locking differ on Windows.
+  verify_windows:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')))
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install verified Flutter SDK
+        run: python scripts/install_flutter_ci.py --destination "${{ runner.temp }}/transfer-sdk"
+      - name: Analyze and test
+        run: python scripts/verify.py
 
   android_debug:
     if: github.event_name == 'workflow_dispatch' && inputs.build_android

@@ -40,3 +40,15 @@ dev_dependencies:
 flutter:
   generate: true
   uses-material-design: true
+
+# Windows MSIX package (dart run msix:create). The version comes from
+# `version:` above. Publisher identity values must be replaced with the ones
+# Microsoft Partner Center assigns before a Store submission.
+msix_config:
+  display_name: Ulash
+  publisher_display_name: Ulash
+  identity_name: uz.ulash.app
+  logo_path: assets/branding/ulash_icon_1024.png
+  capabilities: internetClientServer,privateNetworkClientServer
+  languages: ru-ru, uz-latn-uz, en-us
+  output_name: Ulash

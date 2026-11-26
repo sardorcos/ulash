@@ -50,6 +50,12 @@ workflows:
         - shared_signing # CERTIFICATE_PRIVATE_KEY (secure, shared key)
       vars:
         BUNDLE_ID: uz.ulash.app
+        SHARE_BUNDLE_ID: uz.ulash.app.share
+        APP_GROUP: group.uz.ulash.app
+        # "Share → Ulash" extension. Set to "false" to build without it. When
+        # the App Group is not yet assigned in Apple Developer, the build
+        # detects it from the profiles and ships without the extension.
+        SHARE_EXTENSION: "true"
     cache:
       cache_paths:
         - $HOME/.pub-cache
@@ -84,13 +90,71 @@ workflows:
       # No development certificate is used.
       - name: Set up keychain
         script: keychain initialize
+      - name: Share extension identifiers
+        script: |
+          set -uo pipefail
+          if [ "$SHARE_EXTENSION" = "false" ]; then
+            echo "Share extension disabled for this build."
+            exit 0
+          fi
+          resource_id() {
+            app-store-connect bundle-ids list --bundle-id-identifier "$1" --strict-match-identifier \
+              --platform IOS --json | python3 -c 'import json,sys; a=json.load(sys.stdin); print(a[0]["id"] if a else "")'
+          }
+          SHARE_ID=$(resource_id "$SHARE_BUNDLE_ID")
+          if [ -z "$SHARE_ID" ]; then
+            echo "Registering $SHARE_BUNDLE_ID"
+            app-store-connect bundle-ids create "$SHARE_BUNDLE_ID" --name "Ulash Share" --platform IOS || true
+            SHARE_ID=$(resource_id "$SHARE_BUNDLE_ID")
+          fi
+          APP_RES_ID=$(resource_id "$BUNDLE_ID")
+          # Enabling is harmless when already on. Assigning the group itself is
+          # only possible in Apple Developer (no API); see docs/RELEASE.md.
+          for id in "$APP_RES_ID" "$SHARE_ID"; do
+            [ -n "$id" ] && app-store-connect bundle-ids enable-capabilities "$id" --capability "App Groups" \
+              || echo "App Groups capability unchanged for $id"
+          done
       - name: Fetch App Store signing files
         script: |
+          set -euo pipefail
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
             --type IOS_APP_STORE \
             --strict-match-identifier \
             --certificate-key=@env:CERTIFICATE_PRIVATE_KEY \
             --create
+          if [ "$SHARE_EXTENSION" != "false" ]; then
+            app-store-connect fetch-signing-files "$SHARE_BUNDLE_ID" \
+              --type IOS_APP_STORE \
+              --strict-match-identifier \
+              --certificate-key=@env:CERTIFICATE_PRIVATE_KEY \
+              --create || echo "Could not prepare signing for $SHARE_BUNDLE_ID"
+          fi
+      - name: Check the App Group in the profiles
+        script: |
+          set -uo pipefail
+          # Both profiles must carry the App Group, otherwise signing with the
+          # group entitlement fails. Fall back to a build without the extension.
+          has_group() {
+            for profile in "$HOME/Library/MobileDevice/Provisioning Profiles"/*.mobileprovision; do
+              [ -f "$profile" ] || continue
+              security cms -D -i "$profile" 2>/dev/null | python3 -c '
+          import plistlib, sys
+          bundle, group = sys.argv[1], sys.argv[2]
+          data = plistlib.loads(sys.stdin.buffer.read())
+          ent = data.get("Entitlements", {})
+          app = ent.get("application-identifier", "")
+          ok = app.split(".", 1)[-1] == bundle and group in ent.get("com.apple.security.application-groups", [])
+          sys.exit(0 if ok else 1)' "$1" "$APP_GROUP" && return 0
+            done
+            return 1
+          }
+          if [ "$SHARE_EXTENSION" != "false" ] && has_group "$BUNDLE_ID" && has_group "$SHARE_BUNDLE_ID"; then
+            echo "App Group $APP_GROUP is assigned: building with the Share extension."
+          else
+            echo "Building without the Share extension (App Group not assigned or disabled)."
+            python3 "$CM_BUILD_DIR/scripts/ios_share_extension.py" --disable "$CM_BUILD_DIR/apps/file_transfer/ios"
+            echo "SHARE_EXTENSION=false" >> "$CM_ENV"
+          fi
       - name: Install certificates and profiles
         script: |
           keychain add-certificates
@@ -116,12 +180,15 @@ workflows:
           flutter --no-version-check build ipa --release --no-pub \
             --build-name="$BUILD_NAME" \
             --build-number="$BUILD_NUMBER" \
+            --dart-define=GIT_SHA="${CM_COMMIT:-unknown}" \
+            --split-debug-info=build/symbols \
             --export-options-plist=/Users/builder/export_options.plist
           ls -la build/ios/ipa
     artifacts:
       - apps/file_transfer/build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
       - apps/file_transfer/build/ios/archive/Runner.xcarchive/dSYMs/*.dSYM
+      - apps/file_transfer/build/symbols/*.symbols
     publishing:
       app_store_connect:
         auth: integration
@@ -156,6 +223,16 @@ workflows:
     scripts:
       - *core_tests
       - *app_tests
+      - name: Check release signing
+        script: |
+          # Gradle also refuses an unsigned release; fail early with a clear hint.
+          for v in CM_KEYSTORE_PATH CM_KEYSTORE_PASSWORD CM_KEY_ALIAS CM_KEY_PASSWORD; do
+            if [ -z "${!v:-}" ]; then
+              echo "Android upload keystore is not attached ($v missing)." >&2
+              echo "Codemagic → Team → Code signing identities → Android keystores → 'ulash_upload_keystore'." >&2
+              exit 1
+            fi
+          done
       - name: Build App Bundle
         script: |
           set -euo pipefail
@@ -171,10 +248,13 @@ workflows:
           if [ "$STAMP" -gt "$BUILD_NUMBER" ]; then BUILD_NUMBER=$STAMP; fi
           flutter --no-version-check build appbundle --release \
             --build-name="$BUILD_NAME" \
-            --build-number="$BUILD_NUMBER"
+            --build-number="$BUILD_NUMBER" \
+            --dart-define=GIT_SHA="${CM_COMMIT:-unknown}" \
+            --split-debug-info=build/symbols
     artifacts:
       - apps/file_transfer/build/app/outputs/bundle/release/*.aab
       - apps/file_transfer/build/app/outputs/mapping/release/mapping.txt
+      - apps/file_transfer/build/symbols/*.symbols
     publishing:
       google_play:
         credentials: $GCLOUD_SERVICE_ACCOUNT_CREDENTIALS
@@ -182,6 +262,50 @@ workflows:
         # The first upload of a new app must be done manually in Play Console;
         # keep drafts until the store listing and Data safety form are complete.
         submit_as_draft: true
+
+  windows-msix:
+    name: Windows → MSIX package
+    instance_type: windows_x2
+    max_build_duration: 60
+    environment:
+      <<: *flutter_version
+      # Optional signing for sideloading/Store: a secure group "windows_signing"
+      # with WINDOWS_CERT_BASE64 (PFX, base64) and WINDOWS_CERT_PASSWORD.
+      # Without it the package is built with msix's test certificate (only for
+      # local testing; Microsoft Store re-signs packages it accepts).
+    scripts:
+      # PowerShell does not stop on a failing native command by itself.
+      - name: Analyze and test
+        script: |
+          $ErrorActionPreference = "Stop"
+          cd packages/transfer_core
+          dart pub get --enforce-lockfile; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          dart test; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cd ../../apps/file_transfer
+          flutter --no-version-check pub get --enforce-lockfile; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          flutter --no-version-check test --no-pub; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build Windows
+        script: |
+          cd apps/file_transfer
+          flutter --no-version-check build windows --release --no-pub --dart-define=GIT_SHA=$env:CM_COMMIT
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Package MSIX
+        script: |
+          $ErrorActionPreference = "Stop"
+          cd apps/file_transfer
+          if ($env:WINDOWS_CERT_BASE64) {
+            $pfx = Join-Path $env:CM_BUILD_DIR "ulash_signing.pfx"
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_BASE64))
+            dart run msix:create --build-windows false --certificate-path $pfx --certificate-password $env:WINDOWS_CERT_PASSWORD
+            $code = $LASTEXITCODE
+            Remove-Item $pfx
+            if ($code) { exit $code }
+          } else {
+            dart run msix:create --build-windows false
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+    artifacts:
+      - apps/file_transfer/build/windows/x64/runner/Release/*.msix
 
   asc-diagnostics:
     name: App Store Connect diagnostics (read-only)

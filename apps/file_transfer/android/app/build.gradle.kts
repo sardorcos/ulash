@@ -9,8 +9,8 @@ plugins {
 
 // Release signing comes from CI environment variables (Codemagic sets CM_* when a
 // keystore reference is attached) or a local, never-committed key.properties.
-// When neither exists the release build stays UNSIGNED: the debug key is never
-// used for a release artifact.
+// When neither exists the release build FAILS (see below): the debug key is
+// never used for a release artifact.
 val keyProperties = Properties().apply {
     val file = rootProject.file("key.properties")
     if (file.exists()) FileInputStream(file).use { load(it) }
@@ -25,6 +25,21 @@ val releaseKeyPassword = signingValue("CM_KEY_PASSWORD", "keyPassword")
 val hasReleaseSigning = listOf(
     releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword,
 ).all { it != null }
+// A store build must never be produced unsigned by accident. Pass
+// -PallowUnsignedRelease=true only for local experiments.
+val allowUnsignedRelease = (findProperty("allowUnsignedRelease") as String?)?.toBoolean() == true
+gradle.taskGraph.whenReady {
+    val releasePackaging = allTasks.any { task ->
+        (task.name.startsWith("assemble") || task.name.startsWith("bundle") ||
+            task.name.startsWith("package")) && task.name.endsWith("Release")
+    }
+    if (releasePackaging && !hasReleaseSigning && !allowUnsignedRelease) {
+        throw GradleException(
+            "Release signing is not configured (CM_KEYSTORE_* or android/key.properties). " +
+                "Refusing to build an unsigned release; use -PallowUnsignedRelease=true to override."
+        )
+    }
+}
 
 android {
     // The Kotlin package and method-channel names keep the historical
@@ -78,6 +93,10 @@ android {
             // it on is a separate, tested change.
             isMinifyEnabled = false
             isShrinkResources = false
+            // Native symbol tables in the bundle for Play Console crash reports.
+            ndk {
+                debugSymbolLevel = "SYMBOL_TABLE"
+            }
         }
     }
 }

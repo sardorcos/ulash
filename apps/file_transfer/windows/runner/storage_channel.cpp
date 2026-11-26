@@ -5,6 +5,7 @@
 #include <shobjidl.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -55,39 +56,65 @@ bool Within(const std::wstring& file, const std::wstring& directory) {
   return file.size() == directory.size() || file[directory.size()] == L'\\';
 }
 
-std::wstring ManagedRoot() {
+std::wstring KnownFolderPath(REFKNOWNFOLDERID id) {
   PWSTR known = nullptr;
-  if (FAILED(::SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, nullptr, &known))) return {};
+  if (FAILED(::SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, nullptr, &known))) return {};
   std::wstring result(known);
   ::CoTaskMemFree(known);
-  // These are the CompanyName/ProductName values in Runner.rc, which
-  // path_provider_windows uses for getApplicationSupportDirectory.
-  result += L"\\Ulash\\Ulash\\file-transfer-v1";
-  return AbsolutePath(result);
+  return result;
+}
+
+struct ManagedRoot {
+  std::wstring managed;   // Subtree that must not contain reparse points.
+  std::wstring received;  // Where committed received files may live (app-owned).
+};
+
+// Data roots in order of preference: %LOCALAPPDATA%\Ulash (1.2+, not roamed
+// to domain servers), the legacy Roaming folder of 1.0/1.1 builds (the
+// CompanyName/ProductName from Runner.rc used by path_provider_windows), and
+// the user-visible Downloads\Ulash folder for received files.
+std::vector<ManagedRoot> ManagedRoots() {
+  std::vector<ManagedRoot> roots;
+  const std::wstring local = KnownFolderPath(FOLDERID_LocalAppData);
+  if (!local.empty()) {
+    const std::wstring managed = AbsolutePath(local + L"\\Ulash\\file-transfer-v1");
+    if (!managed.empty()) roots.push_back({managed, managed});
+  }
+  const std::wstring roaming = KnownFolderPath(FOLDERID_RoamingAppData);
+  if (!roaming.empty()) {
+    const std::wstring managed = AbsolutePath(roaming + L"\\Ulash\\Ulash\\file-transfer-v1");
+    if (!managed.empty()) roots.push_back({managed, managed});
+  }
+  const std::wstring downloads = KnownFolderPath(FOLDERID_Downloads);
+  if (!downloads.empty()) {
+    const std::wstring visible = AbsolutePath(downloads + L"\\Ulash");
+    if (!visible.empty()) roots.push_back({visible, visible});
+  }
+  return roots;
 }
 
 bool ReceivedSource(const std::wstring& source) {
-  const std::wstring managed = ManagedRoot();
-  if (managed.empty()) return false;
-  const std::wstring root = managed + L"\\inbox\\received";
-  if (!Within(source, root) || source.size() == root.size()) return false;
   // Reject NTFS ADS and reparse points in the managed subtree. The input is
   // an app-owned committed path, never a destination from a remote manifest.
   if (source.find(L':', 2) != std::wstring::npos) return false;
-  std::wstring current = source;
-  bool first = true;
-  while (Within(current, managed)) {
-    const DWORD attributes = ::GetFileAttributesW(current.c_str());
-    if (attributes == INVALID_FILE_ATTRIBUTES ||
-        (attributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
-        (first && (attributes & FILE_ATTRIBUTE_DIRECTORY))) return false;
-    first = false;
-    if (current == managed) break;
-    const size_t slash = current.find_last_of(L'\\');
-    if (slash == std::wstring::npos) return false;
-    current.resize(slash);
+  for (const auto& root : ManagedRoots()) {
+    if (!Within(source, root.received) || source.size() == root.received.size()) continue;
+    std::wstring current = source;
+    bool first = true;
+    while (Within(current, root.managed)) {
+      const DWORD attributes = ::GetFileAttributesW(current.c_str());
+      if (attributes == INVALID_FILE_ATTRIBUTES ||
+          (attributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+          (first && (attributes & FILE_ATTRIBUTE_DIRECTORY))) return false;
+      first = false;
+      if (current == root.managed) break;
+      const size_t slash = current.find_last_of(L'\\');
+      if (slash == std::wstring::npos) return false;
+      current.resize(slash);
+    }
+    return true;
   }
-  return true;
+  return false;
 }
 
 class FileHandle {
@@ -151,9 +178,11 @@ void StorageChannel::HandleCall(const flutter::MethodCall<EncodableValue>& call,
   }
   if (call.method_name() == "freeBytes") {
     const auto path = AbsolutePath(Utf16(StringArgument(*arguments, "path")));
-    const auto root = ManagedRoot();
+    const auto roots = ManagedRoots();
+    const bool managed = std::any_of(roots.begin(), roots.end(),
+        [&path](const ManagedRoot& root) { return Within(path, root.managed); });
     ULARGE_INTEGER available{};
-    if (root.empty() || !Within(path, root) ||
+    if (!managed ||
         !::GetDiskFreeSpaceExW(path.c_str(), &available, nullptr, nullptr) ||
         available.QuadPart > static_cast<ULONGLONG>(std::numeric_limits<int64_t>::max())) {
       result->Success(EncodableValue());

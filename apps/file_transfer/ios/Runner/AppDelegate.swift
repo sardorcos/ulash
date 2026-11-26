@@ -1,11 +1,15 @@
 import Flutter
 import Network
+import Photos
 import UIKit
+import UniformTypeIdentifiers
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var storageBridge: StorageBridge?
   private var networkBridge: NetworkBridge?
+  private var intakeBridge: IntakeBridge?
+  private var deviceBridge: DeviceBridge?
 
   override func application(
     _ application: UIApplication,
@@ -19,6 +23,8 @@ import UIKit
     let messenger = engineBridge.applicationRegistrar.messenger()
     storageBridge = StorageBridge(messenger: messenger)
     networkBridge = NetworkBridge(messenger: messenger)
+    intakeBridge = IntakeBridge(messenger: messenger)
+    deviceBridge = DeviceBridge(messenger: messenger)
   }
 }
 
@@ -87,7 +93,7 @@ private final class StorageBridge: NSObject, UIDocumentPickerDelegate,
 
   /// Marks a managed directory (staging, prepared copies, received files) as
   /// not to be included in iCloud/iTunes backups. Only directories inside
-  /// Application Support are accepted. Returns false when nothing was changed.
+  /// Application Support or Documents/Ulash are accepted. Returns false when nothing was changed.
   private func excludeFromBackup(_ call: FlutterMethodCall, result: FlutterResult) {
     guard let arguments = call.arguments as? [String: Any],
       let path = arguments["path"] as? String, !path.isEmpty else {
@@ -97,8 +103,11 @@ private final class StorageBridge: NSObject, UIDocumentPickerDelegate,
     do {
       var directory = URL(fileURLWithPath: path, isDirectory: true)
         .resolvingSymlinksInPath().standardizedFileURL
-      let root = try appSupport()
-      guard contained(directory, in: root), directory.path != root.path else {
+      let documents = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
+        appropriateFor: nil, create: false).resolvingSymlinksInPath().standardizedFileURL
+      let roots = [try appSupport(), documents.appendingPathComponent("Ulash", isDirectory: true)]
+      guard roots.contains(where: { contained(directory, in: $0) && directory.path != $0.path })
+          || directory.path == roots[1].path else {
         result(false)
         return
       }
@@ -161,9 +170,17 @@ private final class StorageBridge: NSObject, UIDocumentPickerDelegate,
   private func sourceURL(_ path: String) throws -> URL {
     let original = URL(fileURLWithPath: path).standardizedFileURL
     let resolved = original.resolvingSymlinksInPath().standardizedFileURL
-    let root = try appSupport().appendingPathComponent("file-transfer-v1/inbox/received", isDirectory: true)
+    // Received files live in Documents/Ulash (visible in Files) since 1.2;
+    // earlier builds kept them under Application Support/file-transfer-v1.
+    let legacy = try appSupport().appendingPathComponent("file-transfer-v1", isDirectory: true)
+    let documents = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
+      appropriateFor: nil, create: false).resolvingSymlinksInPath().standardizedFileURL
+      .appendingPathComponent("Ulash", isDirectory: true)
+    guard let root = [documents, legacy].first(where: { contained(resolved, in: $0) }) else {
+      throw NSError(domain: "FileTransferExport", code: 1)
+    }
     let values = try original.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-    guard contained(resolved, in: root), resolved.path != root.path,
+    guard resolved.path != root.path,
       values.isRegularFile == true, values.isSymbolicLink != true,
       FileManager.default.isReadableFile(atPath: resolved.path) else {
       throw NSError(domain: "FileTransferExport", code: 1)
@@ -352,5 +369,275 @@ private final class NetworkBridge: NSObject {
       return
     }
     UIApplication.shared.open(url, options: [:]) { opened in result(opened) }
+  }
+}
+
+
+// MARK: - Intake ("Open in Ulash" and the Share Extension)
+
+/// Collects files handed to Ulash from other apps. "Open in" files are copied
+/// into tmp/Intake; the Share Extension writes complete batches into the App
+/// Group container. `takePending` moves both into tmp/IntakeTaken and returns
+/// them once; Dart stages (adopts) them and deletes what it no longer needs.
+final class IntakeStore {
+  static let shared = IntakeStore()
+  static let appGroup = "group.uz.ulash.app"
+  /// Called on the main thread whenever new items may be waiting.
+  var onAvailable: (() -> Void)?
+  private let io = DispatchQueue(label: "uz.ulash.intake")
+
+  private var tmp: URL { FileManager.default.temporaryDirectory }
+  private var intakeRoot: URL { tmp.appendingPathComponent("Intake", isDirectory: true) }
+  private var takenRoot: URL { tmp.appendingPathComponent("IntakeTaken", isDirectory: true) }
+
+  var groupIntakeRoot: URL? {
+    FileManager.default
+      .containerURL(forSecurityApplicationGroupIdentifier: IntakeStore.appGroup)?
+      .appendingPathComponent("Intake", isDirectory: true)
+  }
+
+  /// Copies opened files (security-scoped when needed) into the intake folder.
+  func accept(_ urls: [URL]) {
+    io.async {
+      let batch = self.intakeRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
+      try? FileManager.default.createDirectory(at: batch, withIntermediateDirectories: true)
+      var copied = 0
+      for url in urls {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let name = IntakeStore.safeName(url.lastPathComponent)
+        let target = IntakeStore.unique(batch.appendingPathComponent(name))
+        do {
+          var isDirectory: ObjCBool = false
+          guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+            !isDirectory.boolValue else { continue }
+          try FileManager.default.copyItem(at: url, to: target)
+          copied += 1
+        } catch {
+          continue
+        }
+        // Files placed in Documents/Inbox by older "Copy to" flows are ours to remove.
+        if url.path.contains("/Documents/Inbox/") { try? FileManager.default.removeItem(at: url) }
+      }
+      if copied == 0 { try? FileManager.default.removeItem(at: batch) }
+      if copied > 0 { DispatchQueue.main.async { self.onAvailable?() } }
+    }
+  }
+
+  func pendingCount() -> Int {
+    io.sync { countFiles(in: intakeRoot) + completeGroupBatches().reduce(0) { $0 + countFiles(in: $1) } }
+  }
+
+  /// Returns every pending file exactly once as [{path, name}].
+  func takePending() -> [[String: String]] {
+    io.sync {
+      let fm = FileManager.default
+      try? fm.createDirectory(at: takenRoot, withIntermediateDirectories: true)
+      var sources: [URL] = []
+      if let batches = try? fm.contentsOfDirectory(at: intakeRoot, includingPropertiesForKeys: nil) {
+        sources.append(contentsOf: batches)
+      }
+      sources.append(contentsOf: completeGroupBatches())
+      var result: [[String: String]] = []
+      for batch in sources {
+        let destination = takenRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        do {
+          try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+          let files = try fm.contentsOfDirectory(at: batch, includingPropertiesForKeys: [.isRegularFileKey])
+          for file in files where !file.lastPathComponent.hasPrefix(".") {
+            guard (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+              continue
+            }
+            if file.lastPathComponent == "manifest.json" { continue }
+            let target = IntakeStore.unique(destination.appendingPathComponent(file.lastPathComponent))
+            // Moving out of the App Group container works within the same volume;
+            // fall back to a copy if it does not.
+            do { try fm.moveItem(at: file, to: target) } catch { try fm.copyItem(at: file, to: target) }
+            result.append(["path": target.path, "name": target.lastPathComponent])
+          }
+          try? fm.removeItem(at: batch)
+        } catch {
+          continue
+        }
+      }
+      return result
+    }
+  }
+
+  func hasGroupItems() -> Bool { io.sync { !completeGroupBatches().isEmpty } }
+
+  /// Only batches the extension finished writing (marker file `.complete`).
+  private func completeGroupBatches() -> [URL] {
+    guard let root = groupIntakeRoot,
+      let batches = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+    else { return [] }
+    return batches.filter {
+      FileManager.default.fileExists(atPath: $0.appendingPathComponent(".complete").path)
+    }
+  }
+
+  private func countFiles(in root: URL) -> Int {
+    guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey])
+    else { return 0 }
+    var count = 0
+    for case let url as URL in enumerator
+    where (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+      && !url.lastPathComponent.hasPrefix(".") && url.lastPathComponent != "manifest.json" {
+      count += 1
+    }
+    return count
+  }
+
+  static func safeName(_ raw: String) -> String {
+    let cleaned = raw.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return cleaned.isEmpty || cleaned.hasPrefix(".") ? "file" + cleaned : cleaned
+  }
+
+  static func unique(_ url: URL) -> URL {
+    var candidate = url
+    var index = 2
+    let base = url.deletingPathExtension().lastPathComponent
+    let ext = url.pathExtension
+    while FileManager.default.fileExists(atPath: candidate.path) {
+      let name = ext.isEmpty ? "\(base) \(index)" : "\(base) \(index).\(ext)"
+      candidate = url.deletingLastPathComponent().appendingPathComponent(name)
+      index += 1
+    }
+    return candidate
+  }
+}
+
+private final class IntakeBridge: NSObject {
+  private let channel: FlutterMethodChannel
+  private var observer: NSObjectProtocol?
+
+  init(messenger: FlutterBinaryMessenger) {
+    channel = FlutterMethodChannel(name: "file_transfer/intake", binaryMessenger: messenger)
+    super.init()
+    channel.setMethodCallHandler { call, result in
+      switch call.method {
+      case "takePending": result(IntakeStore.shared.takePending())
+      case "pendingCount": result(IntakeStore.shared.pendingCount())
+      default: result(FlutterMethodNotImplemented)
+      }
+    }
+    IntakeStore.shared.onAvailable = { [weak self] in
+      self?.channel.invokeMethod("intakeAvailable", arguments: nil)
+    }
+    // The Share Extension cannot wake the app; check when it becomes active.
+    observer = NotificationCenter.default.addObserver(
+      forName: UIScene.didActivateNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      if IntakeStore.shared.hasGroupItems() {
+        self?.channel.invokeMethod("intakeAvailable", arguments: nil)
+      }
+    }
+  }
+
+  deinit {
+    if let observer = observer { NotificationCenter.default.removeObserver(observer) }
+  }
+}
+
+// MARK: - Device utilities (Photos, secure screen, sensitive clipboard)
+
+private final class DeviceBridge: NSObject {
+  private let channel: FlutterMethodChannel
+  private var secureScreen = false
+  private var shield: UIView?
+  private var observers: [NSObjectProtocol] = []
+
+  init(messenger: FlutterBinaryMessenger) {
+    channel = FlutterMethodChannel(name: "file_transfer/device", binaryMessenger: messenger)
+    super.init()
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self = self else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      let arguments = call.arguments as? [String: Any] ?? [:]
+      switch call.method {
+      case "saveToPhotos": self.saveToPhotos(arguments, result: result)
+      case "setSecureScreen":
+        self.secureScreen = arguments["enabled"] as? Bool ?? false
+        if !self.secureScreen { self.removeShield() }
+        result(true)
+      case "copySensitive": self.copySensitive(arguments, result: result)
+      default: result(FlutterMethodNotImplemented)
+      }
+    }
+    let center = NotificationCenter.default
+    observers.append(center.addObserver(
+      forName: UIScene.willDeactivateNotification, object: nil, queue: .main
+    ) { [weak self] note in
+      guard let self = self, self.secureScreen, let scene = note.object as? UIWindowScene else { return }
+      self.addShield(to: scene)
+    })
+    observers.append(center.addObserver(
+      forName: UIScene.didActivateNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      self?.removeShield()
+    })
+  }
+
+  deinit {
+    observers.forEach { NotificationCenter.default.removeObserver($0) }
+  }
+
+  /// Hides content (e.g. a pairing QR code) from the app switcher snapshot.
+  private func addShield(to scene: UIWindowScene) {
+    guard shield == nil, let window = scene.windows.first(where: { $0.isKeyWindow }) ?? scene.windows.first
+    else { return }
+    let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
+    blur.frame = window.bounds
+    blur.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    window.addSubview(blur)
+    shield = blur
+  }
+
+  private func removeShield() {
+    shield?.removeFromSuperview()
+    shield = nil
+  }
+
+  private func copySensitive(_ arguments: [String: Any], result: FlutterResult) {
+    guard let text = arguments["text"] as? String else {
+      result(false)
+      return
+    }
+    let seconds = max(10, min(arguments["seconds"] as? Int ?? 120, 600))
+    // localOnly keeps it off Universal Clipboard; it expires automatically.
+    UIPasteboard.general.setItems(
+      [[UTType.plainText.identifier: text]],
+      options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(TimeInterval(seconds))])
+    result(true)
+  }
+
+  private func saveToPhotos(_ arguments: [String: Any], result: @escaping FlutterResult) {
+    guard let path = arguments["path"] as? String, !path.isEmpty else {
+      result("failed")
+      return
+    }
+    let url = URL(fileURLWithPath: path).standardizedFileURL
+    let home = URL(fileURLWithPath: NSHomeDirectory()).resolvingSymlinksInPath().standardizedFileURL.path
+    let resolved = url.resolvingSymlinksInPath().path
+    guard resolved.hasPrefix(home + "/"), FileManager.default.isReadableFile(atPath: resolved) else {
+      result("failed")
+      return
+    }
+    let isVideo = (arguments["kind"] as? String) == "video"
+    PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+      guard status == .authorized || status == .limited else {
+        DispatchQueue.main.async { result("denied") }
+        return
+      }
+      PHPhotoLibrary.shared().performChanges({
+        let request = PHAssetCreationRequest.forAsset()
+        request.addResource(with: isVideo ? .video : .photo, fileURL: URL(fileURLWithPath: resolved), options: nil)
+      }) { success, _ in
+        DispatchQueue.main.async { result(success ? "saved" : "failed") }
+      }
+    }
   }
 }
