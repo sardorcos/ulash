@@ -5,8 +5,9 @@ import 'package:flutter/material.dart';
 import '../l10n/app_localizations.dart';
 import 'app_controller.dart';
 
-/// First launch: explains what the app does and why the system will ask for
-/// local network access, before that prompt appears.
+/// First launch in two steps: what the app does, then why the system is about
+/// to ask for local network access ("Allow access" triggers that prompt).
+/// The app then opens on "Connect your first device".
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key, required this.controller});
   final AppController controller;
@@ -19,14 +20,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final _pages = PageController();
   int _page = 0;
   bool _finishing = false;
+  static const _count = 2;
 
   AppLocalizations get l => AppLocalizations.of(context);
-
-  List<(IconData, String, String)> get _steps => [
-    (Icons.swap_horiz_rounded, l.onbTitle1, l.onbBody1),
-    (Icons.wifi_rounded, l.onbTitle2, l.onbBody2),
-    (Icons.verified_user_outlined, l.onbTitle3, l.onbBody3),
-  ];
 
   @override
   void dispose() {
@@ -35,7 +31,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Future<void> _next() async {
-    if (_page < _steps.length - 1) {
+    if (_page < _count - 1) {
       await _pages.nextPage(
         duration: const Duration(milliseconds: 280),
         curve: Curves.easeOutCubic,
@@ -47,92 +43,133 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     if (mounted) setState(() => _finishing = false);
   }
 
+  Widget _step({
+    required Widget art,
+    required String title,
+    required String body,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    return LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minHeight: constraints.maxHeight),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              art,
+              const SizedBox(height: 36),
+              Semantics(
+                header: true,
+                child: Text(
+                  title,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                body,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                  height: 1.45,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final last = _page == _steps.length - 1;
+    final last = _page == _count - 1;
+    Widget bubble(IconData icon, {double size = 76}) => Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: scheme.primaryContainer,
+        borderRadius: BorderRadius.circular(size * .3),
+      ),
+      child: Icon(icon, size: size * .5, color: scheme.onPrimaryContainer),
+    );
     return Scaffold(
       body: SafeArea(
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 520),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
               child: Column(
                 children: [
                   Align(
                     alignment: Alignment.centerRight,
-                    child: TextButton(
-                      key: const Key('onboarding-skip'),
-                      onPressed: _finishing || last
-                          ? null
-                          : () => _pages.animateToPage(
-                              _steps.length - 1,
-                              duration: const Duration(milliseconds: 280),
-                              curve: Curves.easeOutCubic,
-                            ),
-                      child: Text(last ? '' : l.skip),
+                    child: Visibility(
+                      visible: !last,
+                      maintainSize: true,
+                      maintainAnimation: true,
+                      maintainState: true,
+                      child: TextButton(
+                        key: const Key('onboarding-skip'),
+                        onPressed: _finishing || last
+                            ? null
+                            : () => _pages.animateToPage(
+                                _count - 1,
+                                duration: const Duration(milliseconds: 280),
+                                curve: Curves.easeOutCubic,
+                              ),
+                        child: Text(l.skip),
+                      ),
                     ),
                   ),
                   Expanded(
-                    child: PageView.builder(
+                    child: PageView(
                       controller: _pages,
-                      itemCount: _steps.length,
                       onPageChanged: (value) => setState(() => _page = value),
-                      itemBuilder: (context, index) {
-                        final (icon, title, body) = _steps[index];
-                        return SingleChildScrollView(
-                          child: Padding(
-                            padding: const EdgeInsets.only(top: 40),
-                            child: Column(
+                      children: [
+                        _step(
+                          art: ExcludeSemantics(
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                Container(
-                                  width: 112,
-                                  height: 112,
-                                  decoration: BoxDecoration(
-                                    color: scheme.primaryContainer,
-                                    borderRadius: BorderRadius.circular(32),
+                                bubble(Icons.smartphone_rounded),
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
                                   ),
                                   child: Icon(
-                                    icon,
-                                    size: 56,
-                                    color: scheme.onPrimaryContainer,
+                                    Icons.sync_alt_rounded,
+                                    size: 32,
+                                    color: scheme.primary,
                                   ),
                                 ),
-                                const SizedBox(height: 36),
-                                Semantics(
-                                  header: true,
-                                  child: Text(
-                                    title,
-                                    textAlign: TextAlign.center,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .headlineSmall,
-                                  ),
-                                ),
-                                const SizedBox(height: 16),
-                                Text(
-                                  body,
-                                  textAlign: TextAlign.center,
-                                  style: Theme.of(context).textTheme.bodyLarge
-                                      ?.copyWith(
-                                        color: scheme.onSurfaceVariant,
-                                        height: 1.45,
-                                      ),
-                                ),
+                                bubble(Icons.laptop_rounded),
                               ],
                             ),
                           ),
-                        );
-                      },
+                          title: l.onbTitle1,
+                          body: l.onbBody1,
+                        ),
+                        _step(
+                          art: ExcludeSemantics(
+                            child: bubble(Icons.wifi_rounded, size: 112),
+                          ),
+                          title: l.onbAllowTitle,
+                          body: l.onbAllowBody,
+                        ),
+                      ],
                     ),
                   ),
                   Semantics(
-                    label: l.onbStep(_page + 1, _steps.length),
+                    label: l.onbStep(_page + 1, _count),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        for (var i = 0; i < _steps.length; i++)
+                        for (var i = 0; i < _count; i++)
                           AnimatedContainer(
                             duration: const Duration(milliseconds: 200),
                             margin: const EdgeInsets.symmetric(horizontal: 4),
@@ -148,13 +185,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 20),
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton(
                       key: const Key('onboarding-next'),
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size.fromHeight(52),
+                      ),
                       onPressed: _finishing ? null : _next,
-                      child: Text(last ? l.start : l.next),
+                      child: Text(last ? l.allowAccess : l.next),
                     ),
                   ),
                   const SizedBox(height: 8),

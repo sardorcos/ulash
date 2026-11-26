@@ -106,8 +106,11 @@ Future<void> _pair(TransferAppController a, TransferAppController b) async {
     () => b.pendingPairings.isNotEmpty,
     reason: 'pairing request arrives',
   );
-  // The code the receiver shows must be the requesting device's own code.
-  expect(b.pendingPairings.single.code, a.deviceCode);
+  // Both screens show the same six-digit code (SAS) bound to the invitation
+  // and both device keys.
+  expect(a.outgoingPairing, isNotNull);
+  expect(b.pendingPairings.single.code, a.outgoingPairing!.code);
+  expect(a.outgoingPairing!.code, matches(RegExp(r'^[0-9]{6}$')));
   expect(a.deviceCode, matches(RegExp(r'^[0-9A-F]{4}-[0-9A-F]{4}$')));
   await b.respondToPairing(b.pendingPairings.single.id, true);
   await pairing;
@@ -131,26 +134,29 @@ Future<void> _select(_Node node, int bytes) async {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('rankLanAddresses prefers Wi-Fi/Ethernet and drops virtual adapters', () {
-    final ranked = rankLanAddresses([
-      ('vEthernet (WSL)', '172.24.16.1'),
-      ('docker0', '172.17.0.1'),
-      ('utun3', '10.8.0.2'),
-      ('rmnet_data0', '100.70.1.2'),
-      ('en0', '192.168.1.23'),
-      ('eth1', '10.0.0.5'),
-      ('lo', '127.0.0.1'),
-      ('en5', '169.254.10.1'),
-    ]);
-    expect(ranked.first, '192.168.1.23');
-    expect(ranked, contains('10.0.0.5'));
-    expect(ranked, isNot(contains('172.24.16.1')));
-    expect(ranked, isNot(contains('172.17.0.1')));
-    expect(ranked, isNot(contains('10.8.0.2')));
-    expect(ranked, isNot(contains('100.70.1.2')));
-    expect(ranked, isNot(contains('127.0.0.1')));
-    expect(ranked, isNot(contains('169.254.10.1')));
-  });
+  test(
+    'rankLanAddresses prefers Wi-Fi/Ethernet and drops virtual adapters',
+    () {
+      final ranked = rankLanAddresses([
+        ('vEthernet (WSL)', '172.24.16.1'),
+        ('docker0', '172.17.0.1'),
+        ('utun3', '10.8.0.2'),
+        ('rmnet_data0', '100.70.1.2'),
+        ('en0', '192.168.1.23'),
+        ('eth1', '10.0.0.5'),
+        ('lo', '127.0.0.1'),
+        ('en5', '169.254.10.1'),
+      ]);
+      expect(ranked.first, '192.168.1.23');
+      expect(ranked, contains('10.0.0.5'));
+      expect(ranked, isNot(contains('172.24.16.1')));
+      expect(ranked, isNot(contains('172.17.0.1')));
+      expect(ranked, isNot(contains('10.8.0.2')));
+      expect(ranked, isNot(contains('100.70.1.2')));
+      expect(ranked, isNot(contains('127.0.0.1')));
+      expect(ranked, isNot(contains('169.254.10.1')));
+    },
+  );
 
   test('diagnostics never record paths, addresses or tokens', () async {
     final dir = await Directory.systemTemp.createTemp('ulash-diag-');
@@ -244,9 +250,8 @@ void main() {
       final dir = await Directory.systemTemp.createTemp('ulash-journal-');
       final inbox = Directory(p.join(dir.path, 'file-transfer-v1', 'inbox'));
       await inbox.create(recursive: true);
-      await File(
-        p.join(inbox.path, 'inbox.sqlite'),
-      ).writeAsString('this is not a database ' * 200);
+      await File(p.join(inbox.path, 'inbox.sqlite'))
+          .writeAsString('this is not a database ' * 200);
       final node = await _Node.create('Journal', root: dir);
       try {
         expect(node.controller.startupIssue, StartupIssue.journal);
@@ -302,7 +307,7 @@ void main() {
     () => _realNetwork(() async {
       final sender = await _Node.create(
         'Sender',
-        backgroundGrace: const Duration(milliseconds: 600),
+        backgroundGrace: const Duration(milliseconds: 1500),
       );
       final receiver = await _Node.create('Receiver');
       final a = sender.controller;
@@ -337,9 +342,12 @@ void main() {
               b.transfers.single.phase == TransferPhase.completed,
           reason: 'lifecycle-paused send continues automatically',
         );
-        // The screen was kept on while bytes were moving, then released.
-        expect(sender.keepAwake, isNotEmpty);
-        expect(sender.keepAwake.last, isFalse);
+        // The screen was kept on while bytes were moving, then released
+        // (notifications are coalesced, so the release may lag ~250 ms).
+        await _waitUntil(
+          () => sender.keepAwake.isNotEmpty && sender.keepAwake.last == false,
+          reason: 'keep-awake released after the transfer',
+        );
       } finally {
         await sender.close();
         await receiver.close();
@@ -391,7 +399,11 @@ void main() {
         expect(await received(), hasLength(2));
         await b.clearHistory();
         expect(b.errorMessage, isNull);
-        expect(await received(), hasLength(2), reason: 'bulk clear keeps files');
+        expect(
+          await received(),
+          hasLength(2),
+          reason: 'bulk clear keeps files',
+        );
         final target = b.transfers.first;
         await b.deleteTransfer(target.id);
         expect(b.errorMessage, isNull);
@@ -416,8 +428,10 @@ void main() {
         await _pair(sender.controller, receiver.controller);
         await receiver.controller.renameDevice('Office PC');
         expect(receiver.controller.errorMessage, isNull);
-        await _waitUntil(() => receiver.controller.receivingEnabled,
-            reason: 'host restarted after rename');
+        await _waitUntil(
+          () => receiver.controller.receivingEnabled,
+          reason: 'host restarted after rename',
+        );
         await sender.controller.refreshPeers();
         await _waitUntil(
           () => sender.controller.peers.any(

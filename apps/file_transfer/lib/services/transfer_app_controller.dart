@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
@@ -17,6 +18,8 @@ import 'package:uuid/uuid.dart';
 import '../l10n/app_localizations.dart';
 import '../ui/app_controller.dart';
 import 'diagnostics_log.dart';
+import 'native_bridge.dart' show OpenFileResult, SaveToPhotosResult;
+import 'web_share_server.dart';
 import 'lan_discovery.dart';
 import 'app_runtime.dart';
 import 'outgoing_journal.dart';
@@ -108,6 +111,15 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   bool _emitScheduled = false;
   List<core.TransferSnapshot>? _inboxCache;
   List<TransferItem>? _transfersCache;
+  OutgoingPairing? _outgoingPairing;
+  bool _pairingCancelled = false;
+  Timer? _nearbyTimer;
+  bool _nearbyWanted = false;
+  bool _autoSavePhotos = false;
+  int _secureScreens = 0;
+  Future<void> _intakeChain = Future.value();
+  StreamSubscription<void>? _intakeSubscription;
+  Timer? _clipboardTimer;
 
   Future<void> initialize() => _initialization ??= _initialize();
 
@@ -126,7 +138,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     try {
       _busy = _l.busyPreparingStorage;
       _emit();
-      final root = await _runtime.storageDirectory();
+      final root = await _migrateDataRoot(await _runtime.storageDirectory());
       final data = Directory(p.join(root.path, 'file-transfer-v1'));
       await data.create(recursive: true);
       _dataPath = await data.resolveSymbolicLinks();
@@ -134,6 +146,10 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       await DiagnosticsLog.instance.attach(_logDirectory!);
       DiagnosticsLog.instance.info('startup');
       _versionLabel = await _runtime.versionLabel?.call() ?? _versionLabel;
+      const gitSha = String.fromEnvironment('GIT_SHA');
+      if (gitSha.length >= 7) {
+        _versionLabel = '$_versionLabel · ${gitSha.substring(0, 7)}';
+      }
       // Transfer payloads, journals and received files are device-local and
       // can be large: keep them out of iCloud/iTunes backups. Keys are
       // this-device-only too, so a restored device starts consistently clean.
@@ -163,6 +179,9 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
               .where((value) => value.name == savedTheme)
               .firstOrNull ??
           ThemeMode.system;
+      _autoSavePhotos =
+          await _secrets.read(_autoSavePhotosKey) == 'true' &&
+          _runtime.saveToPhotos != null;
       final savedQuota = int.tryParse(
         await _secrets.read('transfer.settings.temporaryQuotaBytes') ?? '',
       );
@@ -176,9 +195,10 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       );
       _inbox = await _openJournal(
         File(p.join(data.path, 'inbox', 'inbox.sqlite')),
-        () => core.DurableInbox.open(
+        () async => core.DurableInbox.open(
           Directory(p.join(data.path, 'inbox')),
           budget: _storageBudget,
+          receivedDirectory: await _receivedDirectory(),
         ),
       );
       _outbox = await _openJournal(
@@ -198,11 +218,18 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       );
       _jobs
         ..clear()
-        ..addAll(_journal!.recover(interruptedDetail: _l.interruptedOnClose));
+        ..addAll(_journal!.recover());
+      _journalWarning = _journal!.skippedRows > 0;
+      if (_journalWarning) {
+        DiagnosticsLog.instance.info(
+          'outgoing journal: ${_journal!.skippedRows} unreadable rows',
+        );
+      }
       await _pruneHistory();
       await _updateStorageOverview();
       _subscriptions.add(
-        _inbox!.changes.listen((_) {
+        _inbox!.changes.listen((snapshot) {
+          _applyInboxChange(snapshot);
           _emit();
           _announceReceived();
           _refreshStorageSoon();
@@ -215,6 +242,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           _runtime.requireOnboarding &&
           await _secrets.read('transfer.settings.onboarded') != 'true';
       if (!_needsOnboarding) await _startNetworking();
+      _startIntake();
     } catch (error, stack) {
       DiagnosticsLog.instance.error('startup', error, stack);
       if (_startupIssue == StartupIssue.none) {
@@ -242,14 +270,86 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       return await open();
     } catch (error) {
       final code = error is core.StorageException ? error.code : null;
-      if (error is SqliteException ||
-          code == 'JOURNAL_CORRUPT' ||
-          code == 'JOURNAL_TOO_NEW') {
+      // Only real damage (SQLITE_CORRUPT 11, SQLITE_NOTADB 26) is a journal
+      // issue; BUSY/FULL/IOERR are transient and must never lead to a
+      // "repair" that moves the journal aside.
+      final damaged =
+          error is SqliteException &&
+          (error.resultCode == 11 || error.resultCode == 26);
+      if (damaged || code == 'JOURNAL_CORRUPT' || code == 'JOURNAL_TOO_NEW') {
         _failedJournal = file;
         _journalTooNew = code == 'JOURNAL_TOO_NEW';
         _startupIssue = StartupIssue.journal;
       }
       rethrow;
+    }
+  }
+
+  static const _autoSavePhotosKey = 'transfer.settings.autoSaveToPhotos';
+
+  /// Moves a 1.0 data root (Windows Roaming profile) to the current root
+  /// once. Rename only: nothing is copied or deleted. If the move fails the
+  /// legacy root keeps being used, so no data is ever stranded.
+  Future<Directory> _migrateDataRoot(Directory root) async {
+    final provider = _runtime.legacyStorageDirectory;
+    if (provider == null) return root;
+    try {
+      final legacyRoot = await provider();
+      if (p.equals(
+        p.normalize(legacyRoot.absolute.path),
+        p.normalize(root.absolute.path),
+      )) {
+        return root;
+      }
+      final legacy = Directory(p.join(legacyRoot.path, 'file-transfer-v1'));
+      final target = Directory(p.join(root.path, 'file-transfer-v1'));
+      if (await FileSystemEntity.type(legacy.path, followLinks: false) !=
+          FileSystemEntityType.directory) {
+        return root;
+      }
+      if (await FileSystemEntity.type(target.path, followLinks: false) !=
+          FileSystemEntityType.notFound) {
+        // Both exist: the current root wins; the legacy copy stays untouched.
+        return root;
+      }
+      await root.create(recursive: true);
+      try {
+        await legacy.rename(target.path);
+        DiagnosticsLog.instance.info('data root migrated');
+        return root;
+      } on FileSystemException catch (error, stack) {
+        DiagnosticsLog.instance.error('data-root-migration', error, stack);
+        return legacyRoot;
+      }
+    } catch (error, stack) {
+      DiagnosticsLog.instance.error('data-root-migration', error, stack);
+      return root;
+    }
+  }
+
+  /// The user-visible folder for received files, or null for private storage.
+  Future<Directory?> _receivedDirectory() async {
+    final provider = _runtime.receivedDirectory;
+    if (provider == null) return null;
+    try {
+      final directory = await provider();
+      if (directory == null) return null;
+      // The inbox refuses a linked or non-directory location; fall back to
+      // private storage instead of failing startup.
+      final kind = await FileSystemEntity.type(
+        directory.path,
+        followLinks: false,
+      );
+      if (kind != FileSystemEntityType.notFound &&
+          kind != FileSystemEntityType.directory) {
+        DiagnosticsLog.instance.info('received directory unusable');
+        return null;
+      }
+      await directory.create(recursive: true);
+      return directory;
+    } catch (error, stack) {
+      DiagnosticsLog.instance.error('received-directory', error, stack);
+      return null;
     }
   }
 
@@ -532,11 +632,13 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         ? NetworkState.permissionRequired
         : NetworkState.ready;
     _hostSubscriptions.add(host.changes.listen((_) => _emit()));
-    if (!_runtime.discoveryEnabled) {
+    if (_nearbyWanted) _launch(_guard(_openNearbyPairing));
+    final custom = _runtime.createDiscovery;
+    if (custom == null && !_runtime.discoveryEnabled) {
       _launch(_refreshTrusted());
       return;
     }
-    final discovery = LanDiscovery();
+    final discovery = custom?.call() ?? LanDiscovery();
     _discovery = discovery;
     _hostSubscriptions.add(
       discovery.changes.listen((items) {
@@ -648,11 +750,17 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   @override
   bool get storageRefreshing => _storageRefreshing;
   @override
-  String get saveLocationLabel =>
-      _dataPath == null || Platform.isAndroid || Platform.isIOS
-      // Mobile sandboxes are not user-visible paths; explain the action.
-      ? _l.saveLocationMobile
-      : p.join(_dataPath!, 'inbox', 'received');
+  String get saveLocationLabel {
+    final visible = _inbox?.receivedRoot;
+    // iOS: Documents/Ulash is shown by the Files app.
+    if (Platform.isIOS && visible != null) return _l.saveLocationFiles;
+    // Other mobile sandboxes are not user-visible paths; explain the action.
+    if (_dataPath == null || Platform.isAndroid || Platform.isIOS) {
+      return _l.saveLocationMobile;
+    }
+    return visible?.path ?? p.join(_dataPath!, 'inbox', 'received');
+  }
+
   @override
   String? get networkDetail => _localNetworkDenied
       ? _l.networkDenied
@@ -668,6 +776,13 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     mediaSelection: _runtime.mediaPicker && _outbox != null && !_starting,
     share: _runtime.shareFiles != null,
     diagnostics: _dataPath != null,
+    textMessages: _outbox != null && !_starting,
+    webShare: _outbox != null && !_starting,
+    folderSelection:
+        _runtime.pickDirectory != null && _outbox != null && !_starting,
+    nearbyPairing: _host != null && _discovery != null && !_pairing,
+    photosSave: _runtime.saveToPhotos != null && _inbox != null,
+    revealInFolder: _runtime.revealInFolder != null && _inbox != null,
     fileExport:
         _runtime.exportSupported &&
         _runtime.exportFile != null &&
@@ -721,8 +836,10 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       .map(
         (request) => PairingRequest(
           id: request.requestId,
-          deviceName: request.displayName,
-          code: shortKeyCode(request.peerId),
+          deviceName: core.sanitizeDisplayText(request.displayName),
+          // The six-digit code the joining device shows for this invitation
+          // and both keys; older joiners (no code) fall back to the key code.
+          code: request.sas ?? shortKeyCode(request.peerId),
         ),
       )
       .toList();
@@ -730,7 +847,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   /// One parsed inbox listing per change notification (the listing parses
   /// every manifest, so the interface must not trigger it per widget).
   List<core.TransferSnapshot> _inboxList() =>
-      _inboxCache ??= _inbox?.list() ?? const <core.TransferSnapshot>[];
+      _inboxCache ??= [...?_inbox?.list()];
 
   bool get _incomingActive =>
       _inboxList().any((item) => item.state == core.TransferState.transferring);
@@ -772,6 +889,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     for (final item in completed) {
       if (!known.contains(item.transferId)) {
         _setStatus(_l.statusReceivedDone(_title(item.manifest)));
+        _launch(_noteSuccess());
+        _launch(_afterReceived(item));
       }
     }
   }
@@ -779,6 +898,22 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   void _invalidate() {
     _inboxCache = null;
     _transfersCache = null;
+  }
+
+  /// Applies one changed transfer to the cached listing instead of
+  /// re-reading and re-parsing every manifest on each progress event.
+  void _applyInboxChange(core.TransferSnapshot snapshot) {
+    final cache = _inboxCache;
+    _transfersCache = null;
+    if (cache == null) return; // next read lists everything anyway
+    final index = cache.indexWhere(
+      (item) => item.transferId == snapshot.transferId,
+    );
+    if (index >= 0) {
+      cache[index] = snapshot;
+    } else {
+      cache.insert(0, snapshot); // newest first, as the journal lists them
+    }
   }
 
   @override
@@ -817,6 +952,10 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       result.add(
         TransferItem(
           id: 'in:${item.transferId}',
+          kind: _isMessage(item.manifest)
+              ? TransferKind.text
+              : _kindOf(item.manifest),
+          messageText: _incomingMessage(item),
           title: _title(item.manifest),
           peerName: _peerName(item.peerId),
           direction: TransferDirection.incoming,
@@ -868,6 +1007,10 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       result.add(
         TransferItem(
           id: 'out:${job.id}',
+          kind: job.messageText != null || _isMessage(job.manifest)
+              ? TransferKind.text
+              : _kindOf(job.manifest),
+          messageText: job.messageText,
           title: _title(job.manifest),
           peerName: job.peerName,
           direction: TransferDirection.outgoing,
@@ -882,7 +1025,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           createdAt: job.createdAt,
           fileCount: job.manifest.files.length,
           detail:
-              job.detail ??
+              _jobDetail(job) ??
               (snapshot == null
                   ? _l.waitingForRecipient
                   : _snapshotDetail(snapshot)),
@@ -900,6 +1043,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         ),
       );
     }
+    result.addAll(_webTransferItems());
     result.sort((a, b) => b.createdAt.compareTo(a.createdAt));
     return result;
   }
@@ -951,9 +1095,14 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         ),
       );
       if (_closing || picked.isEmpty) return;
-      usedPickerCache = Platform.isAndroid || Platform.isIOS;
+      usedPickerCache = _runtime.pickerCopiesToCache;
       _preparing = true;
+      _preparationCancelled = false;
+      // Only mobile pickers hand us their own cache copies; on desktop the
+      // path is the user's original and must never be deleted.
+      final temporaryRoot = usedPickerCache ? await _temporaryRoot() : null;
       for (final item in picked) {
+        if (_preparationCancelled || _closing) break;
         if (_sources.length >= core.TransferLimits.maxFiles) {
           throw const core.StorageException('TOO_MANY_FILES', 'Too many files');
         }
@@ -970,13 +1119,22 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         _emit();
         try {
           final path = item.path;
+          bool cancelled() => _preparationCancelled || _closing;
           final prepared = path == null
               ? await _outbox!.stageStream(
                   item.readAsByteStream(),
                   displayName: item.name,
                   expectedSizeBytes: item.lengthSync(),
+                  isCancelled: cancelled,
                 )
-              : await _outbox!.stageFile(File(path), displayName: item.name);
+              : await _outbox!.stageFile(
+                  File(path),
+                  displayName: item.name,
+                  isCancelled: cancelled,
+                  // A picker copy inside our own cache is moved, not copied
+                  // again (halves the I/O for large videos). Never originals.
+                  adoptTemporary: await _isPickerCopy(path, temporaryRoot),
+                );
           final index = _sources.indexWhere(
             (source) => source.id == placeholder,
           );
@@ -987,13 +1145,24 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           );
         } catch (error) {
           _sources.removeWhere((source) => source.id == placeholder);
+          if (error is core.StorageException &&
+              error.code == 'PREPARATION_CANCELLED' &&
+              _preparationCancelled) {
+            _setStatus(_l.preparationCancelled);
+            break;
+          }
           rethrow;
+        } finally {
+          // The picker's cache copy is no longer needed once the immutable
+          // outbox copy exists: free the space now, not after the batch.
+          await _deletePickerCopy(item.path, temporaryRoot);
         }
         _emit();
       }
     } finally {
       _picking = false;
       _preparing = false;
+      _preparationCancelled = false;
       _busy = null;
       // The picker copied the selection into the app cache; the immutable
       // outbox copy is now the only one we need. Originals are untouched.
@@ -1006,6 +1175,268 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       }
     }
   });
+
+  bool _preparationCancelled = false;
+
+  /// Stops preparing the remaining picked files (the file being copied right
+  /// now finishes; already prepared files stay selected).
+  @override
+  Future<void> cancelPreparation() async {
+    if (!_preparing) return;
+    _preparationCancelled = true;
+    _emit();
+  }
+
+  @override
+  bool get canCancelPreparation => _preparing && !_preparationCancelled;
+
+  Future<String?> _temporaryRoot() async {
+    final provider = _runtime.temporaryDirectory;
+    if (provider == null) return null;
+    try {
+      final dir = await provider();
+      return p.normalize(p.absolute(await dir.resolveSymbolicLinks()));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<bool> _isPickerCopy(String path, String? temporaryRoot) async {
+    if (temporaryRoot == null) return false;
+    try {
+      final resolved = p.normalize(
+        p.absolute(await File(path).resolveSymbolicLinks()),
+      );
+      return p.isWithin(temporaryRoot, resolved);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Deletes a picker-made copy, but only when it lies inside the app's own
+  /// temporary directory. User originals are never touched.
+  Future<void> _deletePickerCopy(String? path, String? temporaryRoot) async {
+    if (path == null || temporaryRoot == null) return;
+    try {
+      final file = File(path);
+      if (!await file.exists()) return;
+      final resolved = p.normalize(
+        p.absolute(await file.resolveSymbolicLinks()),
+      );
+      if (!p.isWithin(temporaryRoot, resolved)) return;
+      await file.delete();
+    } catch (error, stack) {
+      DiagnosticsLog.instance.error('picker-copy', error, stack);
+    }
+  }
+
+  // ------------------------------------------------------------- folders
+
+  /// Files ignored when a folder is selected (OS metadata, not user data).
+  static const _folderJunk = {'.ds_store', 'thumbs.db', 'desktop.ini'};
+
+  @override
+  Future<void> chooseFolder() => _guard(() async {
+    final pick = _runtime.pickDirectory;
+    if (pick == null || _outbox == null || isBusy) return;
+    _picking = true;
+    _busy = _l.busyChoosingFiles;
+    _emit();
+    try {
+      final chosen = await _withSystemUi(pick);
+      if (chosen == null || _closing) return;
+      final root = Directory(p.normalize(p.absolute(chosen)));
+      final folderName = p.basename(root.path);
+      // Enumerate and validate everything first: a folder that cannot be
+      // sent as a whole is refused before any copy is made.
+      final entries = <(File, String)>[];
+      await for (final entity in root.list(
+        recursive: true,
+        followLinks: false,
+      )) {
+        if (entity is! File) continue;
+        final name = p.basename(entity.path);
+        if (_folderJunk.contains(name.toLowerCase())) continue;
+        if (entries.length >= core.TransferLimits.maxFiles ||
+            _sources.length + entries.length >= core.TransferLimits.maxFiles) {
+          throw const core.StorageException('FOLDER_TOO_LARGE', 'Too many');
+        }
+        final parent = p.relative(p.dirname(entity.path), from: root.path);
+        final segments = [folderName, if (parent != '.') ...p.split(parent)];
+        final relative = segments.join('/');
+        try {
+          core.validateRelativeDirectory(relative);
+        } on core.StorageException {
+          throw const core.StorageException('FOLDER_PATH', 'Unsupported');
+        }
+        entries.add((entity, relative));
+      }
+      if (entries.isEmpty) {
+        throw const core.StorageException('FOLDER_EMPTY', 'Empty folder');
+      }
+      _preparing = true;
+      _preparationCancelled = false;
+      for (final (file, relative) in entries) {
+        if (_preparationCancelled || _closing) break;
+        final name = p.basename(file.path);
+        final placeholder = const Uuid().v4();
+        _sources.add(
+          SelectedSource(
+            id: placeholder,
+            name: name,
+            status: SourceStatus.preparing,
+            relativeDirectory: relative,
+          ),
+        );
+        _busy = _l.busyPreparing(name);
+        _emit();
+        try {
+          // The user's originals: copied, never moved or deleted.
+          final prepared = await _outbox!.stageFile(
+            file,
+            displayName: name,
+            isCancelled: () => _preparationCancelled || _closing,
+          );
+          final index = _sources.indexWhere((s) => s.id == placeholder);
+          _sources[index] = SelectedSource(
+            id: prepared.manifest.fileId,
+            name: prepared.manifest.visibleName,
+            bytes: prepared.manifest.sizeBytes,
+            relativeDirectory: relative,
+          );
+        } catch (error) {
+          _sources.removeWhere((source) => source.id == placeholder);
+          if (error is core.StorageException &&
+              error.code == 'PREPARATION_CANCELLED' &&
+              _preparationCancelled) {
+            _setStatus(_l.preparationCancelled);
+            break;
+          }
+          rethrow;
+        }
+        _emit();
+      }
+    } finally {
+      _picking = false;
+      _preparing = false;
+      _preparationCancelled = false;
+      _busy = null;
+    }
+  });
+
+  /// Builds the manifests for the current selection, keeping folder paths.
+  List<core.FileManifest> _selectionManifests() => [
+    for (final source in _sources)
+      () {
+        final manifest = _outbox!.get(source.id).manifest;
+        if (source.relativeDirectory == null) return manifest;
+        return core.FileManifest(
+          fileId: manifest.fileId,
+          displayName: manifest.displayName,
+          sizeBytes: manifest.sizeBytes,
+          sha256: manifest.sha256,
+          mimeType: manifest.mimeType,
+          relativeDirectory: source.relativeDirectory,
+        );
+      }(),
+  ];
+
+  /// An older receiver would flatten a folder: refuse before sending.
+  Future<void> _requireFolderSupport(core.TrustedPeer peer) async {
+    final client = core.CoreClient.forPeer(peer);
+    try {
+      final capabilities = await client.capabilities();
+      if (!core.CoreClient.capabilitiesSupportFolders(capabilities)) {
+        throw const core.NetworkException(
+          'FOLDERS_UNSUPPORTED',
+          'Peer does not accept folders',
+        );
+      }
+    } finally {
+      client.close();
+    }
+  }
+
+  // -------------------------------------------------------------- intake
+
+  void _startIntake() {
+    final take = _runtime.takePendingIntake;
+    if (take == null || _intakeSubscription != null) return;
+    _intakeSubscription = _runtime.intakeAvailable?.listen(
+      (_) => _takeIntakeSoon(),
+    );
+    _takeIntakeSoon();
+  }
+
+  /// Serialised: overlapping notifications never stage the same batch twice
+  /// (the native side hands out each item exactly once anyway).
+  void _takeIntakeSoon() {
+    if (_runtime.takePendingIntake == null || _outbox == null || _closing) {
+      return;
+    }
+    final next = _intakeChain.then((_) => _takeIntake());
+    _intakeChain = next.catchError((Object _) {});
+    _launch(next);
+  }
+
+  Future<void> _takeIntake() async {
+    final take = _runtime.takePendingIntake;
+    if (take == null || _outbox == null || _closing || _disposed) return;
+    final items = await take();
+    if (items.isEmpty) return;
+    // Wait for a picker/folder preparation to finish first.
+    while (_preparing && !_closing) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    if (_closing) return;
+    final temporaryRoot = await _temporaryRoot();
+    var added = 0;
+    Object? firstError;
+    _preparing = true;
+    try {
+      for (final item in items) {
+        if (_closing) break;
+        if (_sources.length >= core.TransferLimits.maxFiles) {
+          firstError ??= const core.StorageException('TOO_MANY_FILES', 'Many');
+          break;
+        }
+        final name = core.sanitizeDisplayText(item.name).isEmpty
+            ? p.basename(item.path)
+            : item.name;
+        _busy = _l.busyPreparing(name);
+        _emit();
+        try {
+          // The item is our own copy (share extension / intent cache):
+          // adopt it by rename instead of copying it again.
+          final prepared = await _outbox!.stageFile(
+            File(item.path),
+            displayName: name,
+            adoptTemporary: true,
+          );
+          _sources.add(
+            SelectedSource(
+              id: prepared.manifest.fileId,
+              name: prepared.manifest.visibleName,
+              bytes: prepared.manifest.sizeBytes,
+            ),
+          );
+          added++;
+        } catch (error, stack) {
+          DiagnosticsLog.instance.error('intake', error, stack);
+          firstError ??= error;
+          // A copy we could not stage is still ours to remove, but only
+          // inside the app's own temporary directory.
+          await _deletePickerCopy(item.path, temporaryRoot);
+        }
+      }
+    } finally {
+      _preparing = false;
+      _busy = null;
+    }
+    if (added > 0) _setStatus(_l.intakeAdded(added));
+    if (firstError != null) _setError(_friendly(firstError));
+    _emit();
+  }
 
   @override
   Future<void> addSourcePaths(List<String> paths) => _guard(() async {
@@ -1046,11 +1477,21 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       if (!_referenced(id)) await _outbox?.remove(id);
     }
   });
-  bool _referenced(String fileId) => _jobs.any(
-    (job) =>
-        !job.isTerminal &&
-        job.manifest.files.any((file) => file.fileId == fileId),
-  );
+
+  /// While the outgoing journal has unreadable rows, any prepared copy may
+  /// belong to a job we cannot see: treat every copy as in use.
+  bool _referenced(String fileId) =>
+      _journalWarning ||
+      _jobs.any(
+        (job) =>
+            !job.isTerminal &&
+            job.manifest.files.any((file) => file.fileId == fileId),
+      );
+
+  bool _journalWarning = false;
+
+  @override
+  bool get journalWarning => _journalWarning;
 
   @override
   Future<void> sendTo(String peerId) => _guard(() async {
@@ -1062,32 +1503,406 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       _status = _l.waitCurrentSendOrPause;
       return;
     }
+    final peer = _requireOnlinePeer(peerId);
+    final manifests = _selectionManifests();
+    if (manifests.any((file) => file.relativeDirectory != null)) {
+      await _requireFolderSupport(peer);
+    }
+    _startJob(peer, manifests);
+    _sources.clear();
+  });
+
+  core.TrustedPeer _requireOnlinePeer(String peerId) {
     final peer = _trusted?.byId(peerId);
     if (peer == null || !_online.contains(peerId)) {
       throw const core.NetworkException('PEER_UNAVAILABLE', 'Peer unavailable');
     }
+    return peer;
+  }
+
+  OutgoingJob _startJob(
+    core.TrustedPeer peer,
+    List<core.FileManifest> files, {
+    String? messageText,
+  }) {
     final manifest = core.TransferManifest(
       requestId: const Uuid().v4(),
-      files: _sources
-          .map((source) => _outbox!.get(source.id).manifest)
-          .toList(),
+      files: files,
     );
     final job = OutgoingJob(
       id: manifest.requestId,
-      peerId: peerId,
+      peerId: peer.peerId,
       peerName: peer.displayName,
       manifest: manifest,
       createdAt: DateTime.now(),
+      messageText: messageText,
     );
-    _journal!.save(
-      job,
-    ); // Persist the idempotency key before the first request.
+    // Persist the idempotency key before the first request.
+    _save(job, force: true);
     _jobs.insert(0, job);
-    _sources.clear();
-    _status = _l.requestSent;
+    _status = messageText == null ? _l.requestSent : _l.messageSent;
     _emit();
     _launch(_runJob(job));
+    return job;
+  }
+
+  /// MIME type marking a short text/link message sent as a .txt file.
+  static const messageMimeType = 'text/x-ulash-message';
+  static const maxMessageBytes = 64 * 1024;
+
+  /// After the 3rd successful transfer, ask once per app version for a
+  /// store rating. The OS decides whether a prompt is actually shown.
+  Future<void> _noteSuccess() async {
+    final review = _runtime.requestReview;
+    if (review == null || _closing) return;
+    try {
+      const countKey = 'transfer.settings.successCount';
+      const askedKey = 'transfer.settings.reviewAskedVersion';
+      final count =
+          (int.tryParse(await _secrets.read(countKey) ?? '') ?? 0) + 1;
+      await _secrets.write(countKey, '$count');
+      if (count < 3 || await _secrets.read(askedKey) == _versionLabel) return;
+      await _secrets.write(askedKey, _versionLabel);
+      DiagnosticsLog.instance.info('review prompt requested');
+      await review();
+    } catch (error, stack) {
+      DiagnosticsLog.instance.error('review', error, stack);
+    }
+  }
+
+  @override
+  Future<void> openExternalUrl(Uri url) => _guard(() async {
+    final open = _runtime.openUrl;
+    if (open == null) return;
+    if (!await _withSystemUi(() => open(url))) {
+      throw const core.NetworkException('URL_UNAVAILABLE', 'Cannot open link');
+    }
   });
+
+  // ---------------------------------------------------------------- web share
+
+  WebShareServer? _web;
+  final _webAsks = <String, (WebUploadAsk, Completer<bool>, DateTime)>{};
+  List<_WebBatch>? _webBatchCache;
+
+  Directory get _webRoot => Directory(p.join(_dataPath!, 'web-uploads'));
+
+  @override
+  WebShareState? get webShare {
+    final web = _web;
+    if (web == null || !web.running || web.expiresAt == null) return null;
+    final host = _addresses.isEmpty ? '127.0.0.1' : _addresses.first;
+    return WebShareState(
+      url: web.urlFor(host),
+      expiresAt: web.expiresAt!,
+      allowUpload: web.allowUpload,
+      connectedClients: web.connectedClients,
+      downloadedFiles: web.downloads,
+      uploadedFiles: web.uploads,
+      sharedFileCount: web.files.length,
+    );
+  }
+
+  @override
+  List<WebUploadRequest> get pendingWebUploads => [
+    for (final (ask, _, expiresAt) in _webAsks.values)
+      WebUploadRequest(
+        id: ask.id,
+        client: ask.client,
+        fileNames: ask.names,
+        totalBytes: ask.totalBytes,
+        expiresAt: expiresAt,
+      ),
+  ];
+
+  @override
+  Future<void> startWebShare({bool allowUpload = false}) => _guard(() async {
+    if (_outbox == null || _dataPath == null) return;
+    await _stopWebShareNow();
+    _addresses = await _runtime.addresses();
+    if (_addresses.isEmpty) {
+      throw const core.NetworkException('NO_LAN_ADDRESS', 'No LAN');
+    }
+    final files = [
+      for (final source in _sources)
+        if (source.status == SourceStatus.ready)
+          () {
+            final prepared = _outbox!.get(source.id);
+            return WebSharedFile(
+              name: prepared.manifest.visibleName,
+              path: prepared.path,
+              bytes: prepared.manifest.sizeBytes,
+            );
+          }(),
+    ];
+    final server = WebShareServer(
+      files: files,
+      allowUpload: allowUpload,
+      uploadDirectory: Directory(p.join(_webRoot.path, _stampNow())),
+      texts: WebPageTexts(
+        title: _l.webPageTitle,
+        download: _l.webPageDownload,
+        noFiles: _l.webPageNoFiles,
+        upload: _l.webPageUpload,
+        chooseFiles: _l.webPageChoose,
+        waiting: _l.webPageWaiting,
+        uploading: _l.webPageUploading,
+        done: _l.webPageDone,
+        rejected: _l.webPageRejected,
+        failed: _l.webPageFailed,
+        expires: _l.webPageExpires,
+      ),
+      onUploadAsk: _onWebUploadAsk,
+      onFileStored: _onWebFileStored,
+      onChanged: _emit,
+    );
+    await server.start(
+      address: _runtime.webShareAddress,
+      preferredPort: _runtime.webSharePort,
+    );
+    _web = server;
+    DiagnosticsLog.instance.info('web share started (upload=$allowUpload)');
+  });
+
+  @override
+  Future<void> stopWebShare() => _guard(_stopWebShareNow);
+
+  Future<void> _stopWebShareNow() async {
+    final web = _web;
+    _web = null;
+    for (final (_, decision, _) in _webAsks.values) {
+      if (!decision.isCompleted) decision.complete(false);
+    }
+    _webAsks.clear();
+    await web?.stop();
+    _emit();
+  }
+
+  Future<bool> _onWebUploadAsk(WebUploadAsk ask) {
+    final decision = Completer<bool>();
+    final timeout = _web?.consentTimeout ?? const Duration(seconds: 120);
+    _webAsks[ask.id] = (ask, decision, DateTime.now().add(timeout));
+    // The server stops waiting after the same timeout; a request nobody
+    // answered must not stay on screen as if it could still be accepted.
+    final expiry = Timer(timeout, () {
+      if (!decision.isCompleted) decision.complete(false);
+    });
+    _emit();
+    return decision.future.whenComplete(() {
+      expiry.cancel();
+      _webAsks.remove(ask.id);
+      _emit();
+    });
+  }
+
+  @override
+  Future<void> respondToWebUpload(String id, bool accept) async {
+    final entry = _webAsks[id];
+    if (entry == null || entry.$2.isCompleted) return;
+    entry.$2.complete(accept);
+  }
+
+  void _onWebFileStored(String askId, String name, File file) {
+    final batches = _webBatches();
+    var batch = batches.where((b) => b.id == askId).firstOrNull;
+    if (batch == null) {
+      batch = _WebBatch(askId, DateTime.now(), []);
+      batches.insert(0, batch);
+    }
+    batch.files.add(
+      _WebFile(
+        const Uuid().v4(),
+        name,
+        p.relative(file.path, from: _webRoot.path),
+        file.lengthSync(),
+      ),
+    );
+    _saveWebBatches(batches);
+    _invalidate();
+    _launch(() async {
+      await _markFromInternet(file);
+      if (_autoSavePhotos && _isMediaName(name)) {
+        await _saveFileToPhotos(file, name);
+      }
+    }());
+    _setStatus(_l.statusReceivedDone(name));
+    _launch(_noteSuccess());
+    _emit();
+  }
+
+  List<_WebBatch> _webBatches() {
+    final cached = _webBatchCache;
+    if (cached != null) return cached;
+    final batches = <_WebBatch>[];
+    if (_dataPath != null) {
+      final index = File(p.join(_webRoot.path, 'index.json'));
+      try {
+        if (index.existsSync()) {
+          for (final item in jsonDecode(index.readAsStringSync()) as List) {
+            batches.add(_WebBatch.fromJson(item as Map<String, dynamic>));
+          }
+        }
+      } catch (error, stack) {
+        DiagnosticsLog.instance.error('web-index', error, stack);
+      }
+    }
+    return _webBatchCache = batches;
+  }
+
+  void _saveWebBatches(List<_WebBatch> batches) {
+    try {
+      _webRoot.createSync(recursive: true);
+      final index = File(p.join(_webRoot.path, 'index.json'));
+      final temp = File('${index.path}.tmp');
+      temp.writeAsStringSync(
+        jsonEncode([for (final b in batches) b.toJson()]),
+        flush: true,
+      );
+      temp.renameSync(index.path);
+    } catch (error, stack) {
+      DiagnosticsLog.instance.error('web-index-save', error, stack);
+    }
+  }
+
+  /// A browser-uploaded file, only inside the web-uploads folder.
+  File? _webFile(String transferId, String fileId) {
+    if (!transferId.startsWith('web:') || _dataPath == null) return null;
+    final batch = _webBatches()
+        .where((b) => 'web:${b.id}' == transferId)
+        .firstOrNull;
+    final entry = batch?.files.where((f) => f.id == fileId).firstOrNull;
+    if (entry == null) return null;
+    final root = p.normalize(p.absolute(_webRoot.path));
+    final path = p.normalize(p.absolute(p.join(root, entry.relativePath)));
+    if (!p.isWithin(root, path)) return null;
+    final file = File(path);
+    return file.existsSync() ? file : null;
+  }
+
+  List<TransferItem> _webTransferItems() => [
+    for (final batch in _webBatches())
+      TransferItem(
+        id: 'web:${batch.id}',
+        title: batch.files.length == 1
+            ? batch.files.single.name
+            : _l.filesCount(batch.files.length),
+        peerName: _l.browserPeer,
+        direction: TransferDirection.incoming,
+        phase: TransferPhase.completed,
+        totalBytes: batch.files.fold(0, (sum, f) => sum + f.bytes),
+        transferredBytes: batch.files.fold(0, (sum, f) => sum + f.bytes),
+        createdAt: batch.at,
+        fileCount: batch.files.length,
+        detail: _l.webUploadDetail,
+        receivedFiles: [
+          for (final f in batch.files)
+            if (_webFile('web:${batch.id}', f.id) case final file?)
+              ReceivedFile(
+                id: f.id,
+                name: f.name,
+                bytes: f.bytes,
+                isMedia: _isMediaName(f.name),
+                previewPath: _isPreviewable(f.name, f.bytes) ? file.path : null,
+                potentiallyExecutable: core.isPotentiallyExecutable(f.name),
+              ),
+        ],
+        canOpen: batch.files.isNotEmpty,
+        canDelete: true,
+      ),
+  ];
+
+  Future<void> _deleteWebBatch(String transferId) async {
+    final batches = _webBatches();
+    final batch = batches.where((b) => 'web:${b.id}' == transferId).firstOrNull;
+    if (batch == null) return;
+    for (final f in batch.files) {
+      final file = _webFile(transferId, f.id);
+      if (file != null) await file.delete();
+    }
+    batches.remove(batch);
+    _saveWebBatches(batches);
+    _invalidate();
+  }
+
+  static String _stampNow() {
+    final now = DateTime.now();
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${now.year}-${two(now.month)}-${two(now.day)} '
+        '${two(now.hour)}.${two(now.minute)}.${two(now.second)}';
+  }
+
+  @override
+  int get maxMessageLength => maxMessageBytes;
+
+  @override
+  Future<void> sendText(String peerId, String text) => _guard(() async {
+    final clean = text.trim();
+    if (clean.isEmpty || _outbox == null || isBusy) return;
+    final bytes = utf8.encode(clean);
+    if (bytes.length > maxMessageBytes) {
+      throw const core.StorageException('MESSAGE_TOO_LONG', 'Message too long');
+    }
+    if (_jobs.where((job) => !job.isTerminal).length >= 10) {
+      throw const core.StorageException('QUEUE_FULL', 'Queue is full');
+    }
+    if (_running.isNotEmpty) {
+      _status = _l.waitCurrentSendOrPause;
+      return;
+    }
+    final peer = _requireOnlinePeer(peerId);
+    final now = DateTime.now();
+    String two(int v) => v.toString().padLeft(2, '0');
+    final stamp =
+        '${now.year}-${two(now.month)}-${two(now.day)} '
+        '${two(now.hour)}.${two(now.minute)}.${two(now.second)}';
+    final prepared = await _outbox!.stageStream(
+      Stream.value(bytes),
+      displayName: 'Message $stamp.txt',
+      expectedSizeBytes: bytes.length,
+      mimeType: messageMimeType,
+    );
+    _startJob(peer, [prepared.manifest], messageText: clean);
+  });
+
+  static TransferKind _kindOf(core.TransferManifest manifest) =>
+      manifest.usesFolders ? TransferKind.folder : TransferKind.files;
+
+  /// The chosen folder's name when every file of a transfer lies in it.
+  static String? _folderName(core.TransferManifest manifest) {
+    if (!manifest.usesFolders) return null;
+    String? top;
+    for (final file in manifest.files) {
+      final first = file.relativeDirectory?.split('/').first;
+      if (first == null || (top != null && top != first)) return null;
+      top = first;
+    }
+    return top == null ? null : core.sanitizeDisplayText(top);
+  }
+
+  static bool _isMessage(core.TransferManifest manifest) =>
+      manifest.files.length == 1 &&
+      manifest.files.single.mimeType == messageMimeType &&
+      manifest.files.single.sizeBytes <= maxMessageBytes;
+
+  final _incomingMessages = <String, String>{};
+
+  /// Text of a received message, read once from the verified file.
+  String? _incomingMessage(core.TransferSnapshot item) {
+    if (!_isMessage(item.manifest)) return null;
+    final cached = _incomingMessages[item.transferId];
+    if (cached != null) return cached;
+    final file = item.files.single;
+    final path = file.finalPath;
+    if (file.state != core.FileState.committed || path == null) return null;
+    try {
+      final handle = File(path);
+      if (handle.lengthSync() > maxMessageBytes) return null;
+      final text = utf8.decode(handle.readAsBytesSync(), allowMalformed: true);
+      return _incomingMessages[item.transferId] = text;
+    } catch (_) {
+      return null;
+    }
+  }
 
   Future<void> _runJob(OutgoingJob job, {bool resumeSource = false}) async {
     if (_closing ||
@@ -1102,6 +1917,10 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     _outgoingRuns[job.id] = run;
     _running.add(job.id);
     var retries = 0;
+    // Retries are budgeted per stall, not per transfer: when the receiver's
+    // durable offset grew since the last failure, the budget starts again.
+    final stall = StallRetryCounter(job.snapshot?.durableBytes ?? 0);
+    var serverWaited = Duration.zero;
     try {
       while (_canRun(job, run)) {
         // Re-read trust and the latest verified address for every attempt.
@@ -1109,13 +1928,13 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         final peer = _trusted?.byId(job.peerId);
         if (peer == null || peer.endpoint == null) {
           if (job.localState != 'cancelling') job.localState = 'paused';
-          job.detail = _l.peerUnavailableOrRevoked;
+          job.setDetail('peerUnavailableOrRevoked');
           break;
         }
         final client = core.CoreClient.forPeer(peer);
         _activeClients[job.id] = client;
         if (job.localState != 'cancelling') job.localState = 'sending';
-        job.detail = null;
+        job.setDetail(null);
         _save(job);
         Duration? delay;
         try {
@@ -1125,37 +1944,52 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           // A local action always wins over a transport error caused by closing
           // its socket. In particular, a delayed retry cannot undo that action.
           if (!_canRun(job, run) || job.isTerminal) break;
-          if (!_retryPolicy.canRetry(error)) {
+          // BUSY / RATE_LIMITED with Retry-After: wait exactly as long as the
+          // peer asked (within a budget) instead of the generic backoff.
+          final requested = _retryPolicy.serverRequestedDelay(
+            error,
+            serverWaited,
+          );
+          if (requested != null) {
+            serverWaited += requested;
+            delay = requested;
+            if (job.localState != 'cancelling') job.localState = 'retry_wait';
+            job.setDetail('peerBusyRetrying', [requested.inSeconds]);
+            _save(job);
+          } else if (!_retryPolicy.canRetry(error)) {
             if (job.localState != 'cancelling') job.localState = 'paused';
-            job.detail = _friendly(error);
+            job.setDetail('error', [_errorCode(error)]);
             break;
+          } else {
+            retries = stall.next(job.snapshot?.durableBytes ?? 0);
+            delay = _retryPolicy.delayBeforeRetry(retries);
+            if (delay == null) {
+              if (job.localState != 'cancelling') job.localState = 'paused';
+              // The peer did not answer: only a fresh successful probe may
+              // mark it reachable again and continue this job.
+              _online.remove(job.peerId);
+              final attempts = _autoResumeAttempts[job.id] ?? 0;
+              final automatic = attempts < _maxAutoResumes;
+              if (automatic) _autoResume.add(job.id);
+              job.setDetail(
+                job.localState == 'cancelling'
+                    ? 'cancelRetriesExhausted'
+                    : automatic
+                    ? 'connectionLostAutoResume'
+                    : 'connectionNotRestored',
+              );
+              break;
+            }
+            if (job.localState != 'cancelling') job.localState = 'retry_wait';
+            final seconds = (delay.inMilliseconds / 1000).toStringAsFixed(1);
+            job.setDetail(
+              job.localState == 'cancelling'
+                  ? 'cancelRetrying'
+                  : 'connectionRetrying',
+              [retries, _retryPolicy.maxRetries, seconds],
+            );
+            _save(job);
           }
-          delay = _retryPolicy.delayBeforeRetry(++retries);
-          if (delay == null) {
-            if (job.localState != 'cancelling') job.localState = 'paused';
-            // The peer did not answer: only a fresh successful probe may
-            // mark it reachable again and continue this job.
-            _online.remove(job.peerId);
-            final attempts = _autoResumeAttempts[job.id] ?? 0;
-            final automatic = attempts < _maxAutoResumes;
-            if (automatic) _autoResume.add(job.id);
-            job.detail = job.localState == 'cancelling'
-                ? _l.cancelRetriesExhausted
-                : automatic
-                ? _l.connectionLostAutoResume
-                : _l.connectionNotRestored;
-            break;
-          }
-          if (job.localState != 'cancelling') job.localState = 'retry_wait';
-          final seconds = (delay.inMilliseconds / 1000).toStringAsFixed(1);
-          job.detail = job.localState == 'cancelling'
-              ? _l.cancelRetrying(retries, _retryPolicy.maxRetries, seconds)
-              : _l.connectionRetrying(
-                  retries,
-                  _retryPolicy.maxRetries,
-                  seconds,
-                );
-          _save(job);
         } finally {
           client.close();
           _activeClients.remove(job.id);
@@ -1253,7 +2087,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       if (job.snapshot!.pausedBySource) {
         if (!run.resumeSource) {
           job.localState = 'paused';
-          job.detail = _l.senderPausedTapResume;
+          job.setDetail('senderPausedTapResume');
           return;
         }
         _applySnapshot(job, await client.resume(job.remoteId!));
@@ -1264,7 +2098,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       if (!_canRun(job, run)) return;
       if (job.snapshot!.pausedBySink) {
         job.localState = 'paused';
-        job.detail = _l.recipientPaused;
+        job.setDetail('recipientPaused');
         return;
       }
       // Progress shown in the interface comes only from the Sink's journal.
@@ -1325,6 +2159,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       case core.TransferState.completed:
         if (job.localState != 'completed') {
           _setStatus(_l.statusSentDone(_title(job.manifest)));
+          _launch(_noteSuccess());
         }
         job.localState = 'completed';
       case core.TransferState.cancelled:
@@ -1333,26 +2168,65 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         job.localState = 'rejected';
       case core.TransferState.expired:
         job.localState = 'expired';
-        job.detail = _l.consentExpiredNewRequest;
+        job.setDetail('consentExpiredNewRequest');
       case core.TransferState.failed:
         job.localState = 'failed';
-        job.detail = _l.receiveNotFinished;
+        job.setDetail('receiveNotFinished');
       case core.TransferState.partiallyCompleted:
         job.localState = 'partially_completed';
         final completed = snapshot.files
             .where((file) => file.state == core.FileState.committed)
             .length;
-        job.detail = _l.partiallySaved(completed, snapshot.files.length);
+        job.setDetail('partiallySaved', [completed, snapshot.files.length]);
       default:
         break;
     }
     _save(job);
   }
 
-  void _save(OutgoingJob job) {
-    if (!_disposed) {
+  /// The journal is written only when something durable changed (state,
+  /// remote id, detail, receipt state, committed files, pause flags). Byte
+  /// progress stays in memory; [_flushJobs] writes everything on pause,
+  /// background and shutdown.
+  void _save(OutgoingJob job, {bool force = false}) {
+    if (_disposed) return;
+    final key = _persistKey(job);
+    if (force || _persistedKeys[job.id] != key) {
       _journal?.save(job);
-      _emit();
+      _persistedKeys[job.id] = key;
+    }
+    _emit();
+  }
+
+  final _persistedKeys = <String, String>{};
+
+  @visibleForTesting
+  static String persistKeyForTest(OutgoingJob job) => _persistKey(job);
+
+  static String _persistKey(OutgoingJob job) {
+    final snapshot = job.snapshot;
+    final committed =
+        snapshot?.files
+            .where((file) => file.state == core.FileState.committed)
+            .length ??
+        0;
+    return [
+      job.localState,
+      job.remoteId,
+      job.detailCode,
+      job.detailArgs.join(','),
+      job.detail,
+      snapshot?.state.name,
+      committed,
+      snapshot?.pausedBySource,
+      snapshot?.pausedBySink,
+    ].join('|');
+  }
+
+  void _flushJobs() {
+    if (_disposed || _journal == null) return;
+    for (final job in _jobs) {
+      if (!job.isTerminal) _save(job, force: true);
     }
   }
 
@@ -1444,7 +2318,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     _autoResume.remove(job.id);
     _outgoingRuns[job.id]?.cancel();
     job.localState = 'paused';
-    job.detail = _l.senderPaused;
+    job.setDetail('senderPaused');
     _save(job);
     _activeClients[job.id]?.close();
     final peer = _trusted?.byId(job.peerId);
@@ -1499,13 +2373,13 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     if (job.isTerminal) return;
     _outgoingRuns[job.id]?.cancel();
     job.localState = 'cancelling';
-    job.detail = _l.confirmingCancel;
+    job.setDetail('confirmingCancel');
     _save(job);
     _activeClients[job.id]?.close();
     if (job.remoteId == null) {
       // An offer response may have been lost. Reconcile the same request ID
       // before cancelling; do not assume the remote offer does not exist.
-      job.detail = _l.tapResumeToConfirmCancel;
+      job.setDetail('tapResumeToConfirmCancel');
       _save(job);
       return;
     }
@@ -1515,7 +2389,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     try {
       _applySnapshot(job, await control.cancel(job.remoteId!));
     } catch (_) {
-      job.detail = _l.recipientUnavailableCancel;
+      job.setDetail('recipientUnavailableCancel');
     } finally {
       control.close();
       _save(job);
@@ -1565,12 +2439,39 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   @override
   Future<void> pairFromText(String payload) => _guard(() async {
     if (_pairing || _identity == null || _trusted == null) return;
-    final invite = core.PairingInvite.parse(payload);
+    await _pairWithInvite(core.PairingInvite.parse(payload));
+  });
+
+  @override
+  OutgoingPairing? get outgoingPairing => _outgoingPairing;
+
+  @override
+  Future<void> cancelOutgoingPairing() async {
+    if (!_pairing) return;
+    _pairingCancelled = true;
+    _outgoingPairing = null;
+    // Closing the socket ends a request in flight; the wait loop checks the
+    // flag. The host's pending request simply expires.
+    _pairingClient?.close();
+    _emit();
+  }
+
+  /// Joiner side of pairing: shows the six-digit code (SAS) bound to the
+  /// invitation and both keys, which the user compares with the code on the
+  /// host before it approves. Trust comes only from the pinned key.
+  Future<void> _pairWithInvite(core.PairingInvite invite) async {
     if (invite.serverPin == _identity!.serverPin) {
       throw const core.NetworkException('SELF_PAIRING', 'Same device');
     }
     _pairing = true;
-    _setStatus(_l.confirmPairingWithCode(deviceCode ?? ''));
+    _pairingCancelled = false;
+    final code = invite.sasFor(_identity!.serverPin);
+    final hostName = core.sanitizeDisplayText(invite.displayName);
+    _outgoingPairing = OutgoingPairing(
+      hostName: hostName.isEmpty ? _l.unknownDevice : hostName,
+      code: code,
+    );
+    _setStatus(_l.confirmPairingWithCode(code));
     _emit();
     core.CoreClient? client;
     try {
@@ -1617,7 +2518,9 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           lastError = error;
           candidate.close();
         }
+        if (_pairingCancelled) return;
       }
+      if (_pairingCancelled) return;
       if (client == null) {
         throw lastError ??
             const core.NetworkException('PEER_UNAVAILABLE', 'Unreachable');
@@ -1627,6 +2530,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       final waiting = Stopwatch()..start();
       while (!_closing &&
           !_disposed &&
+          !_pairingCancelled &&
           waiting.elapsed < const Duration(seconds: 180)) {
         final peer = await client.completePairing(
           identity: _identity!,
@@ -1639,14 +2543,169 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         }
         await Future<void>.delayed(const Duration(seconds: 1));
       }
+      if (_pairingCancelled || _closing) return;
       throw const core.NetworkException('PAIRING_EXPIRED', 'Pairing timed out');
+    } catch (error) {
+      // A user cancel closes the socket under a request; that is not an error.
+      if (_pairingCancelled) return;
+      rethrow;
     } finally {
       client?.close();
       _pairingClient?.close();
       _pairing = false;
       _pairingClient = null;
+      _outgoingPairing = null;
+      if (_pairingCancelled) {
+        _pairingCancelled = false;
+        _status = _l.pairingCancelled;
+      }
+      _emit();
     }
+  }
+
+  // ------------------------------------------------------- nearby pairing
+
+  @override
+  List<NearbyDevice> get nearbyPairable {
+    final trusted = _trusted?.list() ?? const <core.TrustedPeer>[];
+    return [
+      for (final candidate in _discovered)
+        if (candidate.pairable &&
+            !trusted.any((peer) => peer.endpoint == candidate.endpoint))
+          NearbyDevice(
+            id: 'nearby:${candidate.instanceId}',
+            name: core.sanitizeDisplayText(candidate.name),
+            platform: _platformOf(candidate.platform),
+          ),
+    ];
+  }
+
+  @override
+  Future<void> pairNearby(String nearbyId) => _guard(() async {
+    if (_pairing || _identity == null || _trusted == null) return;
+    final candidate = _discovered
+        .where(
+          (item) => item.pairable && 'nearby:${item.instanceId}' == nearbyId,
+        )
+        .firstOrNull;
+    if (candidate == null) {
+      throw const core.NetworkException('NEARBY_UNAVAILABLE', 'Gone');
+    }
+    // The discovered address is only a hint: the invitation must come from
+    // a TLS server holding the invited key, and pairing still needs the
+    // host's approval after both screens show the same code.
+    final invite = await core.CoreClient.fetchNearbyInvite(candidate.endpoint);
+    await _pairWithInvite(invite);
   });
+
+  @override
+  bool get nearbyPairingOpen => _host?.nearbyPairingOpen ?? false;
+
+  @override
+  Future<void> setNearbyPairing(bool open) => _guard(() async {
+    _nearbyWanted = open;
+    if (!open) {
+      _closeNearbyPairing();
+      return;
+    }
+    await _openNearbyPairing();
+  });
+
+  static const _nearbyWindow = Duration(seconds: 120);
+
+  Future<void> _openNearbyPairing() async {
+    final host = _host;
+    if (host == null) {
+      throw const core.NetworkException('RECEIVING_DISABLED', 'Host off');
+    }
+    _addresses = await _runtime.addresses();
+    if (_addresses.isEmpty) {
+      throw const core.NetworkException('NO_LAN_ADDRESS', 'No LAN');
+    }
+    host.openNearbyPairing(
+      ttl: _nearbyWindow,
+      hostAddresses: _addresses.take(core.PairingInvite.maxEndpoints).toList(),
+    );
+    _nearbyTimer?.cancel();
+    // The window is time-limited. While the screen stays open it is renewed
+    // with a fresh invitation; otherwise it simply closes.
+    _nearbyTimer = Timer(_nearbyWindow, () {
+      _nearbyTimer = null;
+      if (_nearbyWanted && _host != null && !_closing) {
+        _launch(_openNearbyPairing());
+      } else {
+        _closeNearbyPairing();
+      }
+    });
+    await _discovery?.setPairable(true);
+    _emit();
+  }
+
+  void _closeNearbyPairing() {
+    _nearbyTimer?.cancel();
+    _nearbyTimer = null;
+    _host?.closeNearbyPairing();
+    final discovery = _discovery;
+    if (discovery != null) {
+      _launch(
+        discovery.setPairable(false).catchError((Object error, StackTrace st) {
+          DiagnosticsLog.instance.error('discovery-pairable', error, st);
+        }),
+      );
+    }
+    _emit();
+  }
+
+  // --------------------------------------------- invitation privacy helpers
+
+  @override
+  Future<bool> copyInvitation() async {
+    final invitation = _invitation;
+    if (invitation == null || _closing) return false;
+    const seconds = 120;
+    try {
+      final native = _runtime.copySensitive;
+      if (native != null && await native(invitation.payload, seconds)) {
+        return true;
+      }
+      // Fallback: ordinary clipboard, cleared after the same time if it still
+      // holds this invitation.
+      await Clipboard.setData(ClipboardData(text: invitation.payload));
+      _clipboardTimer?.cancel();
+      _clipboardTimer = Timer(const Duration(seconds: seconds), () async {
+        try {
+          final current = await Clipboard.getData(Clipboard.kTextPlain);
+          if (current?.text == invitation.payload) {
+            await Clipboard.setData(const ClipboardData(text: ''));
+          }
+        } catch (_) {
+          /* Best effort. */
+        }
+      });
+      return true;
+    } catch (error, stack) {
+      DiagnosticsLog.instance.error('copy-invitation', error, stack);
+      return false;
+    }
+  }
+
+  @override
+  Future<void> setSecureScreen(bool enabled) async {
+    // Nested callers (sheet + dialog) are counted; the flag clears when the
+    // last one closes.
+    final before = _secureScreens > 0;
+    _secureScreens = (enabled ? _secureScreens + 1 : _secureScreens - 1).clamp(
+      0,
+      1 << 20,
+    );
+    final after = _secureScreens > 0;
+    if (before == after) return;
+    try {
+      await _runtime.setSecureScreen?.call(after);
+    } catch (error, stack) {
+      DiagnosticsLog.instance.error('secure-screen', error, stack);
+    }
+  }
 
   @override
   Future<void> scanInvitation() => _guard(() async {
@@ -1688,7 +2747,33 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   Future<void> _refreshTrustedNow() async {
     if (_trusted == null || _closing || _disposed) return;
     try {
-      for (final peer in _trusted!.list()) {
+      final pendingPeers = {
+        for (final job in _jobs)
+          if (!job.isTerminal) job.peerId,
+      };
+      final queue = [..._trusted!.list()]
+        ..sort(
+          (a, b) => (pendingPeers.contains(a.peerId) ? 0 : 1).compareTo(
+            pendingPeers.contains(b.peerId) ? 0 : 1,
+          ),
+        );
+      // Bounded parallel probes: peers with pending sends first.
+      Future<void> worker() async {
+        while (queue.isNotEmpty && !_closing && !_disposed) {
+          await _probePeer(queue.removeAt(0));
+        }
+      }
+
+      await Future.wait([for (var i = 0; i < 4; i++) worker()]);
+    } finally {
+      _emit();
+    }
+    _scheduleAutoResume();
+  }
+
+  Future<void> _probePeer(core.TrustedPeer peer) async {
+    {
+      {
         final candidates = <Uri>{
           if (peer.endpoint != null) peer.endpoint!,
           ..._discovered
@@ -1735,10 +2820,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           _online.remove(peer.peerId);
         }
       }
-    } finally {
-      _emit();
     }
-    _scheduleAutoResume();
   }
 
   @override
@@ -1757,6 +2839,9 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   Future<void> _stopHostNow() async {
     _invitation = null;
     _receiving = false;
+    _nearbyTimer?.cancel();
+    _nearbyTimer = null;
+    _host?.closeNearbyPairing();
     for (final subscription in _hostSubscriptions) {
       await subscription.cancel();
     }
@@ -1781,9 +2866,11 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       _outgoingRuns[job.id]?.cancel();
       _activeClients[job.id]?.close();
       if (job.localState != 'cancelling') job.localState = 'paused';
-      job.detail = job.localState == 'cancelling'
-          ? _l.trustRevokedCancelUnknown
-          : _l.trustRevokedStopped;
+      job.setDetail(
+        job.localState == 'cancelling'
+            ? 'trustRevokedCancelUnknown'
+            : 'trustRevokedStopped',
+      );
       _save(job);
     }
     // Stop transmission before an OS secret-store write can block. If that
@@ -1836,9 +2923,15 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
 
   @override
   Future<void> deleteTransfer(String transferId) => _guard(() async {
+    if (transferId.startsWith('web:')) {
+      await _deleteWebBatch(transferId);
+      _setStatus(_l.transferDeleted);
+      return;
+    }
     if (transferId.startsWith('in:')) {
       final id = transferId.substring(3);
       await _inbox!.deleteTransfer(id);
+      _inboxCache = null;
       _exports?.deleteTransfer(id);
       _setStatus(_l.transferDeleted);
       return;
@@ -1888,6 +2981,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           item.state != core.TransferState.completed &&
           item.state != core.TransferState.partiallyCompleted) {
         await _inbox!.deleteTransfer(item.transferId);
+        _inboxCache = null;
         _exports?.deleteTransfer(item.transferId);
         removed++;
       }
@@ -1898,21 +2992,35 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   /// Keeps the history bounded: finished outgoing records and unsuccessful
   /// incoming records older than 90 days are removed at startup. Received
   /// files are never removed automatically.
+  /// Most finished records kept per direction (journal rows only).
+  static const historyLimit = 500;
+
   Future<void> _pruneHistory() async {
     final limit = DateTime.now().subtract(const Duration(days: 90));
     try {
-      for (final job
-          in _jobs
-              .where((job) => job.isTerminal && job.createdAt.isBefore(limit))
-              .toList()) {
-        await _removeJob(job, deleteCopies: false);
+      final finished = _jobs.where((job) => job.isTerminal).toList()
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      for (var i = 0; i < finished.length; i++) {
+        final job = finished[i];
+        if (i >= historyLimit || job.createdAt.isBefore(limit)) {
+          await _removeJob(job, deleteCopies: false);
+        }
       }
-      for (final item in _inbox?.list() ?? const <core.TransferSnapshot>[]) {
-        if (_terminal(item) &&
-            item.state != core.TransferState.completed &&
-            item.state != core.TransferState.partiallyCompleted &&
-            item.createdAt.isBefore(limit)) {
+      final withoutFiles =
+          (_inbox?.list() ?? const <core.TransferSnapshot>[])
+              .where(
+                (item) =>
+                    _terminal(item) &&
+                    item.state != core.TransferState.completed &&
+                    item.state != core.TransferState.partiallyCompleted,
+              )
+              .toList()
+            ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      for (var i = 0; i < withoutFiles.length; i++) {
+        final item = withoutFiles[i];
+        if (i >= historyLimit || item.createdAt.isBefore(limit)) {
           await _inbox!.deleteTransfer(item.transferId);
+          _inboxCache = null;
           _exports?.deleteTransfer(item.transferId);
         }
       }
@@ -1926,7 +3034,16 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   Future<void> shareReceivedFile(String transferId, String fileId) => _guard(
     () async {
       final share = _runtime.shareFiles;
-      if (share == null || !transferId.startsWith('in:')) return;
+      if (share == null) return;
+      if (transferId.startsWith('web:')) {
+        final file = _webFile(transferId, fileId);
+        if (file == null) {
+          throw const core.StorageException('FILE_MISSING', 'Missing');
+        }
+        await _withSystemUi(() => share([file]));
+        return;
+      }
+      if (!transferId.startsWith('in:')) return;
       final snapshot = _inbox!.status(transferId.substring(3));
       final file = snapshot.files
           .where(
@@ -2022,10 +3139,17 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     }
   }
 
+  /// Storage figures are refreshed at most every 2 s and not while bytes are
+  /// moving (the listing walks the whole inbox journal).
   void _refreshStorageSoon() {
     if (_closing || _disposed || _storageTimer != null) return;
-    _storageTimer = Timer(const Duration(milliseconds: 500), () {
+    _storageTimer = Timer(const Duration(seconds: 2), () {
       _storageTimer = null;
+      if (_closing || _disposed) return;
+      if (_running.isNotEmpty || _incomingActive) {
+        _refreshStorageSoon();
+        return;
+      }
       _launch(_updateStorageOverview());
     });
   }
@@ -2106,6 +3230,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
             final eligible = await _inbox!.previewIncompleteCleanup();
             if (!eligible.any((item) => item.transferId == id)) continue;
             final result = await _inbox!.discardIncomplete(id);
+            _inboxCache = null;
             stopped++;
             removedFiles += result.removedFileCount;
           }
@@ -2131,10 +3256,21 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
             ExportState.failed => ExportPhase.failed,
             ExportState.unknown => ExportPhase.unknown,
           };
+    final name = file.manifest.visibleName;
+    final available =
+        file.state == core.FileState.committed &&
+        file.finalPath != null &&
+        file.errorCode != 'FILE_MISSING';
     return ReceivedFile(
       id: file.fileId,
-      name: file.manifest.visibleName,
+      name: name,
       bytes: file.manifest.sizeBytes,
+      isMedia: _isMediaName(name, file.manifest.mimeType),
+      previewPath: available && _isPreviewable(name, file.manifest.sizeBytes)
+          ? file.finalPath
+          : null,
+      potentiallyExecutable: core.isPotentiallyExecutable(name),
+      relativeDirectory: file.manifest.relativeDirectory,
       exportPhase: phase,
       exportDestination: success?.destinationLabel,
       exportDetail: switch (phase) {
@@ -2151,6 +3287,49 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     );
   }
 
+  static const _photoImages = {
+    'jpg', 'jpeg', 'png', 'gif', 'heic', 'heif', 'webp', 'tif', 'tiff', //
+    'bmp', 'dng',
+  };
+  static const _photoVideos = {'mp4', 'mov', 'm4v', '3gp', 'avi', 'mkv'};
+  static const _maxPreviewBytes = 30 * 1024 * 1024;
+
+  static String _extension(String name) {
+    final dot = name.lastIndexOf('.');
+    return dot < 0 ? '' : name.substring(dot + 1).toLowerCase();
+  }
+
+  static bool _isVideoName(String name, [String? mime]) =>
+      _photoVideos.contains(_extension(name)) ||
+      (mime?.toLowerCase().startsWith('video/') ?? false);
+
+  /// A photo or video the system photo library can take.
+  static bool _isMediaName(String name, [String? mime]) =>
+      _photoImages.contains(_extension(name)) ||
+      _isVideoName(name, mime) ||
+      (mime?.toLowerCase().startsWith('image/') ?? false);
+
+  /// Small enough images the interface may decode for a thumbnail. HEIC is
+  /// decoded natively only on Apple platforms.
+  static bool _isPreviewable(String name, int bytes) {
+    if (bytes <= 0 || bytes > _maxPreviewBytes) return false;
+    final ext = _extension(name);
+    return const {'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'}.contains(ext) ||
+        ((ext == 'heic' || ext == 'heif') &&
+            (Platform.isIOS || Platform.isMacOS));
+  }
+
+  /// Folders a committed result may live in: the private store and, when
+  /// configured, the user-visible received folder.
+  List<String> _receivedRoots() => [
+    if (_dataPath != null)
+      p.normalize(p.absolute(p.join(_dataPath!, 'inbox', 'received'))),
+    if (_inbox != null)
+      p.normalize(p.absolute(p.join(_inbox!.root.path, 'received'))),
+    if (_inbox?.receivedRoot != null)
+      p.normalize(p.absolute(_inbox!.receivedRoot!.path)),
+  ];
+
   Future<File> _committedFile(core.FileSnapshot snapshot) async {
     final path = snapshot.finalPath;
     if (_dataPath == null ||
@@ -2158,11 +3337,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         path == null) {
       throw const core.StorageException('NOT_FOUND', 'No committed file.');
     }
-    final received = p.normalize(
-      p.absolute(p.join(_dataPath!, 'inbox', 'received')),
-    );
     final absolute = p.normalize(p.absolute(path));
-    if (!p.isWithin(received, absolute) ||
+    if (!_receivedRoots().any((root) => p.isWithin(root, absolute)) ||
         await FileSystemEntity.type(absolute, followLinks: false) !=
             FileSystemEntityType.file) {
       throw const core.StorageException(
@@ -2245,6 +3421,12 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           platformReference: result.platformReference,
         );
         _status = _l.exportDone(result.destinationLabel);
+        final reference = result.platformReference;
+        if (_runtime.markFromInternet != null &&
+            reference != null &&
+            p.isAbsolute(reference)) {
+          await _markFromInternet(File(reference));
+        }
       }
     } catch (error) {
       final code = error is core.StorageException
@@ -2295,29 +3477,160 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     if (file != null) await openReceivedFile(transferId, file.fileId);
   });
 
+  /// The verified local file of a received item (peer transfer or browser
+  /// upload). Throws when it is missing or changed.
+  Future<File> _receivedLocalFile(String transferId, String fileId) async {
+    if (transferId.startsWith('web:')) {
+      final file = _webFile(transferId, fileId);
+      if (file == null) {
+        throw const core.StorageException('FILE_MISSING', 'Missing');
+      }
+      return file;
+    }
+    if (!transferId.startsWith('in:') || _inbox == null) {
+      throw const core.StorageException('NOT_FOUND', 'No committed file');
+    }
+    final snapshot = _inbox!.status(transferId.substring(3));
+    final file = snapshot.files
+        .where(
+          (item) =>
+              item.fileId == fileId &&
+              item.state == core.FileState.committed &&
+              item.finalPath != null,
+        )
+        .firstOrNull;
+    if (file == null) {
+      throw const core.StorageException('NOT_FOUND', 'No committed file');
+    }
+    return _committedFile(file);
+  }
+
   @override
   Future<void> openReceivedFile(String transferId, String fileId) =>
       _guard(() async {
-        if (!transferId.startsWith('in:')) return;
-        final snapshot = _inbox!.status(transferId.substring(3));
-        final file = snapshot.files
-            .where(
-              (item) =>
-                  item.fileId == fileId &&
-                  item.state == core.FileState.committed &&
-                  item.finalPath != null,
-            )
-            .firstOrNull;
-        if (file == null) {
-          throw const core.StorageException('NOT_FOUND', 'No committed file');
+        if (!transferId.startsWith('web:') && !transferId.startsWith('in:')) {
+          return;
         }
         // Only an explicit user action may launch the system's file handler.
-        final saved = await _committedFile(file);
+        final saved = await _receivedLocalFile(transferId, fileId);
+        final safeOpen = _runtime.openFileSafely;
+        if (safeOpen != null) {
+          // Windows: Mark-of-the-Web first, then ShellExecuteEx with
+          // executables refused (never open_filex / cmd.exe).
+          await _markFromInternet(saved);
+          final result = await _withSystemUi(
+            () => safeOpen(saved, allowExecutable: false),
+          );
+          switch (result) {
+            case OpenFileResult.opened:
+              return;
+            case OpenFileResult.blocked:
+              _setError(_l.errOpenBlocked);
+            case OpenFileResult.missing:
+              _setError(_l.errFileMissing);
+            case OpenFileResult.failed || OpenFileResult.unsupported:
+              _setError(_l.cannotOpenFile);
+          }
+          return;
+        }
         final result = await _withSystemUi(() => OpenFilex.open(saved.path));
         if (result.type != ResultType.done) {
           _setError(_l.cannotOpenFile);
         }
       });
+
+  @override
+  Future<void> revealReceivedFile(String transferId, String fileId) =>
+      _guard(() async {
+        final reveal = _runtime.revealInFolder;
+        if (reveal == null) return;
+        final saved = await _receivedLocalFile(transferId, fileId);
+        if (!await _withSystemUi(() => reveal(saved))) {
+          _setError(_l.cannotOpenFile);
+        }
+      });
+
+  @override
+  Future<void> saveToPhotos(String transferId, String fileId) =>
+      _guard(() async {
+        final file = await _receivedLocalFile(transferId, fileId);
+        final result = await _saveFileToPhotos(file, p.basename(file.path));
+        switch (result) {
+          case SaveToPhotosResult.saved:
+            _setStatus(_l.savedToPhotos);
+          case SaveToPhotosResult.denied:
+            _setError(_l.errPhotosDenied);
+          case SaveToPhotosResult.failed || SaveToPhotosResult.unsupported:
+            _setError(_l.errPhotosFailed);
+        }
+      });
+
+  Future<SaveToPhotosResult> _saveFileToPhotos(File file, String name) async {
+    final save = _runtime.saveToPhotos;
+    if (save == null || !_isMediaName(name)) {
+      return SaveToPhotosResult.unsupported;
+    }
+    try {
+      // The photo library permission prompt is a system sheet.
+      return await _withSystemUi(() => save(file, isVideo: _isVideoName(name)));
+    } catch (error, stack) {
+      DiagnosticsLog.instance.error('save-to-photos', error, stack);
+      return SaveToPhotosResult.failed;
+    }
+  }
+
+  @override
+  bool get autoSaveToPhotos => _autoSavePhotos;
+
+  @override
+  Future<void> setAutoSaveToPhotos(bool enabled) => _guard(() async {
+    if (_runtime.saveToPhotos == null) return;
+    await _secrets.write(_autoSavePhotosKey, enabled ? 'true' : 'false');
+    _autoSavePhotos = enabled;
+    _emit();
+  });
+
+  /// After a transfer commits: Mark-of-the-Web (Windows) for every file and,
+  /// when enabled, copies of photos/videos into the photo library. The
+  /// received files themselves stay where they are.
+  Future<void> _afterReceived(core.TransferSnapshot item) async {
+    var denied = false;
+    var failed = false;
+    for (final snapshot in item.files) {
+      if (snapshot.state != core.FileState.committed || _closing) continue;
+      final File file;
+      try {
+        file = await _committedFile(snapshot);
+      } catch (_) {
+        continue;
+      }
+      await _markFromInternet(file);
+      final name = snapshot.manifest.visibleName;
+      if (_autoSavePhotos && !denied && _isMediaName(name)) {
+        final result = await _saveFileToPhotos(file, name);
+        if (result == SaveToPhotosResult.denied) denied = true;
+        if (result == SaveToPhotosResult.failed) failed = true;
+      }
+    }
+    if (denied) {
+      _setError(_l.errPhotosDenied);
+    } else if (failed) {
+      _setError(_l.errPhotosFailed);
+    }
+    if (denied || failed) _emit();
+  }
+
+  Future<void> _markFromInternet(File file) async {
+    final mark = _runtime.markFromInternet;
+    if (mark == null) return;
+    try {
+      if (!await mark(file)) {
+        DiagnosticsLog.instance.info('mark-of-the-web unavailable');
+      }
+    } catch (error, stack) {
+      DiagnosticsLog.instance.error('mark-of-the-web', error, stack);
+    }
+  }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -2383,10 +3696,11 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       // Preserve cancellation intent even when backgrounding interrupts it.
       if (job.localState != 'cancelling') job.localState = 'paused';
       _autoResume.add(job.id);
-      job.detail = _l.backgroundedWillResume;
+      job.setDetail('backgroundedWillResume');
       _save(job);
       _activeClients[job.id]?.close();
     }
+    _flushJobs();
     // Reachability is unknown after a background period; re-probe on return.
     _online.clear();
     _updatePeerTimer();
@@ -2395,6 +3709,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   }
 
   void _resumeForeground() {
+    // Files shared into the app while it was in the background.
+    _takeIntakeSoon();
     final graceRunning = _backgroundTimer != null;
     _backgroundTimer?.cancel();
     _backgroundTimer = null;
@@ -2476,19 +3792,40 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
 
   /// Change notifications are coalesced per microtask: a burst of progress
   /// events rebuilds the interface once.
+  /// Change notifications are coalesced and limited to 4 per second, so a
+  /// stream of progress events does not rebuild the interface continuously.
   void _emit() {
-    _invalidate();
+    // The inbox listing is maintained incrementally from change events
+    // (_applyInboxChange); only the derived list is rebuilt here.
+    _transfersCache = null;
     if (_closing || _disposed || _emitScheduled) return;
     _emitScheduled = true;
-    scheduleMicrotask(() {
-      _emitScheduled = false;
-      if (_closing || _disposed) return;
-      final message = _error ?? _status;
-      if (message != null && message != _lastMessage) _messageSerial++;
-      _lastMessage = message;
-      _updateKeepAwake();
-      notifyListeners();
-    });
+    final since = _emitClock.elapsedMilliseconds - _lastNotifyAt;
+    if (since >= _minNotifyIntervalMs) {
+      scheduleMicrotask(_flushEmit);
+    } else {
+      _emitTimer = Timer(
+        Duration(milliseconds: _minNotifyIntervalMs - since),
+        _flushEmit,
+      );
+    }
+  }
+
+  static const _minNotifyIntervalMs = 250;
+  final _emitClock = Stopwatch()..start();
+  int _lastNotifyAt = -_minNotifyIntervalMs;
+  Timer? _emitTimer;
+
+  void _flushEmit() {
+    _emitScheduled = false;
+    _emitTimer = null;
+    if (_closing || _disposed) return;
+    _lastNotifyAt = _emitClock.elapsedMilliseconds;
+    final message = _error ?? _status;
+    if (message != null && message != _lastMessage) _messageSerial++;
+    _lastMessage = message;
+    _updateKeepAwake();
+    notifyListeners();
   }
 
   /// Keep the screen on while bytes are moving, so auto-lock does not send
@@ -2509,6 +3846,17 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     _foreground = false;
     _peerTimer?.cancel();
     _storageTimer?.cancel();
+    _emitTimer?.cancel();
+    _nearbyTimer?.cancel();
+    _clipboardTimer?.cancel();
+    await _intakeSubscription?.cancel();
+    _intakeSubscription = null;
+    if (_secureScreens > 0) {
+      _secureScreens = 0;
+      await _runtime.setSecureScreen?.call(false).catchError((Object _) {});
+    }
+    await _web?.stop().catchError((Object _) {});
+    _web = null;
     _backgroundTimer?.cancel();
     if (_keepAwake) {
       _keepAwake = false;
@@ -2533,6 +3881,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       await subscription.cancel();
     }
     await _releaseBackgroundTask();
+    _flushJobs();
     if (_logDirectory != null) {
       await DiagnosticsLog.instance.detach(_logDirectory!);
     }
@@ -2545,9 +3894,14 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
 
   String _peerName(String peerId) =>
       _trusted?.byId(peerId)?.displayName ?? _l.platformUnknown;
-  String _title(core.TransferManifest manifest) => manifest.files.length == 1
-      ? manifest.files.single.visibleName
-      : _l.filesCount(manifest.files.length);
+  String _title(core.TransferManifest manifest) {
+    final folder = _folderName(manifest);
+    if (folder != null && folder.isNotEmpty) return folder;
+    return manifest.files.length == 1
+        ? manifest.files.single.visibleName
+        : _l.filesCount(manifest.files.length);
+  }
+
   static bool _terminal(core.TransferSnapshot snapshot) => {
     core.TransferState.completed,
     core.TransferState.partiallyCompleted,
@@ -2611,7 +3965,10 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   static DevicePlatform _platformOf(String value) =>
       DevicePlatform.values.where((item) => item.name == value).firstOrNull ??
       DevicePlatform.unknown;
-  String _friendly(Object error) {
+
+  /// Stable, language-independent code of an error: the protocol code, or
+  /// a `#kind` tag for transport errors. Stored in journals instead of text.
+  static String _errorCode(Object error) {
     final code = error is core.NetworkException
         ? error.code
         : error is core.StorageException
@@ -2619,6 +3976,50 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         : error is PlatformException
         ? error.code
         : null;
+    if (code != null) return code;
+    if (error is HandshakeException) return '#handshake';
+    if (error is SocketException || error is TimeoutException) return '#socket';
+    if (error is FormatException) return '#format';
+    if (error is FileSystemException) return '#fs';
+    return '#unknown';
+  }
+
+  String _friendly(Object error) => _friendlyCode(_errorCode(error));
+
+  /// Translates a stored job detail in the current language.
+  String? _jobDetail(OutgoingJob job) {
+    final code = job.detailCode;
+    if (code == null) return job.detail;
+    final a = job.detailArgs;
+    String arg(int i) => i < a.length ? a[i] : '';
+    int num(int i) => int.tryParse(arg(i)) ?? 0;
+    return switch (code) {
+      'error' => _friendlyCode(arg(0)),
+      'peerUnavailableOrRevoked' => _l.peerUnavailableOrRevoked,
+      'cancelRetriesExhausted' => _l.cancelRetriesExhausted,
+      'connectionLostAutoResume' => _l.connectionLostAutoResume,
+      'connectionNotRestored' => _l.connectionNotRestored,
+      'cancelRetrying' => _l.cancelRetrying(num(0), num(1), arg(2)),
+      'connectionRetrying' => _l.connectionRetrying(num(0), num(1), arg(2)),
+      'senderPausedTapResume' => _l.senderPausedTapResume,
+      'recipientPaused' => _l.recipientPaused,
+      'consentExpiredNewRequest' => _l.consentExpiredNewRequest,
+      'receiveNotFinished' => _l.receiveNotFinished,
+      'partiallySaved' => _l.partiallySaved(num(0), num(1)),
+      'senderPaused' => _l.senderPaused,
+      'confirmingCancel' => _l.confirmingCancel,
+      'tapResumeToConfirmCancel' => _l.tapResumeToConfirmCancel,
+      'recipientUnavailableCancel' => _l.recipientUnavailableCancel,
+      'backgroundedWillResume' => _l.backgroundedWillResume,
+      'trustRevokedCancelUnknown' => _l.trustRevokedCancelUnknown,
+      'trustRevokedStopped' => _l.trustRevokedStopped,
+      'interruptedOnClose' => _l.interruptedOnClose,
+      'peerBusyRetrying' => _l.peerBusyRetrying(num(0)),
+      _ => null,
+    };
+  }
+
+  String _friendlyCode(String code) {
     return switch (code) {
       'PEER_UNAVAILABLE' || 'NO_LAN_ADDRESS' => _l.errPeerUnavailable,
       'PAIRING_EXPIRED' || 'INVITE_EXPIRED' => _l.errQrExpired,
@@ -2652,21 +4053,23 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       'TRANSFER_TOO_SLOW' => _l.errTransferTooSlow,
       'FILE_MISSING' => _l.errFileMissing,
       'TRANSFER_ACTIVE' => _l.errTransferActive,
+      'MESSAGE_TOO_LONG' => _l.errMessageTooLong,
+      'URL_UNAVAILABLE' => _l.errUrlUnavailable,
       'QUEUE_FULL' => _l.errQueueFull,
+      'FOLDERS_UNSUPPORTED' => _l.errFoldersUnsupported,
+      'FOLDER_TOO_LARGE' => _l.errFolderTooLarge,
+      'TOO_MANY_FILES' => _l.errTooManyFiles,
+      'FOLDER_PATH' => _l.errFolderPath,
+      'FOLDER_EMPTY' => _l.errFolderEmpty,
+      'NEARBY_UNAVAILABLE' => _l.errNearbyUnavailable,
       'BUSY' || 'WRITER_BUSY' => _l.errBusy,
       'STORAGE_MISSING' || 'NOT_FOUND' => _l.errNotFound,
-      _ =>
-        error is HandshakeException
-            ? _l.errHandshake
-            : error is SocketException || error is TimeoutException
-            ? _l.errConnectionLost
-            : error is FormatException
-            ? _l.errFormat
-            : error is FileSystemException
-            ? _l.errFileSystem
-            : code == null
-            ? _l.errUnknown
-            : _l.errWithCode(code),
+      '#handshake' => _l.errHandshake,
+      '#socket' => _l.errConnectionLost,
+      '#format' => _l.errFormat,
+      '#fs' => _l.errFileSystem,
+      '#unknown' => _l.errUnknown,
+      _ => _l.errWithCode(code),
     };
   }
 }
@@ -2711,4 +4114,45 @@ class _OutgoingRun {
       _timer = null;
     }
   }
+}
+
+class _WebFile {
+  _WebFile(this.id, this.name, this.relativePath, this.bytes);
+  final String id;
+  final String name;
+  final String relativePath;
+  final int bytes;
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'path': relativePath,
+    'bytes': bytes,
+  };
+  factory _WebFile.fromJson(Map<String, dynamic> j) => _WebFile(
+    j['id'] as String,
+    j['name'] as String,
+    j['path'] as String,
+    j['bytes'] as int,
+  );
+}
+
+/// One accepted browser upload batch, shown in history as an incoming item.
+class _WebBatch {
+  _WebBatch(this.id, this.at, this.files);
+  final String id;
+  final DateTime at;
+  final List<_WebFile> files;
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'at': at.toUtc().toIso8601String(),
+    'files': [for (final f in files) f.toJson()],
+  };
+  factory _WebBatch.fromJson(Map<String, dynamic> j) => _WebBatch(
+    j['id'] as String,
+    DateTime.parse(j['at'] as String).toLocal(),
+    [
+      for (final f in j['files'] as List)
+        _WebFile.fromJson(f as Map<String, dynamic>),
+    ],
+  );
 }

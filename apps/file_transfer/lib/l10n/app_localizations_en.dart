@@ -140,7 +140,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get sendEyebrow => 'LOCAL TRANSFER';
 
   @override
-  String get sendTitle => 'Files, on the right\ndevice.';
+  String get sendTitle => 'Send';
 
   @override
   String get sendSubtitle =>
@@ -257,7 +257,7 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get showInvitation => 'Show invitation';
+  String get showInvitation => 'Show QR';
 
   @override
   String get myDevices => 'My devices';
@@ -274,7 +274,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'Turn on receiving when you are ready to get files.';
 
   @override
-  String get incomingOffers => 'Incoming offers';
+  String get incomingOffers => 'Waiting for you';
 
   @override
   String andMoreFiles(String files) {
@@ -309,10 +309,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get appOpenBothSides => 'The app must be open on both devices.';
 
   @override
-  String get createInvitation => 'Create invitation';
+  String get createInvitation => 'Show QR';
 
   @override
-  String get enterInvitation => 'Enter invitation';
+  String get enterInvitation => 'Enter code';
 
   @override
   String get scanInvitationTooltip => 'Scan an invitation from another device';
@@ -573,11 +573,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String get more => 'Details';
 
   @override
-  String get diagnosticsLog => 'Diagnostics log';
+  String get diagnosticsLog => 'Support report';
 
   @override
   String get diagnosticsHint =>
-      'Error codes without file names or addresses. Sent only by you.';
+      'Error codes without file names or addresses. Only you can send it.';
 
   @override
   String get send => 'Send';
@@ -630,7 +630,7 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get temporaryCopies => 'Temporary copies';
+  String get temporaryCopies => 'Prepared copies';
 
   @override
   String temporaryUsage(String used, String reserved) {
@@ -744,14 +744,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get receivedInApp => 'Received in the app';
 
   @override
-  String get pairByInvitation => 'Connect with an invitation';
+  String get pairByInvitation => 'Connect with a code';
 
   @override
   String get pairByInvitationHint =>
-      'Create an invitation on your other device and paste all of it here.';
+      'On the other device tap Show QR → Copy code, then paste the whole code here.';
 
   @override
-  String get invitationText => 'Invitation text';
+  String get invitationText => 'Connection code';
 
   @override
   String get pairConnect => 'Connect';
@@ -779,19 +779,17 @@ class AppLocalizationsEn extends AppLocalizations {
   String get disconnect => 'Disconnect';
 
   @override
-  String get invitationTitle => 'Device invitation';
+  String get invitationTitle => 'Connect a device';
 
   @override
   String get invitationHint =>
-      'Scan the QR code in the app on your other device, or share the invitation text.';
+      'Scan this QR code with Ulash on the other device.';
 
   @override
-  String get invitationQrSemantics =>
-      'QR code of a temporary device invitation';
+  String get invitationQrSemantics => 'QR code for connecting a device';
 
   @override
-  String get invitationExpired =>
-      'This invitation has expired. Create a new one.';
+  String get invitationExpired => 'The QR code has expired. Create a new one.';
 
   @override
   String invitationRemaining(String time) {
@@ -802,7 +800,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get copied => 'Copied';
 
   @override
-  String get copyInvitation => 'Copy invitation';
+  String get copyInvitation => 'Copy code';
 
   @override
   String get pairOnlyIfCodeMatches =>
@@ -832,7 +830,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get onbBody1 =>
-      'Send photos, videos and documents from phone to computer and back in original quality — directly, with no cloud and no sign-up.';
+      'Photos, videos and documents between your phone and computer in original quality. No cloud, no sign-up, and you approve every transfer.';
 
   @override
   String get onbTitle2 => 'One Wi-Fi network';
@@ -890,14 +888,14 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get cameraUnavailable =>
-      'Camera unavailable. Allow access in Settings, or go back and paste the invitation manually.';
+      'Camera unavailable. Allow access in Settings or go back and enter the connection code manually.';
 
   @override
   String get openSettings => 'Open Settings';
 
   @override
   String get scannerHint =>
-      'Point the camera at the QR code under Receive on your other device. Both devices must be on the same network.';
+      'Point the camera at the QR code: on the other device open Ulash → Devices → Show QR. Both devices must be on the same network.';
 
   @override
   String get busyPreparingStorage => 'Preparing secure storage';
@@ -1002,11 +1000,11 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get connectionLostAutoResume =>
-      'Connection lost. Confirmed progress is saved; the transfer will continue automatically when the other device is back online.';
+      'Connection lost. Confirmed progress is saved; the transfer continues automatically when the other device is back online.';
 
   @override
   String get connectionNotRestored =>
-      'The connection did not recover. Confirmed progress is saved. Open the app on both devices and tap Resume.';
+      'Connection not restored. Confirmed progress is saved. Open the app on both devices and tap Resume.';
 
   @override
   String cancelRetrying(int attempt, int max, String seconds) {
@@ -1170,7 +1168,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'The transfer stopped when the app was closed. Tap Resume to check its status with the recipient.';
 
   @override
-  String get verifiedAndSaved => 'SHA-256 verified · save confirmed';
+  String get verifiedAndSaved => 'Verified and saved';
 
   @override
   String get consentNotReceived =>
@@ -1359,4 +1357,404 @@ class AppLocalizationsEn extends AppLocalizations {
   String etaLeft(String value) {
     return '$value left';
   }
+
+  @override
+  String get messageSent =>
+      'Message sent. The recipient will confirm it on their device.';
+
+  @override
+  String get errMessageTooLong =>
+      'The message is too long (up to 64 KB). Send it as a file instead.';
+
+  @override
+  String get journalWarningText =>
+      'Some history records could not be read. Prepared copies are kept and will not be offered for cleanup.';
+
+  @override
+  String get preparationCancelled =>
+      'Preparation stopped. Files already prepared stay selected.';
+
+  @override
+  String get errUrlUnavailable =>
+      'Could not open the link. Make sure a browser is installed.';
+
+  @override
+  String get browserPeer => 'Browser';
+
+  @override
+  String get webUploadDetail => 'Uploaded from a browser via an Ulash link';
+
+  @override
+  String get webPageTitle => 'Files from the device';
+
+  @override
+  String get webPageDownload => 'Download';
+
+  @override
+  String get webPageNoFiles => 'No files were chosen for download.';
+
+  @override
+  String get webPageUpload => 'Send to the device';
+
+  @override
+  String get webPageChoose => 'Choose files';
+
+  @override
+  String get webPageWaiting => 'Confirm on the device…';
+
+  @override
+  String get webPageUploading => 'Uploading';
+
+  @override
+  String get webPageDone => 'Done: the files are on the device.';
+
+  @override
+  String get webPageRejected => 'The device declined the upload.';
+
+  @override
+  String get webPageFailed => 'Upload failed. Please try again.';
+
+  @override
+  String get webPageExpires => 'Link valid until';
+
+  @override
+  String get unknownDevice => 'Device';
+
+  @override
+  String get pairingCancelled => 'Pairing cancelled';
+
+  @override
+  String peerBusyRetrying(int seconds) {
+    return 'The recipient is busy. Retrying in $seconds s.';
+  }
+
+  @override
+  String get errFoldersUnsupported =>
+      'The other device runs an older Ulash that cannot receive folders. Update it there or choose individual files.';
+
+  @override
+  String get errFolderTooLarge =>
+      'The folder has more than 1,000 files. Choose a smaller folder.';
+
+  @override
+  String get errFolderPath =>
+      'The folder is nested too deeply or has unsupported names. Choose a subfolder or individual files.';
+
+  @override
+  String get errFolderEmpty => 'The chosen folder has no files.';
+
+  @override
+  String get errNearbyUnavailable =>
+      'The device is no longer waiting to connect. Ask to open its connect screen again.';
+
+  @override
+  String get errPhotosDenied =>
+      'No access to Photos. Allow adding photos in Settings.';
+
+  @override
+  String get errPhotosFailed =>
+      'Could not save to Photos. The file is still in Ulash.';
+
+  @override
+  String get savedToPhotos => 'Saved to Photos';
+
+  @override
+  String get errOpenBlocked =>
+      'This is a program or script, and Ulash does not run such files. Open the folder and run it yourself if you trust the sender.';
+
+  @override
+  String get saveLocationFiles => 'Files app → On My iPhone → Ulash';
+
+  @override
+  String intakeAdded(int count) {
+    return 'Added from another app: $count';
+  }
+
+  @override
+  String get errTooManyFiles =>
+      'Up to 1,000 files can be sent at once. Remove some from the list.';
+
+  @override
+  String get moreActions => 'More';
+
+  @override
+  String get copyAction => 'Copy';
+
+  @override
+  String get textCopied => 'Copied';
+
+  @override
+  String get sendLead =>
+      'Photos, videos and documents in original quality, straight over Wi-Fi.';
+
+  @override
+  String get folder => 'Folder';
+
+  @override
+  String get textMessage => 'Text';
+
+  @override
+  String get addMore => 'Add more';
+
+  @override
+  String get sendTo => 'To';
+
+  @override
+  String sendToDevice(String name) {
+    return 'Send to $name';
+  }
+
+  @override
+  String get addFilesFirst => 'Add files';
+
+  @override
+  String get noAppLink => 'No Ulash on the other device? Send a link';
+
+  @override
+  String get firstDeviceTitle => 'Connect your first device';
+
+  @override
+  String get firstDeviceBody =>
+      'Open Ulash on the second device on the same Wi-Fi and scan the QR code. You only do this once.';
+
+  @override
+  String get activeTransfers => 'In progress';
+
+  @override
+  String get messageTitle => 'Message';
+
+  @override
+  String get messageHint => 'Text or link';
+
+  @override
+  String get chooseRecipientFirst => 'Choose a recipient first.';
+
+  @override
+  String selectedSummary(String files, String size) {
+    return '$files · $size';
+  }
+
+  @override
+  String get searchHint => 'Search by name or device';
+
+  @override
+  String get today => 'Today';
+
+  @override
+  String get yesterday => 'Yesterday';
+
+  @override
+  String get nothingFound => 'Nothing found';
+
+  @override
+  String get saveToPhotos => 'Save to Photos';
+
+  @override
+  String get revealInFolder => 'Show in folder';
+
+  @override
+  String get executableTitle => 'Open a program?';
+
+  @override
+  String executableBody(String name) {
+    return '“$name” can run a program on this device. Open such files only if you trust the sender.';
+  }
+
+  @override
+  String get openAnyway => 'Open anyway';
+
+  @override
+  String folderLabel(String name) {
+    return 'Folder “$name”';
+  }
+
+  @override
+  String get receiveFiles => 'Receive files';
+
+  @override
+  String get receiveHintOn =>
+      'Your devices can send files here — you approve every transfer.';
+
+  @override
+  String get receiveHintOff =>
+      'Receiving is off: this device is hidden from others.';
+
+  @override
+  String get deviceCode => 'Device code';
+
+  @override
+  String get showQr => 'Show QR';
+
+  @override
+  String get noCameraEnterCode => 'No camera? Enter a code';
+
+  @override
+  String get connectFooter =>
+      'Open Ulash on the other device on the same Wi-Fi. You connect only once.';
+
+  @override
+  String get nearby => 'Nearby';
+
+  @override
+  String get nearbyFooter =>
+      'Devices on this network that have the connection screen open.';
+
+  @override
+  String get waitingRequests => 'Connection requests';
+
+  @override
+  String get qrHint => 'On the other device open Ulash → Devices → Scan QR.';
+
+  @override
+  String get qrNearbyVisible =>
+      'While this screen is open, this device is visible nearby and can be connected without QR.';
+
+  @override
+  String get codesMatchTitle => 'Do the codes match?';
+
+  @override
+  String sasHostBody(String name) {
+    return 'Compare with the code on “$name”. Connect only if the codes are the same.';
+  }
+
+  @override
+  String get sasJoinerTitle => 'Confirm on the other device';
+
+  @override
+  String sasJoinerBody(String name) {
+    return '“$name” should show the same code. Tap Connect there.';
+  }
+
+  @override
+  String get codesMatch => 'Yes, connect';
+
+  @override
+  String get codesDiffer => 'Codes differ';
+
+  @override
+  String get webShareEntry => 'Via link';
+
+  @override
+  String get webShareTitle => 'Send via link';
+
+  @override
+  String get webShareBody =>
+      'Open the link in a browser on a device on the same Wi-Fi — for example, a computer without Ulash.';
+
+  @override
+  String get webShareInsecure =>
+      'The link works without encryption (HTTP). Use it only on your own network and stop it when you are done.';
+
+  @override
+  String get webShareAllowUpload => 'Allow uploads to this device';
+
+  @override
+  String webShareValid(String time) {
+    return 'Link valid until $time';
+  }
+
+  @override
+  String webShareStats(int clients, int downloads, int uploads) {
+    return 'Opened: $clients · downloaded: $downloads · uploaded: $uploads';
+  }
+
+  @override
+  String get webShareCreate => 'Create link';
+
+  @override
+  String get webShareStop => 'Stop';
+
+  @override
+  String get copyLink => 'Copy link';
+
+  @override
+  String get webShareSelectFirst =>
+      'The link serves the selected files. Choose files or allow uploads.';
+
+  @override
+  String get webShareQrSemantics => 'QR code of the browser link';
+
+  @override
+  String get receiving => 'Receiving';
+
+  @override
+  String get autoSaveToPhotos => 'Save photos and videos to Photos';
+
+  @override
+  String get autoSaveHint =>
+      'Received photos and videos appear in your library right away.';
+
+  @override
+  String get theme => 'Theme';
+
+  @override
+  String get support => 'Support';
+
+  @override
+  String get privacyPolicy => 'Privacy policy';
+
+  @override
+  String get howDataHandled => 'How your data is handled';
+
+  @override
+  String get advanced => 'Advanced';
+
+  @override
+  String get advancedHint => 'Storage, diagnostics, key reset';
+
+  @override
+  String get about => 'About';
+
+  @override
+  String get dangerZone => 'Security';
+
+  @override
+  String get onbAllowTitle => 'Allow local network access';
+
+  @override
+  String get onbAllowBody =>
+      'Ulash looks for your devices only on your Wi-Fi. Without this permission your devices can’t find each other.';
+
+  @override
+  String get allowAccess => 'Allow access';
+
+  @override
+  String get webUploadTitle => 'Upload from a browser';
+
+  @override
+  String webUploadBody(String client, String files, String size) {
+    return '$client wants to upload $files ($size) here.';
+  }
+
+  @override
+  String get allow => 'Allow';
+
+  @override
+  String waitingForApprovalOn(String name) {
+    return 'Waiting for approval on $name';
+  }
+
+  @override
+  String connectedTo(String name) {
+    return 'Connected to $name';
+  }
+
+  @override
+  String get shareSheetLink => 'Link';
+
+  @override
+  String get nearbyEmpty =>
+      'Nobody nearby yet. On the other device open Devices → Show QR.';
+
+  @override
+  String get noDevicesYet => 'No connected devices yet';
+
+  @override
+  String get filterText => 'Text';
+
+  @override
+  String get saveDestination => 'Save to';
+
+  @override
+  String get largeTextSample => 'Text size follows your device settings.';
 }

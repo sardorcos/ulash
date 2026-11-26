@@ -47,7 +47,10 @@ class DiagnosticsLog {
   void error(String context, Object error, [StackTrace? stack]) {
     final code = errorCode(error);
     final frame = stack == null ? '' : ' @ ${_firstFrame(stack)}';
-    _record('E', '$context: ${error.runtimeType}${code == null ? '' : ' [$code]'}$frame');
+    _record(
+      'E',
+      '$context: ${error.runtimeType}${code == null ? '' : ' [$code]'}$frame',
+    );
   }
 
   void _record(String level, String event) {
@@ -114,8 +117,11 @@ class DiagnosticsLog {
         .toString()
         .split('\n')
         .map((line) => line.trim())
-        .where((line) => line.contains('package:file_transfer') ||
-            line.contains('package:transfer_core'))
+        .where(
+          (line) =>
+              line.contains('package:file_transfer') ||
+              line.contains('package:transfer_core'),
+        )
         .firstOrNull;
     if (line == null) return '?';
     final match = RegExp(r'\((package:[^)]+)\)').firstMatch(line);

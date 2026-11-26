@@ -141,7 +141,7 @@ class AppLocalizationsUz extends AppLocalizations {
   String get sendEyebrow => 'MAHALLIY UZATISH';
 
   @override
-  String get sendTitle => 'Fayllar — kerakli\nqurilmada.';
+  String get sendTitle => 'Yuborish';
 
   @override
   String get sendSubtitle =>
@@ -164,7 +164,7 @@ class AppLocalizationsUz extends AppLocalizations {
       'Ikkinchi qurilmada ilovani oching va uni taklifnoma orqali qoʻshing.';
 
   @override
-  String get connect => 'Ulash';
+  String get connect => 'Ulanish';
 
   @override
   String get chooseRecipient => 'Qabul qiluvchini tanlang';
@@ -258,7 +258,7 @@ class AppLocalizationsUz extends AppLocalizations {
   }
 
   @override
-  String get showInvitation => 'Taklifnomani koʻrsatish';
+  String get showInvitation => 'QR koʻrsatish';
 
   @override
   String get myDevices => 'Mening qurilmalarim';
@@ -275,7 +275,7 @@ class AppLocalizationsUz extends AppLocalizations {
       'Fayllarni qabul qilishga tayyor boʻlganingizda qabul qilishni yoqing.';
 
   @override
-  String get incomingOffers => 'Kiruvchi takliflar';
+  String get incomingOffers => 'Javobingizni kutmoqda';
 
   @override
   String andMoreFiles(String files) {
@@ -304,17 +304,17 @@ class AppLocalizationsUz extends AppLocalizations {
       'Fayllarni qayta sozlamasdan yuborish uchun telefon yoki kompyuter qoʻshing.';
 
   @override
-  String get connectDevice => 'Qurilmani ulash';
+  String get connectDevice => 'Qurilma qoʻshish';
 
   @override
   String get appOpenBothSides =>
       'Ilova ikkala qurilmada ham ochiq boʻlishi kerak.';
 
   @override
-  String get createInvitation => 'Taklifnoma yaratish';
+  String get createInvitation => 'QR koʻrsatish';
 
   @override
-  String get enterInvitation => 'Taklifnomani kiritish';
+  String get enterInvitation => 'Kodni kiritish';
 
   @override
   String get scanInvitationTooltip =>
@@ -359,7 +359,7 @@ class AppLocalizationsUz extends AppLocalizations {
 
   @override
   String disconnectDevice(String name) {
-    return '$name ni uzish';
+    return '${name}ni uzish';
   }
 
   @override
@@ -558,7 +558,7 @@ class AppLocalizationsUz extends AppLocalizations {
 
   @override
   String get trustedDevicesHint =>
-      'Har bir yangi qurilma sizning tasdigʻingiz bilan ulanadi.';
+      'Har bir yangi qurilma faqat sizning tasdiqingiz bilan ulanadi.';
 
   @override
   String get open => 'Ochish';
@@ -576,7 +576,7 @@ class AppLocalizationsUz extends AppLocalizations {
   String get more => 'Batafsil';
 
   @override
-  String get diagnosticsLog => 'Diagnostika jurnali';
+  String get diagnosticsLog => 'Yordam uchun hisobot';
 
   @override
   String get diagnosticsHint =>
@@ -634,7 +634,7 @@ class AppLocalizationsUz extends AppLocalizations {
   }
 
   @override
-  String get temporaryCopies => 'Vaqtinchalik nusxalar';
+  String get temporaryCopies => 'Tayyorlangan nusxalar';
 
   @override
   String temporaryUsage(String used, String reserved) {
@@ -749,14 +749,14 @@ class AppLocalizationsUz extends AppLocalizations {
   String get receivedInApp => 'Ilovada qabul qilindi';
 
   @override
-  String get pairByInvitation => 'Taklifnoma orqali ulanish';
+  String get pairByInvitation => 'Kod orqali ulanish';
 
   @override
   String get pairByInvitationHint =>
-      'Ikkinchi qurilmada taklifnoma yarating va uni bu yerga toʻliq nusxalang.';
+      'Boshqa qurilmada «QR koʻrsatish» → «Kodni nusxalash»ni bosing va kodni bu yerga toʻliq joylang.';
 
   @override
-  String get invitationText => 'Taklifnoma matni';
+  String get invitationText => 'Ulanish kodi';
 
   @override
   String get pairConnect => 'Ulanish';
@@ -784,19 +784,17 @@ class AppLocalizationsUz extends AppLocalizations {
   String get disconnect => 'Uzish';
 
   @override
-  String get invitationTitle => 'Qurilmaga taklifnoma';
+  String get invitationTitle => 'Qurilma qoʻshish';
 
   @override
   String get invitationHint =>
-      'QR-kodni boshqa qurilmadagi ilovada skanerlang yoki taklifnoma matnini yuboring.';
+      'Bu QR-kodni boshqa qurilmadagi Ulash orqali skanerlang.';
 
   @override
-  String get invitationQrSemantics =>
-      'Qurilmaga vaqtinchalik taklifnoma QR-kodi';
+  String get invitationQrSemantics => 'Qurilmani ulash uchun QR-kod';
 
   @override
-  String get invitationExpired =>
-      'Taklifnoma muddati tugadi. Yangisini yarating.';
+  String get invitationExpired => 'QR-kod muddati tugadi. Yangisini yarating.';
 
   @override
   String invitationRemaining(String time) {
@@ -807,7 +805,7 @@ class AppLocalizationsUz extends AppLocalizations {
   String get copied => 'Nusxalandi';
 
   @override
-  String get copyInvitation => 'Taklifnomani nusxalash';
+  String get copyInvitation => 'Kodni nusxalash';
 
   @override
   String get pairOnlyIfCodeMatches =>
@@ -837,7 +835,7 @@ class AppLocalizationsUz extends AppLocalizations {
 
   @override
   String get onbBody1 =>
-      'Rasm, video va hujjatlarni telefondan kompyuterga va aksincha asl sifatida yuboring — bevosita, bulutsiz va roʻyxatdan oʻtmasdan.';
+      'Rasm, video va hujjatlar — telefon va kompyuter oʻrtasida asl sifatida. Bulutsiz va roʻyxatdan oʻtmasdan, har bir uzatishni esa oʻzingiz tasdiqlaysiz.';
 
   @override
   String get onbTitle2 => 'Bitta Wi-Fi tarmogʻi';
@@ -891,7 +889,7 @@ class AppLocalizationsUz extends AppLocalizations {
   String get sendDiagnostics => 'Diagnostika jurnalini yuborish';
 
   @override
-  String get scannerTitle => 'Qurilmani ulash';
+  String get scannerTitle => 'Qurilma qoʻshish';
 
   @override
   String get cameraUnavailable =>
@@ -902,7 +900,7 @@ class AppLocalizationsUz extends AppLocalizations {
 
   @override
   String get scannerHint =>
-      'Kamerani boshqa qurilmadagi «Qabul qilish» boʻlimidagi QR-kodga qarating. Ikkala qurilma bitta tarmoqda boʻlishi kerak.';
+      'Kamerani QR-kodga qarating: boshqa qurilmada Ulash → «Qurilmalar» → «QR koʻrsatish»ni oching. Ikkala qurilma bitta tarmoqda boʻlishi kerak.';
 
   @override
   String get busyPreparingStorage => 'Himoyalangan xotira tayyorlanmoqda';
@@ -1007,11 +1005,11 @@ class AppLocalizationsUz extends AppLocalizations {
 
   @override
   String get connectionLostAutoResume =>
-      'Aloqa uzildi. Tasdiqlangan jarayon saqlandi; ikkinchi qurilma yana tarmoqqa chiqqanda uzatish avtomatik davom etadi.';
+      'Aloqa uzildi. Tasdiqlangan qism saqlandi; ikkinchi qurilma yana tarmoqqa chiqqanda uzatish avtomatik davom etadi.';
 
   @override
   String get connectionNotRestored =>
-      'Aloqa tiklanmadi. Tasdiqlangan jarayon saqlandi. Ilovani ikkala qurilmada oching va «Davom ettirish»ni bosing.';
+      'Aloqa tiklanmadi. Tasdiqlangan qism saqlandi. Ilovani ikkala qurilmada oching va «Davom ettirish»ni bosing.';
 
   @override
   String cancelRetrying(int attempt, int max, String seconds) {
@@ -1020,7 +1018,7 @@ class AppLocalizationsUz extends AppLocalizations {
 
   @override
   String connectionRetrying(int attempt, int max, String seconds) {
-    return 'Aloqa uzildi. $seconds s dan soʻng $max tadan $attempt-urinish. Tasdiqlangan jarayon saqlandi.';
+    return 'Aloqa uzildi. $seconds s dan soʻng $max tadan $attempt-urinish. Tasdiqlangan qism saqlandi.';
   }
 
   @override
@@ -1176,7 +1174,7 @@ class AppLocalizationsUz extends AppLocalizations {
       'Ilova yopilganda uzatish toʻxtatildi. Qabul qiluvchidagi holatni tekshirish uchun «Davom ettirish»ni bosing.';
 
   @override
-  String get verifiedAndSaved => 'SHA-256 tekshirildi · saqlash tasdiqlandi';
+  String get verifiedAndSaved => 'Tekshirildi va saqlandi';
 
   @override
   String get consentNotReceived =>
@@ -1365,4 +1363,407 @@ class AppLocalizationsUz extends AppLocalizations {
   String etaLeft(String value) {
     return '$value qoldi';
   }
+
+  @override
+  String get messageSent =>
+      'Xabar yuborildi. Qabul qiluvchi uni oʻz qurilmasida tasdiqlaydi.';
+
+  @override
+  String get errMessageTooLong =>
+      'Xabar juda uzun (64 KB gacha). Uni fayl sifatida yuboring.';
+
+  @override
+  String get journalWarningText =>
+      'Tarixdagi baʼzi yozuvlarni oʻqib boʻlmadi. Tayyorlangan nusxalar saqlandi va tozalashga taklif qilinmaydi.';
+
+  @override
+  String get preparationCancelled =>
+      'Tayyorlash toʻxtatildi. Tayyor fayllar roʻyxatda qoldi.';
+
+  @override
+  String get errUrlUnavailable =>
+      'Havolani ochib boʻlmadi. Brauzer oʻrnatilganini tekshiring.';
+
+  @override
+  String get browserPeer => 'Brauzer';
+
+  @override
+  String get webUploadDetail => 'Ulash havolasi orqali brauzerdan yuklandi';
+
+  @override
+  String get webPageTitle => 'Qurilmadagi fayllar';
+
+  @override
+  String get webPageDownload => 'Yuklab olish';
+
+  @override
+  String get webPageNoFiles => 'Yuklab olish uchun fayllar tanlanmagan.';
+
+  @override
+  String get webPageUpload => 'Qurilmaga yuborish';
+
+  @override
+  String get webPageChoose => 'Fayllarni tanlash';
+
+  @override
+  String get webPageWaiting => 'Qurilmada qabul qilishni tasdiqlang…';
+
+  @override
+  String get webPageUploading => 'Yuborilmoqda';
+
+  @override
+  String get webPageDone => 'Tayyor: fayllar qurilmada.';
+
+  @override
+  String get webPageRejected => 'Qurilmada qabul qilish rad etildi.';
+
+  @override
+  String get webPageFailed => 'Yuborib boʻlmadi. Qayta urinib koʻring.';
+
+  @override
+  String get webPageExpires => 'Havola amal qiladi:';
+
+  @override
+  String get unknownDevice => 'Qurilma';
+
+  @override
+  String get pairingCancelled => 'Ulanish bekor qilindi';
+
+  @override
+  String peerBusyRetrying(int seconds) {
+    return 'Qabul qiluvchi band. $seconds soniyadan keyin qayta urinib koʻriladi.';
+  }
+
+  @override
+  String get errFoldersUnsupported =>
+      'Boshqa qurilmada Ulash eski versiyasi — u jildlarni qabul qilmaydi. U yerda ilovani yangilang yoki alohida fayllarni tanlang.';
+
+  @override
+  String get errFolderTooLarge =>
+      'Jildda 1000 tadan ortiq fayl bor. Kichikroq jild tanlang.';
+
+  @override
+  String get errFolderPath =>
+      'Jild juda chuqur yoki ruxsat etilmagan nomlarga ega. Ichki jildni yoki alohida fayllarni tanlang.';
+
+  @override
+  String get errFolderEmpty => 'Tanlangan jildda fayl yoʻq.';
+
+  @override
+  String get errNearbyUnavailable =>
+      'Qurilma endi ulanishni kutmayapti. Unda ulanish ekranini qayta ochishni soʻrang.';
+
+  @override
+  String get errPhotosDenied =>
+      '«Rasmlar»ga ruxsat yoʻq. Sozlamalarda qoʻshishga ruxsat bering.';
+
+  @override
+  String get errPhotosFailed =>
+      '«Rasmlar»ga saqlab boʻlmadi. Fayl Ulash ichida qoldi.';
+
+  @override
+  String get savedToPhotos => '«Rasmlar»ga saqlandi';
+
+  @override
+  String get errOpenBlocked =>
+      'Bu dastur yoki skript — Ulash bunday fayllarni ishga tushirmaydi. Joʻnatuvchiga ishonsangiz, jildni ochib, faylni oʻzingiz ishga tushiring.';
+
+  @override
+  String get saveLocationFiles => '«Fayllar» ilovasi → iPhone’da → Ulash';
+
+  @override
+  String intakeAdded(int count) {
+    return 'Boshqa ilovadan qoʻshildi: $count';
+  }
+
+  @override
+  String get errTooManyFiles =>
+      'Bir martada 1000 tagacha fayl yuborish mumkin. Roʻyxatdan bir qismini olib tashlang.';
+
+  @override
+  String get moreActions => 'Yana';
+
+  @override
+  String get copyAction => 'Nusxalash';
+
+  @override
+  String get textCopied => 'Nusxalandi';
+
+  @override
+  String get sendLead =>
+      'Rasm, video va hujjatlar — asl sifatida, toʻgʻridan-toʻgʻri Wi-Fi orqali.';
+
+  @override
+  String get folder => 'Jild';
+
+  @override
+  String get textMessage => 'Matn';
+
+  @override
+  String get addMore => 'Yana qoʻshish';
+
+  @override
+  String get sendTo => 'Kimga';
+
+  @override
+  String sendToDevice(String name) {
+    return '«$name»ga yuborish';
+  }
+
+  @override
+  String get addFilesFirst => 'Fayllarni qoʻshing';
+
+  @override
+  String get noAppLink =>
+      'Boshqa qurilmada Ulash yoʻqmi? Havola orqali yuboring';
+
+  @override
+  String get firstDeviceTitle => 'Birinchi qurilmani ulang';
+
+  @override
+  String get firstDeviceBody =>
+      'Ikkinchi qurilmada xuddi shu Wi-Fi tarmogʻida Ulashni oching va QR-kodni skanerlang. Bu faqat bir marta qilinadi.';
+
+  @override
+  String get activeTransfers => 'Hozir uzatilmoqda';
+
+  @override
+  String get messageTitle => 'Xabar';
+
+  @override
+  String get messageHint => 'Matn yoki havola';
+
+  @override
+  String get chooseRecipientFirst => 'Avval qabul qiluvchini tanlang.';
+
+  @override
+  String selectedSummary(String files, String size) {
+    return '$files · $size';
+  }
+
+  @override
+  String get searchHint => 'Nom yoki qurilma boʻyicha qidirish';
+
+  @override
+  String get today => 'Bugun';
+
+  @override
+  String get yesterday => 'Kecha';
+
+  @override
+  String get nothingFound => 'Hech narsa topilmadi';
+
+  @override
+  String get saveToPhotos => 'Rasmlarga saqlash';
+
+  @override
+  String get revealInFolder => 'Jildda koʻrsatish';
+
+  @override
+  String get executableTitle => 'Dastur ochilsinmi?';
+
+  @override
+  String executableBody(String name) {
+    return '«$name» bu qurilmada dastur ishga tushirishi mumkin. Bunday fayllarni faqat yuboruvchiga ishonsangiz oching.';
+  }
+
+  @override
+  String get openAnyway => 'Baribir ochish';
+
+  @override
+  String folderLabel(String name) {
+    return '«$name» jildi';
+  }
+
+  @override
+  String get receiveFiles => 'Fayllarni qabul qilish';
+
+  @override
+  String get receiveHintOn =>
+      'Qurilmalaringiz bu yerga fayl yubora oladi — har bir uzatishni oʻzingiz tasdiqlaysiz.';
+
+  @override
+  String get receiveHintOff =>
+      'Qabul oʻchiq: bu qurilma boshqalarga koʻrinmaydi.';
+
+  @override
+  String get deviceCode => 'Qurilma kodi';
+
+  @override
+  String get showQr => 'QR koʻrsatish';
+
+  @override
+  String get noCameraEnterCode => 'Kamera yoʻqmi? Kodni kiriting';
+
+  @override
+  String get connectFooter =>
+      'Boshqa qurilmada xuddi shu Wi-Fi tarmogʻida Ulashni oching. Ulanish bir marta kerak.';
+
+  @override
+  String get nearby => 'Yaqinda';
+
+  @override
+  String get nearbyFooter =>
+      'Shu tarmoqdagi, hozir ulanish ekrani ochiq qurilmalar.';
+
+  @override
+  String get waitingRequests => 'Ulanish soʻrovlari';
+
+  @override
+  String get qrHint =>
+      'Boshqa qurilmada Ulash → «Qurilmalar» → «QR skanerlash»ni oching.';
+
+  @override
+  String get qrNearbyVisible =>
+      'Bu ekran ochiq ekan, qurilma yaqindagilarga koʻrinadi va uni QRsiz ulash mumkin.';
+
+  @override
+  String get codesMatchTitle => 'Kodlar mosmi?';
+
+  @override
+  String sasHostBody(String name) {
+    return '«$name» ekranidagi kod bilan solishtiring. Faqat kodlar bir xil boʻlsa ulang.';
+  }
+
+  @override
+  String get sasJoinerTitle => 'Boshqa qurilmada tasdiqlang';
+
+  @override
+  String sasJoinerBody(String name) {
+    return '«$name» ekranida xuddi shu kod koʻrinishi kerak. U yerda «Ulanish»ni bosing.';
+  }
+
+  @override
+  String get codesMatch => 'Ha, ulanish';
+
+  @override
+  String get codesDiffer => 'Kodlar har xil';
+
+  @override
+  String get webShareEntry => 'Havola orqali';
+
+  @override
+  String get webShareTitle => 'Havola orqali yuborish';
+
+  @override
+  String get webShareBody =>
+      'Havolani shu Wi-Fi tarmogʻidagi qurilma brauzerida oching — masalan, Ulash oʻrnatilmagan kompyuterda.';
+
+  @override
+  String get webShareInsecure =>
+      'Havola shifrlashsiz (HTTP) ishlaydi. Undan faqat oʻz tarmogʻingizda foydalaning va uzatishdan keyin toʻxtating.';
+
+  @override
+  String get webShareAllowUpload => 'Bu qurilmaga fayl yuklashga ruxsat berish';
+
+  @override
+  String webShareValid(String time) {
+    return 'Havola $time gacha amal qiladi';
+  }
+
+  @override
+  String webShareStats(int clients, int downloads, int uploads) {
+    return 'Ochildi: $clients · yuklab olindi: $downloads · yuklandi: $uploads';
+  }
+
+  @override
+  String get webShareCreate => 'Havola yaratish';
+
+  @override
+  String get webShareStop => 'Toʻxtatish';
+
+  @override
+  String get copyLink => 'Havolani nusxalash';
+
+  @override
+  String get webShareSelectFirst =>
+      'Havola tanlangan fayllarni beradi. Fayllarni tanlang yoki yuklashga ruxsat bering.';
+
+  @override
+  String get webShareQrSemantics => 'Brauzer uchun havola QR-kodi';
+
+  @override
+  String get receiving => 'Qabul qilish';
+
+  @override
+  String get autoSaveToPhotos => 'Rasm va videolarni «Rasmlar»ga saqlash';
+
+  @override
+  String get autoSaveHint =>
+      'Qabul qilingan rasm va videolar darhol galereyada paydo boʻladi.';
+
+  @override
+  String get theme => 'Mavzu';
+
+  @override
+  String get support => 'Yordam';
+
+  @override
+  String get privacyPolicy => 'Maxfiylik siyosati';
+
+  @override
+  String get howDataHandled => 'Maʼlumotlar qanday ishlanadi';
+
+  @override
+  String get advanced => 'Qoʻshimcha';
+
+  @override
+  String get advancedHint => 'Xotira, diagnostika, kalitlarni tiklash';
+
+  @override
+  String get about => 'Ilova haqida';
+
+  @override
+  String get dangerZone => 'Xavfsizlik';
+
+  @override
+  String get onbAllowTitle => 'Tarmoqqa ruxsat bering';
+
+  @override
+  String get onbAllowBody =>
+      'Ulash qurilmalaringizni faqat Wi-Fi tarmogʻingizda qidiradi. Bu ruxsatsiz qurilmalar bir-birini topa olmaydi.';
+
+  @override
+  String get allowAccess => 'Ruxsat berish';
+
+  @override
+  String get webUploadTitle => 'Brauzerdan yuklash';
+
+  @override
+  String webUploadBody(String client, String files, String size) {
+    return '$client bu yerga $files ($size) yuklamoqchi.';
+  }
+
+  @override
+  String get allow => 'Ruxsat berish';
+
+  @override
+  String waitingForApprovalOn(String name) {
+    return '«$name»da tasdiqlash kutilmoqda';
+  }
+
+  @override
+  String connectedTo(String name) {
+    return '«$name»ga ulandi';
+  }
+
+  @override
+  String get shareSheetLink => 'Havola';
+
+  @override
+  String get nearbyEmpty =>
+      'Hozircha yaqinda hech kim yoʻq. Boshqa qurilmada «Qurilmalar» → «QR koʻrsatish»ni oching.';
+
+  @override
+  String get noDevicesYet => 'Hozircha ulangan qurilmalar yoʻq';
+
+  @override
+  String get filterText => 'Matn';
+
+  @override
+  String get saveDestination => 'Qayerga saqlash';
+
+  @override
+  String get largeTextSample =>
+      'Matn oʻlchami qurilma sozlamalarida oʻzgaradi.';
 }

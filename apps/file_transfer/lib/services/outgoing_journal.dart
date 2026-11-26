@@ -18,7 +18,10 @@ class OutgoingJob {
     this.snapshot,
     this.localState = 'queued',
     this.detail,
-  });
+    this.detailCode,
+    List<String>? detailArgs,
+    this.messageText,
+  }) : detailArgs = detailArgs ?? const [];
 
   final String id;
   final String peerId;
@@ -28,7 +31,25 @@ class OutgoingJob {
   String? remoteId;
   TransferSnapshot? snapshot;
   String localState;
+
+  /// Legacy, already-localized explanation from journals written by 1.0.
+  /// New code stores [detailCode] + [detailArgs] and translates on display,
+  /// so the history follows the current language.
   String? detail;
+  String? detailCode;
+  List<String> detailArgs;
+
+  void setDetail(String? code, [List<Object?> args = const []]) {
+    detailCode = code;
+    detailArgs = [for (final arg in args) '$arg'];
+    detail = null;
+  }
+
+  bool get hasDetail => detailCode != null || detail != null;
+
+  /// Text of a message job (≤ 64 KiB), kept so history can show it after
+  /// the prepared copy is cleaned up.
+  final String? messageText;
 
   bool get isTerminal =>
       localState == 'completed' ||
@@ -47,7 +68,10 @@ class OutgoingJob {
     'remoteId': remoteId,
     'snapshot': snapshot?.toJson(),
     'localState': localState,
-    'detail': detail,
+    if (detail != null) 'detail': detail,
+    if (detailCode != null) 'detailCode': detailCode,
+    if (detailArgs.isNotEmpty) 'detailArgs': detailArgs,
+    if (messageText != null) 'messageText': messageText,
   };
 
   factory OutgoingJob.fromJson(Map<String, dynamic> json) => OutgoingJob(
@@ -64,40 +88,41 @@ class OutgoingJob {
         : TransferSnapshot.fromJson(json['snapshot'] as Map<String, dynamic>),
     localState: json['localState'] as String,
     detail: json['detail'] as String?,
+    detailCode: json['detailCode'] as String?,
+    detailArgs: (json['detailArgs'] as List?)?.map((e) => '$e').toList(),
+    messageText: json['messageText'] as String?,
   );
 }
 
 class OutgoingJournal {
   OutgoingJournal(Directory root) {
     root.createSync(recursive: true);
-    _db = sqlite3.open(p.join(root.path, 'outgoing.sqlite3'));
-    _db.execute('PRAGMA busy_timeout=5000');
-    _db.execute('PRAGMA journal_mode=WAL');
-    _db.execute('PRAGMA synchronous=FULL');
-    final check = _db.select('PRAGMA quick_check');
-    if (check.isEmpty || check.first.values.first != 'ok') {
-      _db.close();
-      throw const StorageException('JOURNAL_CORRUPT', 'Outgoing journal damaged');
-    }
-    _db.execute(
-      'CREATE TABLE IF NOT EXISTS jobs ('
-      'id TEXT PRIMARY KEY, payload TEXT NOT NULL, created TEXT NOT NULL)',
+    // Shared versioned opener: WAL + FULL sync, integrity check, refuses a
+    // journal written by a newer app version (JOURNAL_TOO_NEW).
+    _db = openVersionedJournal(
+      File(p.join(root.path, 'outgoing.sqlite3')),
+      version: schemaVersion,
+      migrate: (db, from) => db.execute(
+        'CREATE TABLE IF NOT EXISTS jobs ('
+        'id TEXT PRIMARY KEY, payload TEXT NOT NULL, created TEXT NOT NULL)',
+      ),
     );
   }
 
   late final Database _db;
 
+  /// Schema version written to PRAGMA user_version (the table layout itself
+  /// is unchanged since 1.0; versioning protects against downgrades).
+  static const schemaVersion = 1;
+
   /// Number of rows that could not be read during the last [recover]. Such
   /// rows are left untouched (never deleted automatically) and skipped.
   int skippedRows = 0;
 
-  /// [interruptedDetail] is the (localized) explanation stored on jobs that
-  /// were running when the app closed.
-  List<OutgoingJob> recover({
-    String interruptedDetail =
-        'Передача остановлена при закрытии приложения. '
-        'Нажмите «Продолжить» для проверки состояния у получателя.',
-  }) {
+  /// Jobs that were running when the app closed are paused with the detail
+  /// code `interruptedOnClose` (translated on display). [interruptedDetail]
+  /// is accepted for compatibility and ignored.
+  List<OutgoingJob> recover({String? interruptedDetail}) {
     skippedRows = 0;
     final result = <OutgoingJob>[];
     for (final row in _db.select(
@@ -120,7 +145,7 @@ class OutgoingJournal {
           job.localState != 'cancelling' &&
           job.localState != 'failed') {
         job.localState = 'paused';
-        job.detail = interruptedDetail;
+        job.setDetail('interruptedOnClose');
         save(job);
       }
     }
@@ -134,6 +159,13 @@ class OutgoingJournal {
   );
 
   void delete(String id) => _db.execute('DELETE FROM jobs WHERE id=?', [id]);
+
+  /// Removes journal records (retention). Prepared copies are not touched.
+  void deleteAll(Iterable<String> ids) {
+    for (final id in ids) {
+      delete(id);
+    }
+  }
 
   void close() => _db.close();
 }

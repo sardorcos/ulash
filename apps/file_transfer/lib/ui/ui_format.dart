@@ -69,3 +69,27 @@ String formatDate(
       '${pad(local.hour)}:${pad(local.minute)}'
       '${includeSeconds ? ':${pad(local.second)}' : ''}';
 }
+
+/// Section header for a day in History: "Today", "Yesterday" or a date.
+String formatDay(AppLocalizations l, DateTime date, {DateTime? now}) {
+  final local = date.toLocal();
+  final today = (now ?? DateTime.now()).toLocal();
+  final day = DateTime(local.year, local.month, local.day);
+  final diff = DateTime(today.year, today.month, today.day).difference(day);
+  if (diff.inDays == 0) return l.today;
+  if (diff.inDays == 1) return l.yesterday;
+  try {
+    return local.year == today.year
+        ? DateFormat.MMMMd(l.localeName).format(local)
+        : DateFormat.yMMMMd(l.localeName).format(local);
+  } catch (_) {
+    String pad(int value) => value.toString().padLeft(2, '0');
+    return '${pad(local.day)}.${pad(local.month)}.${local.year}';
+  }
+}
+
+String formatTime(AppLocalizations l, DateTime date) {
+  final local = date.toLocal();
+  String pad(int value) => value.toString().padLeft(2, '0');
+  return '${pad(local.hour)}:${pad(local.minute)}';
+}

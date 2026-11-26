@@ -5,6 +5,7 @@ import 'dart:ui' show PlatformDispatcher;
 // Kept for plugin compatibility during the Flutter 3.50 Material migration.
 // ignore: deprecated_member_use
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import 'l10n/app_localizations.dart';
@@ -57,8 +58,16 @@ class _ScannerScreenState extends State<_ScannerScreen> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text(AppLocalizations.of(context).scannerTitle)),
+    backgroundColor: Colors.black,
+    extendBodyBehindAppBar: true,
+    appBar: AppBar(
+      title: Text(AppLocalizations.of(context).scannerTitle),
+      backgroundColor: Colors.transparent,
+      foregroundColor: Colors.white,
+      surfaceTintColor: Colors.transparent,
+    ),
     body: Stack(
+      fit: StackFit.expand,
       children: [
         MobileScanner(
           controller: _camera,
@@ -71,6 +80,7 @@ class _ScannerScreenState extends State<_ScannerScreen> {
                 .firstOrNull;
             if (payload == null) return;
             _found = true;
+            HapticFeedback.mediumImpact();
             Navigator.of(context).pop(payload);
           },
           errorBuilder: (context, error) => Center(
@@ -79,11 +89,16 @@ class _ScannerScreenState extends State<_ScannerScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.no_photography_outlined, size: 48),
+                  const Icon(
+                    Icons.no_photography_outlined,
+                    size: 48,
+                    color: Colors.white,
+                  ),
                   const SizedBox(height: 16),
                   Text(
                     AppLocalizations.of(context).cameraUnavailable,
                     textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white),
                   ),
                   const SizedBox(height: 20),
                   FilledButton.icon(
@@ -96,16 +111,43 @@ class _ScannerScreenState extends State<_ScannerScreen> {
             ),
           ),
         ),
+        // Viewfinder: a rounded square that shows where to aim.
+        IgnorePointer(
+          child: Center(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final side = (constraints.biggest.shortestSide * .68).clamp(
+                  180.0,
+                  320.0,
+                );
+                return Container(
+                  width: side,
+                  height: side,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(28),
+                    border: Border.all(color: Colors.white, width: 3),
+                    boxShadow: const [
+                      BoxShadow(color: Color(0x88000000), spreadRadius: 2000),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
         Positioned(
           left: 24,
           right: 24,
-          bottom: 32,
-          child: Card(
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Text(
-                AppLocalizations.of(context).scannerHint,
-                textAlign: TextAlign.center,
+          bottom: 0,
+          child: SafeArea(
+            top: false,
+            minimum: const EdgeInsets.only(bottom: 24),
+            child: Text(
+              AppLocalizations.of(context).scannerHint,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                color: Colors.white,
+                fontWeight: FontWeight.w500,
               ),
             ),
           ),

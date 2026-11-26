@@ -2,7 +2,7 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart';
-import 'package:transfer_core/transfer_core.dart' show StorageException;
+import 'package:transfer_core/transfer_core.dart' show openVersionedJournal;
 import 'package:uuid/uuid.dart';
 
 /// A system export is independent of the network's committed receipt.
@@ -34,25 +34,21 @@ class ExportRecord {
 class ExportJournal {
   ExportJournal(Directory root) {
     root.createSync(recursive: true);
-    _db = sqlite3.open(p.join(root.path, 'exports.sqlite3'));
-    _db.execute('PRAGMA busy_timeout=5000');
-    _db.execute('PRAGMA journal_mode=WAL');
-    _db.execute('PRAGMA synchronous=FULL');
-    final check = _db.select('PRAGMA quick_check');
-    if (check.isEmpty || check.first.values.first != 'ok') {
-      _db.close();
-      throw const StorageException('JOURNAL_CORRUPT', 'Export journal damaged');
-    }
-    _db.execute('''
-      CREATE TABLE IF NOT EXISTS exports (
-        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-        id TEXT NOT NULL UNIQUE,
-        transfer_id TEXT NOT NULL, file_id TEXT NOT NULL,
-        state TEXT NOT NULL, created_at TEXT NOT NULL,
-        destination_label TEXT, platform_reference TEXT, error_code TEXT
-      );
-      CREATE INDEX IF NOT EXISTS exports_file ON exports(transfer_id,file_id,sequence);
-    ''');
+    _db = openVersionedJournal(
+      File(p.join(root.path, 'exports.sqlite3')),
+      version: schemaVersion,
+      migrate: (db, from) => db.execute('''
+        CREATE TABLE IF NOT EXISTS exports (
+          sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+          id TEXT NOT NULL UNIQUE,
+          transfer_id TEXT NOT NULL, file_id TEXT NOT NULL,
+          state TEXT NOT NULL, created_at TEXT NOT NULL,
+          destination_label TEXT, platform_reference TEXT, error_code TEXT
+        );
+        CREATE INDEX IF NOT EXISTS exports_file
+          ON exports(transfer_id,file_id,sequence);
+      '''),
+    );
     // No automatic retry: a destination may already contain the exported copy.
     _db.execute(
       "UPDATE exports SET state='unknown', error_code='EXPORT_INTERRUPTED' "
@@ -61,6 +57,8 @@ class ExportJournal {
   }
 
   late final Database _db;
+
+  static const schemaVersion = 1;
 
   ExportRecord begin(String transferId, String fileId) {
     final id = const Uuid().v4();

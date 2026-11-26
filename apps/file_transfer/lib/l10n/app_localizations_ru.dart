@@ -13,16 +13,16 @@ class AppLocalizationsRu extends AppLocalizations {
   String get unitB => 'Б';
 
   @override
-  String get unitKiB => 'КиБ';
+  String get unitKiB => 'КБ';
 
   @override
-  String get unitMiB => 'МиБ';
+  String get unitMiB => 'МБ';
 
   @override
-  String get unitGiB => 'ГиБ';
+  String get unitGiB => 'ГБ';
 
   @override
-  String get unitTiB => 'ТиБ';
+  String get unitTiB => 'ТБ';
 
   @override
   String filesCount(int count) {
@@ -142,7 +142,7 @@ class AppLocalizationsRu extends AppLocalizations {
   String get sendEyebrow => 'ЛОКАЛЬНАЯ ПЕРЕДАЧА';
 
   @override
-  String get sendTitle => 'Файлы — на нужном\nустройстве.';
+  String get sendTitle => 'Отправить';
 
   @override
   String get sendSubtitle =>
@@ -259,7 +259,7 @@ class AppLocalizationsRu extends AppLocalizations {
   }
 
   @override
-  String get showInvitation => 'Показать приглашение';
+  String get showInvitation => 'Показать QR';
 
   @override
   String get myDevices => 'Мои устройства';
@@ -276,7 +276,7 @@ class AppLocalizationsRu extends AppLocalizations {
       'Включите приём, когда будете готовы получить файлы.';
 
   @override
-  String get incomingOffers => 'Входящие предложения';
+  String get incomingOffers => 'Ждут вашего ответа';
 
   @override
   String andMoreFiles(String files) {
@@ -312,10 +312,10 @@ class AppLocalizationsRu extends AppLocalizations {
       'Приложение должно быть открыто на обеих сторонах.';
 
   @override
-  String get createInvitation => 'Создать приглашение';
+  String get createInvitation => 'Показать QR';
 
   @override
-  String get enterInvitation => 'Ввести приглашение';
+  String get enterInvitation => 'Ввести код';
 
   @override
   String get scanInvitationTooltip =>
@@ -559,7 +559,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get trustedDevicesHint =>
-      'Каждое новое устройство подключается с вашим подтверждением.';
+      'Каждое новое устройство подключается только с вашим подтверждением.';
 
   @override
   String get open => 'Открыть';
@@ -577,11 +577,11 @@ class AppLocalizationsRu extends AppLocalizations {
   String get more => 'Подробнее';
 
   @override
-  String get diagnosticsLog => 'Журнал диагностики';
+  String get diagnosticsLog => 'Отчёт для поддержки';
 
   @override
   String get diagnosticsHint =>
-      'Коды ошибок без имён файлов и адресов. Отправляется только вами.';
+      'Коды ошибок без имён файлов и адресов. Отправляете только вы.';
 
   @override
   String get send => 'Отправить';
@@ -634,7 +634,7 @@ class AppLocalizationsRu extends AppLocalizations {
   }
 
   @override
-  String get temporaryCopies => 'Временные копии';
+  String get temporaryCopies => 'Подготовленные копии';
 
   @override
   String temporaryUsage(String used, String reserved) {
@@ -750,14 +750,14 @@ class AppLocalizationsRu extends AppLocalizations {
   String get receivedInApp => 'Получен в приложении';
 
   @override
-  String get pairByInvitation => 'Подключиться по приглашению';
+  String get pairByInvitation => 'Подключение по коду';
 
   @override
   String get pairByInvitationHint =>
-      'На втором устройстве создайте приглашение и скопируйте его сюда целиком.';
+      'На другом устройстве нажмите «Показать QR» → «Скопировать код» и вставьте код сюда целиком.';
 
   @override
-  String get invitationText => 'Текст приглашения';
+  String get invitationText => 'Код подключения';
 
   @override
   String get pairConnect => 'Подключиться';
@@ -785,18 +785,18 @@ class AppLocalizationsRu extends AppLocalizations {
   String get disconnect => 'Отключить';
 
   @override
-  String get invitationTitle => 'Приглашение на устройство';
+  String get invitationTitle => 'Подключение устройства';
 
   @override
   String get invitationHint =>
-      'Отсканируйте QR в приложении на другом устройстве или передайте текст приглашения.';
+      'Отсканируйте этот QR-код в Ulash на другом устройстве.';
 
   @override
-  String get invitationQrSemantics =>
-      'QR-код временного приглашения на устройство';
+  String get invitationQrSemantics => 'QR-код для подключения устройства';
 
   @override
-  String get invitationExpired => 'Срок приглашения истёк. Создайте новое.';
+  String get invitationExpired =>
+      'Срок действия QR-кода истёк. Создайте новый.';
 
   @override
   String invitationRemaining(String time) {
@@ -807,7 +807,7 @@ class AppLocalizationsRu extends AppLocalizations {
   String get copied => 'Скопировано';
 
   @override
-  String get copyInvitation => 'Скопировать приглашение';
+  String get copyInvitation => 'Скопировать код';
 
   @override
   String get pairOnlyIfCodeMatches =>
@@ -837,7 +837,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get onbBody1 =>
-      'Отправляйте фото, видео и документы с телефона на компьютер и обратно в исходном качестве — напрямую, без облака и без регистрации.';
+      'Фото, видео и документы — между телефоном и компьютером в исходном качестве. Без облака и регистрации, а каждую передачу вы подтверждаете сами.';
 
   @override
   String get onbTitle2 => 'Одна сеть Wi-Fi';
@@ -895,14 +895,14 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get cameraUnavailable =>
-      'Камера недоступна. Разрешите доступ в настройках или вернитесь и вставьте код подключения вручную.';
+      'Камера недоступна. Разрешите доступ в настройках или вернитесь и введите код подключения вручную.';
 
   @override
   String get openSettings => 'Открыть настройки';
 
   @override
   String get scannerHint =>
-      'Наведите камеру на QR-код в разделе «Получить» на другом устройстве. Оба устройства должны быть в одной сети.';
+      'Наведите камеру на QR-код: на другом устройстве откройте Ulash → «Устройства» → «Показать QR». Оба устройства должны быть в одной сети.';
 
   @override
   String get busyPreparingStorage => 'Подготовка защищённого хранилища';
@@ -1174,7 +1174,7 @@ class AppLocalizationsRu extends AppLocalizations {
       'Передача остановлена при закрытии приложения. Нажмите «Продолжить» для проверки состояния у получателя.';
 
   @override
-  String get verifiedAndSaved => 'SHA-256 проверен · сохранение подтверждено';
+  String get verifiedAndSaved => 'Проверено и сохранено';
 
   @override
   String get consentNotReceived =>
@@ -1363,4 +1363,407 @@ class AppLocalizationsRu extends AppLocalizations {
   String etaLeft(String value) {
     return 'осталось $value';
   }
+
+  @override
+  String get messageSent =>
+      'Сообщение отправлено. Получатель подтвердит его на своём устройстве.';
+
+  @override
+  String get errMessageTooLong =>
+      'Сообщение слишком длинное (до 64 КБ). Отправьте его файлом.';
+
+  @override
+  String get journalWarningText =>
+      'Часть записей истории не удалось прочитать. Подготовленные копии сохранены и не будут предложены к очистке.';
+
+  @override
+  String get preparationCancelled =>
+      'Подготовка остановлена. Уже подготовленные файлы остались в списке.';
+
+  @override
+  String get errUrlUnavailable =>
+      'Не удалось открыть ссылку. Проверьте, что установлен браузер.';
+
+  @override
+  String get browserPeer => 'Браузер';
+
+  @override
+  String get webUploadDetail => 'Загружено из браузера по ссылке Ulash';
+
+  @override
+  String get webPageTitle => 'Файлы с устройства';
+
+  @override
+  String get webPageDownload => 'Скачать';
+
+  @override
+  String get webPageNoFiles => 'Файлы для скачивания не выбраны.';
+
+  @override
+  String get webPageUpload => 'Отправить на устройство';
+
+  @override
+  String get webPageChoose => 'Выбрать файлы';
+
+  @override
+  String get webPageWaiting => 'Подтвердите приём на устройстве…';
+
+  @override
+  String get webPageUploading => 'Отправка';
+
+  @override
+  String get webPageDone => 'Готово: файлы на устройстве.';
+
+  @override
+  String get webPageRejected => 'Приём отклонён на устройстве.';
+
+  @override
+  String get webPageFailed => 'Не удалось отправить. Попробуйте ещё раз.';
+
+  @override
+  String get webPageExpires => 'Ссылка действует до';
+
+  @override
+  String get unknownDevice => 'Устройство';
+
+  @override
+  String get pairingCancelled => 'Подключение отменено';
+
+  @override
+  String peerBusyRetrying(int seconds) {
+    return 'Получатель занят. Повтор через $seconds с.';
+  }
+
+  @override
+  String get errFoldersUnsupported =>
+      'На другом устройстве старая версия Ulash — она не принимает папки. Обновите приложение там или выберите отдельные файлы.';
+
+  @override
+  String get errFolderTooLarge =>
+      'В папке больше 1000 файлов. Выберите папку поменьше.';
+
+  @override
+  String get errFolderPath =>
+      'Папка слишком глубокая или содержит недопустимые имена. Выберите вложенную папку или отдельные файлы.';
+
+  @override
+  String get errFolderEmpty => 'В выбранной папке нет файлов.';
+
+  @override
+  String get errNearbyUnavailable =>
+      'Устройство больше не ждёт подключения. Попросите снова открыть на нём экран подключения.';
+
+  @override
+  String get errPhotosDenied =>
+      'Нет доступа к «Фото». Разрешите добавление в настройках.';
+
+  @override
+  String get errPhotosFailed =>
+      'Не удалось сохранить в «Фото». Файл остался в Ulash.';
+
+  @override
+  String get savedToPhotos => 'Сохранено в «Фото»';
+
+  @override
+  String get errOpenBlocked =>
+      'Это программа или скрипт — Ulash не запускает такие файлы. Откройте папку и запустите файл сами, если доверяете отправителю.';
+
+  @override
+  String get saveLocationFiles => 'Приложение «Файлы» → На iPhone → Ulash';
+
+  @override
+  String intakeAdded(int count) {
+    return 'Добавлено из другого приложения: $count';
+  }
+
+  @override
+  String get errTooManyFiles =>
+      'За один раз можно отправить до 1000 файлов. Уберите часть из списка.';
+
+  @override
+  String get moreActions => 'Ещё';
+
+  @override
+  String get copyAction => 'Скопировать';
+
+  @override
+  String get textCopied => 'Скопировано';
+
+  @override
+  String get sendLead =>
+      'Фото, видео и документы — в исходном качестве, напрямую по Wi-Fi.';
+
+  @override
+  String get folder => 'Папка';
+
+  @override
+  String get textMessage => 'Текст';
+
+  @override
+  String get addMore => 'Добавить ещё';
+
+  @override
+  String get sendTo => 'Кому';
+
+  @override
+  String sendToDevice(String name) {
+    return 'Отправить на «$name»';
+  }
+
+  @override
+  String get addFilesFirst => 'Добавьте файлы';
+
+  @override
+  String get noAppLink => 'Нет Ulash на другом устройстве? Отправьте по ссылке';
+
+  @override
+  String get firstDeviceTitle => 'Подключите первое устройство';
+
+  @override
+  String get firstDeviceBody =>
+      'Откройте Ulash на втором устройстве в той же сети Wi-Fi и отсканируйте QR-код. Это нужно сделать один раз.';
+
+  @override
+  String get activeTransfers => 'Сейчас передаются';
+
+  @override
+  String get messageTitle => 'Сообщение';
+
+  @override
+  String get messageHint => 'Текст или ссылка';
+
+  @override
+  String get chooseRecipientFirst => 'Сначала выберите получателя.';
+
+  @override
+  String selectedSummary(String files, String size) {
+    return '$files · $size';
+  }
+
+  @override
+  String get searchHint => 'Поиск по названию или устройству';
+
+  @override
+  String get today => 'Сегодня';
+
+  @override
+  String get yesterday => 'Вчера';
+
+  @override
+  String get nothingFound => 'Ничего не найдено';
+
+  @override
+  String get saveToPhotos => 'Сохранить в «Фото»';
+
+  @override
+  String get revealInFolder => 'Показать в папке';
+
+  @override
+  String get executableTitle => 'Открыть программу?';
+
+  @override
+  String executableBody(String name) {
+    return '«$name» может запустить программу на этом устройстве. Открывайте такие файлы, только если доверяете отправителю.';
+  }
+
+  @override
+  String get openAnyway => 'Всё равно открыть';
+
+  @override
+  String folderLabel(String name) {
+    return 'Папка «$name»';
+  }
+
+  @override
+  String get receiveFiles => 'Принимать файлы';
+
+  @override
+  String get receiveHintOn =>
+      'Ваши устройства могут отправлять сюда файлы — каждую передачу вы подтверждаете сами.';
+
+  @override
+  String get receiveHintOff =>
+      'Приём выключен: это устройство не видно другим.';
+
+  @override
+  String get deviceCode => 'Код устройства';
+
+  @override
+  String get showQr => 'Показать QR';
+
+  @override
+  String get noCameraEnterCode => 'Нет камеры? Ввести код';
+
+  @override
+  String get connectFooter =>
+      'Откройте Ulash на другом устройстве в той же сети Wi-Fi. Подключение нужно один раз.';
+
+  @override
+  String get nearby => 'Рядом';
+
+  @override
+  String get nearbyFooter =>
+      'Устройства в этой сети, на которых сейчас открыт экран подключения.';
+
+  @override
+  String get waitingRequests => 'Запросы на подключение';
+
+  @override
+  String get qrHint =>
+      'На другом устройстве откройте Ulash → «Устройства» → «Сканировать QR».';
+
+  @override
+  String get qrNearbyVisible =>
+      'Пока открыт этот экран, устройство видно рядом и его можно подключить без QR.';
+
+  @override
+  String get codesMatchTitle => 'Коды совпадают?';
+
+  @override
+  String sasHostBody(String name) {
+    return 'Сравните с кодом на экране «$name». Подключайте, только если коды одинаковые.';
+  }
+
+  @override
+  String get sasJoinerTitle => 'Подтвердите на другом устройстве';
+
+  @override
+  String sasJoinerBody(String name) {
+    return 'На «$name» должен быть показан этот же код. Нажмите там «Подключить».';
+  }
+
+  @override
+  String get codesMatch => 'Да, подключить';
+
+  @override
+  String get codesDiffer => 'Коды разные';
+
+  @override
+  String get webShareEntry => 'По ссылке';
+
+  @override
+  String get webShareTitle => 'Отправить по ссылке';
+
+  @override
+  String get webShareBody =>
+      'Откройте ссылку в браузере на устройстве в этой же сети Wi-Fi — например, на компьютере без Ulash.';
+
+  @override
+  String get webShareInsecure =>
+      'Ссылка работает без шифрования (HTTP). Пользуйтесь ей только в своей сети и остановите её после передачи.';
+
+  @override
+  String get webShareAllowUpload =>
+      'Разрешить загрузку файлов на это устройство';
+
+  @override
+  String webShareValid(String time) {
+    return 'Ссылка действует до $time';
+  }
+
+  @override
+  String webShareStats(int clients, int downloads, int uploads) {
+    return 'Открыли: $clients · скачано: $downloads · загружено: $uploads';
+  }
+
+  @override
+  String get webShareCreate => 'Создать ссылку';
+
+  @override
+  String get webShareStop => 'Остановить';
+
+  @override
+  String get copyLink => 'Скопировать ссылку';
+
+  @override
+  String get webShareSelectFirst =>
+      'Ссылка отдаёт выбранные файлы. Выберите файлы или разрешите загрузку.';
+
+  @override
+  String get webShareQrSemantics => 'QR-код ссылки для браузера';
+
+  @override
+  String get receiving => 'Получение';
+
+  @override
+  String get autoSaveToPhotos => 'Сохранять фото и видео в «Фото»';
+
+  @override
+  String get autoSaveHint =>
+      'Полученные снимки и видео сразу появятся в галерее.';
+
+  @override
+  String get theme => 'Тема';
+
+  @override
+  String get support => 'Поддержка';
+
+  @override
+  String get privacyPolicy => 'Политика конфиденциальности';
+
+  @override
+  String get howDataHandled => 'Как обрабатываются данные';
+
+  @override
+  String get advanced => 'Дополнительно';
+
+  @override
+  String get advancedHint => 'Хранилище, диагностика, сброс ключей';
+
+  @override
+  String get about => 'О приложении';
+
+  @override
+  String get dangerZone => 'Безопасность';
+
+  @override
+  String get onbAllowTitle => 'Разрешите доступ к сети';
+
+  @override
+  String get onbAllowBody =>
+      'Ulash ищет ваши устройства только в вашей сети Wi-Fi. Без этого разрешения устройства не найдут друг друга.';
+
+  @override
+  String get allowAccess => 'Разрешить доступ';
+
+  @override
+  String get webUploadTitle => 'Загрузка из браузера';
+
+  @override
+  String webUploadBody(String client, String files, String size) {
+    return '$client хочет загрузить сюда $files ($size).';
+  }
+
+  @override
+  String get allow => 'Разрешить';
+
+  @override
+  String waitingForApprovalOn(String name) {
+    return 'Ждём подтверждения на «$name»';
+  }
+
+  @override
+  String connectedTo(String name) {
+    return 'Подключено к «$name»';
+  }
+
+  @override
+  String get shareSheetLink => 'Ссылка';
+
+  @override
+  String get nearbyEmpty =>
+      'Рядом пока никого. Откройте на другом устройстве «Устройства» → «Показать QR».';
+
+  @override
+  String get noDevicesYet => 'Пока нет подключённых устройств';
+
+  @override
+  String get filterText => 'Текст';
+
+  @override
+  String get saveDestination => 'Куда сохранять';
+
+  @override
+  String get largeTextSample =>
+      'Размер текста меняется в настройках устройства.';
 }

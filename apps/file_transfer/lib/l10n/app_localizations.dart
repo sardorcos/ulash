@@ -109,25 +109,25 @@ abstract class AppLocalizations {
   /// No description provided for @unitKiB.
   ///
   /// In ru, this message translates to:
-  /// **'КиБ'**
+  /// **'КБ'**
   String get unitKiB;
 
   /// No description provided for @unitMiB.
   ///
   /// In ru, this message translates to:
-  /// **'МиБ'**
+  /// **'МБ'**
   String get unitMiB;
 
   /// No description provided for @unitGiB.
   ///
   /// In ru, this message translates to:
-  /// **'ГиБ'**
+  /// **'ГБ'**
   String get unitGiB;
 
   /// No description provided for @unitTiB.
   ///
   /// In ru, this message translates to:
-  /// **'ТиБ'**
+  /// **'ТБ'**
   String get unitTiB;
 
   /// No description provided for @filesCount.
@@ -337,7 +337,7 @@ abstract class AppLocalizations {
   /// No description provided for @sendTitle.
   ///
   /// In ru, this message translates to:
-  /// **'Файлы — на нужном\nустройстве.'**
+  /// **'Отправить'**
   String get sendTitle;
 
   /// No description provided for @sendSubtitle.
@@ -547,7 +547,7 @@ abstract class AppLocalizations {
   /// No description provided for @showInvitation.
   ///
   /// In ru, this message translates to:
-  /// **'Показать приглашение'**
+  /// **'Показать QR'**
   String get showInvitation;
 
   /// No description provided for @myDevices.
@@ -577,7 +577,7 @@ abstract class AppLocalizations {
   /// No description provided for @incomingOffers.
   ///
   /// In ru, this message translates to:
-  /// **'Входящие предложения'**
+  /// **'Ждут вашего ответа'**
   String get incomingOffers;
 
   /// No description provided for @andMoreFiles.
@@ -637,13 +637,13 @@ abstract class AppLocalizations {
   /// No description provided for @createInvitation.
   ///
   /// In ru, this message translates to:
-  /// **'Создать приглашение'**
+  /// **'Показать QR'**
   String get createInvitation;
 
   /// No description provided for @enterInvitation.
   ///
   /// In ru, this message translates to:
-  /// **'Ввести приглашение'**
+  /// **'Ввести код'**
   String get enterInvitation;
 
   /// No description provided for @scanInvitationTooltip.
@@ -1063,7 +1063,7 @@ abstract class AppLocalizations {
   /// No description provided for @trustedDevicesHint.
   ///
   /// In ru, this message translates to:
-  /// **'Каждое новое устройство подключается с вашим подтверждением.'**
+  /// **'Каждое новое устройство подключается только с вашим подтверждением.'**
   String get trustedDevicesHint;
 
   /// No description provided for @open.
@@ -1099,13 +1099,13 @@ abstract class AppLocalizations {
   /// No description provided for @diagnosticsLog.
   ///
   /// In ru, this message translates to:
-  /// **'Журнал диагностики'**
+  /// **'Отчёт для поддержки'**
   String get diagnosticsLog;
 
   /// No description provided for @diagnosticsHint.
   ///
   /// In ru, this message translates to:
-  /// **'Коды ошибок без имён файлов и адресов. Отправляется только вами.'**
+  /// **'Коды ошибок без имён файлов и адресов. Отправляете только вы.'**
   String get diagnosticsHint;
 
   /// No description provided for @send.
@@ -1195,7 +1195,7 @@ abstract class AppLocalizations {
   /// No description provided for @temporaryCopies.
   ///
   /// In ru, this message translates to:
-  /// **'Временные копии'**
+  /// **'Подготовленные копии'**
   String get temporaryCopies;
 
   /// No description provided for @temporaryUsage.
@@ -1363,19 +1363,19 @@ abstract class AppLocalizations {
   /// No description provided for @pairByInvitation.
   ///
   /// In ru, this message translates to:
-  /// **'Подключиться по приглашению'**
+  /// **'Подключение по коду'**
   String get pairByInvitation;
 
   /// No description provided for @pairByInvitationHint.
   ///
   /// In ru, this message translates to:
-  /// **'На втором устройстве создайте приглашение и скопируйте его сюда целиком.'**
+  /// **'На другом устройстве нажмите «Показать QR» → «Скопировать код» и вставьте код сюда целиком.'**
   String get pairByInvitationHint;
 
   /// No description provided for @invitationText.
   ///
   /// In ru, this message translates to:
-  /// **'Текст приглашения'**
+  /// **'Код подключения'**
   String get invitationText;
 
   /// No description provided for @pairConnect.
@@ -1423,25 +1423,25 @@ abstract class AppLocalizations {
   /// No description provided for @invitationTitle.
   ///
   /// In ru, this message translates to:
-  /// **'Приглашение на устройство'**
+  /// **'Подключение устройства'**
   String get invitationTitle;
 
   /// No description provided for @invitationHint.
   ///
   /// In ru, this message translates to:
-  /// **'Отсканируйте QR в приложении на другом устройстве или передайте текст приглашения.'**
+  /// **'Отсканируйте этот QR-код в Ulash на другом устройстве.'**
   String get invitationHint;
 
   /// No description provided for @invitationQrSemantics.
   ///
   /// In ru, this message translates to:
-  /// **'QR-код временного приглашения на устройство'**
+  /// **'QR-код для подключения устройства'**
   String get invitationQrSemantics;
 
   /// No description provided for @invitationExpired.
   ///
   /// In ru, this message translates to:
-  /// **'Срок приглашения истёк. Создайте новое.'**
+  /// **'Срок действия QR-кода истёк. Создайте новый.'**
   String get invitationExpired;
 
   /// No description provided for @invitationRemaining.
@@ -1459,7 +1459,7 @@ abstract class AppLocalizations {
   /// No description provided for @copyInvitation.
   ///
   /// In ru, this message translates to:
-  /// **'Скопировать приглашение'**
+  /// **'Скопировать код'**
   String get copyInvitation;
 
   /// No description provided for @pairOnlyIfCodeMatches.
@@ -1507,7 +1507,7 @@ abstract class AppLocalizations {
   /// No description provided for @onbBody1.
   ///
   /// In ru, this message translates to:
-  /// **'Отправляйте фото, видео и документы с телефона на компьютер и обратно в исходном качестве — напрямую, без облака и без регистрации.'**
+  /// **'Фото, видео и документы — между телефоном и компьютером в исходном качестве. Без облака и регистрации, а каждую передачу вы подтверждаете сами.'**
   String get onbBody1;
 
   /// No description provided for @onbTitle2.
@@ -1609,7 +1609,7 @@ abstract class AppLocalizations {
   /// No description provided for @cameraUnavailable.
   ///
   /// In ru, this message translates to:
-  /// **'Камера недоступна. Разрешите доступ в настройках или вернитесь и вставьте код подключения вручную.'**
+  /// **'Камера недоступна. Разрешите доступ в настройках или вернитесь и введите код подключения вручную.'**
   String get cameraUnavailable;
 
   /// No description provided for @openSettings.
@@ -1621,7 +1621,7 @@ abstract class AppLocalizations {
   /// No description provided for @scannerHint.
   ///
   /// In ru, this message translates to:
-  /// **'Наведите камеру на QR-код в разделе «Получить» на другом устройстве. Оба устройства должны быть в одной сети.'**
+  /// **'Наведите камеру на QR-код: на другом устройстве откройте Ulash → «Устройства» → «Показать QR». Оба устройства должны быть в одной сети.'**
   String get scannerHint;
 
   /// No description provided for @busyPreparingStorage.
@@ -2053,7 +2053,7 @@ abstract class AppLocalizations {
   /// No description provided for @verifiedAndSaved.
   ///
   /// In ru, this message translates to:
-  /// **'SHA-256 проверен · сохранение подтверждено'**
+  /// **'Проверено и сохранено'**
   String get verifiedAndSaved;
 
   /// No description provided for @consentNotReceived.
@@ -2337,6 +2337,702 @@ abstract class AppLocalizations {
   /// In ru, this message translates to:
   /// **'осталось {value}'**
   String etaLeft(String value);
+
+  /// No description provided for @messageSent.
+  ///
+  /// In ru, this message translates to:
+  /// **'Сообщение отправлено. Получатель подтвердит его на своём устройстве.'**
+  String get messageSent;
+
+  /// No description provided for @errMessageTooLong.
+  ///
+  /// In ru, this message translates to:
+  /// **'Сообщение слишком длинное (до 64 КБ). Отправьте его файлом.'**
+  String get errMessageTooLong;
+
+  /// No description provided for @journalWarningText.
+  ///
+  /// In ru, this message translates to:
+  /// **'Часть записей истории не удалось прочитать. Подготовленные копии сохранены и не будут предложены к очистке.'**
+  String get journalWarningText;
+
+  /// No description provided for @preparationCancelled.
+  ///
+  /// In ru, this message translates to:
+  /// **'Подготовка остановлена. Уже подготовленные файлы остались в списке.'**
+  String get preparationCancelled;
+
+  /// No description provided for @errUrlUnavailable.
+  ///
+  /// In ru, this message translates to:
+  /// **'Не удалось открыть ссылку. Проверьте, что установлен браузер.'**
+  String get errUrlUnavailable;
+
+  /// No description provided for @browserPeer.
+  ///
+  /// In ru, this message translates to:
+  /// **'Браузер'**
+  String get browserPeer;
+
+  /// No description provided for @webUploadDetail.
+  ///
+  /// In ru, this message translates to:
+  /// **'Загружено из браузера по ссылке Ulash'**
+  String get webUploadDetail;
+
+  /// No description provided for @webPageTitle.
+  ///
+  /// In ru, this message translates to:
+  /// **'Файлы с устройства'**
+  String get webPageTitle;
+
+  /// No description provided for @webPageDownload.
+  ///
+  /// In ru, this message translates to:
+  /// **'Скачать'**
+  String get webPageDownload;
+
+  /// No description provided for @webPageNoFiles.
+  ///
+  /// In ru, this message translates to:
+  /// **'Файлы для скачивания не выбраны.'**
+  String get webPageNoFiles;
+
+  /// No description provided for @webPageUpload.
+  ///
+  /// In ru, this message translates to:
+  /// **'Отправить на устройство'**
+  String get webPageUpload;
+
+  /// No description provided for @webPageChoose.
+  ///
+  /// In ru, this message translates to:
+  /// **'Выбрать файлы'**
+  String get webPageChoose;
+
+  /// No description provided for @webPageWaiting.
+  ///
+  /// In ru, this message translates to:
+  /// **'Подтвердите приём на устройстве…'**
+  String get webPageWaiting;
+
+  /// No description provided for @webPageUploading.
+  ///
+  /// In ru, this message translates to:
+  /// **'Отправка'**
+  String get webPageUploading;
+
+  /// No description provided for @webPageDone.
+  ///
+  /// In ru, this message translates to:
+  /// **'Готово: файлы на устройстве.'**
+  String get webPageDone;
+
+  /// No description provided for @webPageRejected.
+  ///
+  /// In ru, this message translates to:
+  /// **'Приём отклонён на устройстве.'**
+  String get webPageRejected;
+
+  /// No description provided for @webPageFailed.
+  ///
+  /// In ru, this message translates to:
+  /// **'Не удалось отправить. Попробуйте ещё раз.'**
+  String get webPageFailed;
+
+  /// No description provided for @webPageExpires.
+  ///
+  /// In ru, this message translates to:
+  /// **'Ссылка действует до'**
+  String get webPageExpires;
+
+  /// No description provided for @unknownDevice.
+  ///
+  /// In ru, this message translates to:
+  /// **'Устройство'**
+  String get unknownDevice;
+
+  /// No description provided for @pairingCancelled.
+  ///
+  /// In ru, this message translates to:
+  /// **'Подключение отменено'**
+  String get pairingCancelled;
+
+  /// No description provided for @peerBusyRetrying.
+  ///
+  /// In ru, this message translates to:
+  /// **'Получатель занят. Повтор через {seconds} с.'**
+  String peerBusyRetrying(int seconds);
+
+  /// No description provided for @errFoldersUnsupported.
+  ///
+  /// In ru, this message translates to:
+  /// **'На другом устройстве старая версия Ulash — она не принимает папки. Обновите приложение там или выберите отдельные файлы.'**
+  String get errFoldersUnsupported;
+
+  /// No description provided for @errFolderTooLarge.
+  ///
+  /// In ru, this message translates to:
+  /// **'В папке больше 1000 файлов. Выберите папку поменьше.'**
+  String get errFolderTooLarge;
+
+  /// No description provided for @errFolderPath.
+  ///
+  /// In ru, this message translates to:
+  /// **'Папка слишком глубокая или содержит недопустимые имена. Выберите вложенную папку или отдельные файлы.'**
+  String get errFolderPath;
+
+  /// No description provided for @errFolderEmpty.
+  ///
+  /// In ru, this message translates to:
+  /// **'В выбранной папке нет файлов.'**
+  String get errFolderEmpty;
+
+  /// No description provided for @errNearbyUnavailable.
+  ///
+  /// In ru, this message translates to:
+  /// **'Устройство больше не ждёт подключения. Попросите снова открыть на нём экран подключения.'**
+  String get errNearbyUnavailable;
+
+  /// No description provided for @errPhotosDenied.
+  ///
+  /// In ru, this message translates to:
+  /// **'Нет доступа к «Фото». Разрешите добавление в настройках.'**
+  String get errPhotosDenied;
+
+  /// No description provided for @errPhotosFailed.
+  ///
+  /// In ru, this message translates to:
+  /// **'Не удалось сохранить в «Фото». Файл остался в Ulash.'**
+  String get errPhotosFailed;
+
+  /// No description provided for @savedToPhotos.
+  ///
+  /// In ru, this message translates to:
+  /// **'Сохранено в «Фото»'**
+  String get savedToPhotos;
+
+  /// No description provided for @errOpenBlocked.
+  ///
+  /// In ru, this message translates to:
+  /// **'Это программа или скрипт — Ulash не запускает такие файлы. Откройте папку и запустите файл сами, если доверяете отправителю.'**
+  String get errOpenBlocked;
+
+  /// No description provided for @saveLocationFiles.
+  ///
+  /// In ru, this message translates to:
+  /// **'Приложение «Файлы» → На iPhone → Ulash'**
+  String get saveLocationFiles;
+
+  /// No description provided for @intakeAdded.
+  ///
+  /// In ru, this message translates to:
+  /// **'Добавлено из другого приложения: {count}'**
+  String intakeAdded(int count);
+
+  /// No description provided for @errTooManyFiles.
+  ///
+  /// In ru, this message translates to:
+  /// **'За один раз можно отправить до 1000 файлов. Уберите часть из списка.'**
+  String get errTooManyFiles;
+
+  /// No description provided for @moreActions.
+  ///
+  /// In ru, this message translates to:
+  /// **'Ещё'**
+  String get moreActions;
+
+  /// No description provided for @copyAction.
+  ///
+  /// In ru, this message translates to:
+  /// **'Скопировать'**
+  String get copyAction;
+
+  /// No description provided for @textCopied.
+  ///
+  /// In ru, this message translates to:
+  /// **'Скопировано'**
+  String get textCopied;
+
+  /// No description provided for @sendLead.
+  ///
+  /// In ru, this message translates to:
+  /// **'Фото, видео и документы — в исходном качестве, напрямую по Wi-Fi.'**
+  String get sendLead;
+
+  /// No description provided for @folder.
+  ///
+  /// In ru, this message translates to:
+  /// **'Папка'**
+  String get folder;
+
+  /// No description provided for @textMessage.
+  ///
+  /// In ru, this message translates to:
+  /// **'Текст'**
+  String get textMessage;
+
+  /// No description provided for @addMore.
+  ///
+  /// In ru, this message translates to:
+  /// **'Добавить ещё'**
+  String get addMore;
+
+  /// No description provided for @sendTo.
+  ///
+  /// In ru, this message translates to:
+  /// **'Кому'**
+  String get sendTo;
+
+  /// No description provided for @sendToDevice.
+  ///
+  /// In ru, this message translates to:
+  /// **'Отправить на «{name}»'**
+  String sendToDevice(String name);
+
+  /// No description provided for @addFilesFirst.
+  ///
+  /// In ru, this message translates to:
+  /// **'Добавьте файлы'**
+  String get addFilesFirst;
+
+  /// No description provided for @noAppLink.
+  ///
+  /// In ru, this message translates to:
+  /// **'Нет Ulash на другом устройстве? Отправьте по ссылке'**
+  String get noAppLink;
+
+  /// No description provided for @firstDeviceTitle.
+  ///
+  /// In ru, this message translates to:
+  /// **'Подключите первое устройство'**
+  String get firstDeviceTitle;
+
+  /// No description provided for @firstDeviceBody.
+  ///
+  /// In ru, this message translates to:
+  /// **'Откройте Ulash на втором устройстве в той же сети Wi-Fi и отсканируйте QR-код. Это нужно сделать один раз.'**
+  String get firstDeviceBody;
+
+  /// No description provided for @activeTransfers.
+  ///
+  /// In ru, this message translates to:
+  /// **'Сейчас передаются'**
+  String get activeTransfers;
+
+  /// No description provided for @messageTitle.
+  ///
+  /// In ru, this message translates to:
+  /// **'Сообщение'**
+  String get messageTitle;
+
+  /// No description provided for @messageHint.
+  ///
+  /// In ru, this message translates to:
+  /// **'Текст или ссылка'**
+  String get messageHint;
+
+  /// No description provided for @chooseRecipientFirst.
+  ///
+  /// In ru, this message translates to:
+  /// **'Сначала выберите получателя.'**
+  String get chooseRecipientFirst;
+
+  /// No description provided for @selectedSummary.
+  ///
+  /// In ru, this message translates to:
+  /// **'{files} · {size}'**
+  String selectedSummary(String files, String size);
+
+  /// No description provided for @searchHint.
+  ///
+  /// In ru, this message translates to:
+  /// **'Поиск по названию или устройству'**
+  String get searchHint;
+
+  /// No description provided for @today.
+  ///
+  /// In ru, this message translates to:
+  /// **'Сегодня'**
+  String get today;
+
+  /// No description provided for @yesterday.
+  ///
+  /// In ru, this message translates to:
+  /// **'Вчера'**
+  String get yesterday;
+
+  /// No description provided for @nothingFound.
+  ///
+  /// In ru, this message translates to:
+  /// **'Ничего не найдено'**
+  String get nothingFound;
+
+  /// No description provided for @saveToPhotos.
+  ///
+  /// In ru, this message translates to:
+  /// **'Сохранить в «Фото»'**
+  String get saveToPhotos;
+
+  /// No description provided for @revealInFolder.
+  ///
+  /// In ru, this message translates to:
+  /// **'Показать в папке'**
+  String get revealInFolder;
+
+  /// No description provided for @executableTitle.
+  ///
+  /// In ru, this message translates to:
+  /// **'Открыть программу?'**
+  String get executableTitle;
+
+  /// No description provided for @executableBody.
+  ///
+  /// In ru, this message translates to:
+  /// **'«{name}» может запустить программу на этом устройстве. Открывайте такие файлы, только если доверяете отправителю.'**
+  String executableBody(String name);
+
+  /// No description provided for @openAnyway.
+  ///
+  /// In ru, this message translates to:
+  /// **'Всё равно открыть'**
+  String get openAnyway;
+
+  /// No description provided for @folderLabel.
+  ///
+  /// In ru, this message translates to:
+  /// **'Папка «{name}»'**
+  String folderLabel(String name);
+
+  /// No description provided for @receiveFiles.
+  ///
+  /// In ru, this message translates to:
+  /// **'Принимать файлы'**
+  String get receiveFiles;
+
+  /// No description provided for @receiveHintOn.
+  ///
+  /// In ru, this message translates to:
+  /// **'Ваши устройства могут отправлять сюда файлы — каждую передачу вы подтверждаете сами.'**
+  String get receiveHintOn;
+
+  /// No description provided for @receiveHintOff.
+  ///
+  /// In ru, this message translates to:
+  /// **'Приём выключен: это устройство не видно другим.'**
+  String get receiveHintOff;
+
+  /// No description provided for @deviceCode.
+  ///
+  /// In ru, this message translates to:
+  /// **'Код устройства'**
+  String get deviceCode;
+
+  /// No description provided for @showQr.
+  ///
+  /// In ru, this message translates to:
+  /// **'Показать QR'**
+  String get showQr;
+
+  /// No description provided for @noCameraEnterCode.
+  ///
+  /// In ru, this message translates to:
+  /// **'Нет камеры? Ввести код'**
+  String get noCameraEnterCode;
+
+  /// No description provided for @connectFooter.
+  ///
+  /// In ru, this message translates to:
+  /// **'Откройте Ulash на другом устройстве в той же сети Wi-Fi. Подключение нужно один раз.'**
+  String get connectFooter;
+
+  /// No description provided for @nearby.
+  ///
+  /// In ru, this message translates to:
+  /// **'Рядом'**
+  String get nearby;
+
+  /// No description provided for @nearbyFooter.
+  ///
+  /// In ru, this message translates to:
+  /// **'Устройства в этой сети, на которых сейчас открыт экран подключения.'**
+  String get nearbyFooter;
+
+  /// No description provided for @waitingRequests.
+  ///
+  /// In ru, this message translates to:
+  /// **'Запросы на подключение'**
+  String get waitingRequests;
+
+  /// No description provided for @qrHint.
+  ///
+  /// In ru, this message translates to:
+  /// **'На другом устройстве откройте Ulash → «Устройства» → «Сканировать QR».'**
+  String get qrHint;
+
+  /// No description provided for @qrNearbyVisible.
+  ///
+  /// In ru, this message translates to:
+  /// **'Пока открыт этот экран, устройство видно рядом и его можно подключить без QR.'**
+  String get qrNearbyVisible;
+
+  /// No description provided for @codesMatchTitle.
+  ///
+  /// In ru, this message translates to:
+  /// **'Коды совпадают?'**
+  String get codesMatchTitle;
+
+  /// No description provided for @sasHostBody.
+  ///
+  /// In ru, this message translates to:
+  /// **'Сравните с кодом на экране «{name}». Подключайте, только если коды одинаковые.'**
+  String sasHostBody(String name);
+
+  /// No description provided for @sasJoinerTitle.
+  ///
+  /// In ru, this message translates to:
+  /// **'Подтвердите на другом устройстве'**
+  String get sasJoinerTitle;
+
+  /// No description provided for @sasJoinerBody.
+  ///
+  /// In ru, this message translates to:
+  /// **'На «{name}» должен быть показан этот же код. Нажмите там «Подключить».'**
+  String sasJoinerBody(String name);
+
+  /// No description provided for @codesMatch.
+  ///
+  /// In ru, this message translates to:
+  /// **'Да, подключить'**
+  String get codesMatch;
+
+  /// No description provided for @codesDiffer.
+  ///
+  /// In ru, this message translates to:
+  /// **'Коды разные'**
+  String get codesDiffer;
+
+  /// No description provided for @webShareEntry.
+  ///
+  /// In ru, this message translates to:
+  /// **'По ссылке'**
+  String get webShareEntry;
+
+  /// No description provided for @webShareTitle.
+  ///
+  /// In ru, this message translates to:
+  /// **'Отправить по ссылке'**
+  String get webShareTitle;
+
+  /// No description provided for @webShareBody.
+  ///
+  /// In ru, this message translates to:
+  /// **'Откройте ссылку в браузере на устройстве в этой же сети Wi-Fi — например, на компьютере без Ulash.'**
+  String get webShareBody;
+
+  /// No description provided for @webShareInsecure.
+  ///
+  /// In ru, this message translates to:
+  /// **'Ссылка работает без шифрования (HTTP). Пользуйтесь ей только в своей сети и остановите её после передачи.'**
+  String get webShareInsecure;
+
+  /// No description provided for @webShareAllowUpload.
+  ///
+  /// In ru, this message translates to:
+  /// **'Разрешить загрузку файлов на это устройство'**
+  String get webShareAllowUpload;
+
+  /// No description provided for @webShareValid.
+  ///
+  /// In ru, this message translates to:
+  /// **'Ссылка действует до {time}'**
+  String webShareValid(String time);
+
+  /// No description provided for @webShareStats.
+  ///
+  /// In ru, this message translates to:
+  /// **'Открыли: {clients} · скачано: {downloads} · загружено: {uploads}'**
+  String webShareStats(int clients, int downloads, int uploads);
+
+  /// No description provided for @webShareCreate.
+  ///
+  /// In ru, this message translates to:
+  /// **'Создать ссылку'**
+  String get webShareCreate;
+
+  /// No description provided for @webShareStop.
+  ///
+  /// In ru, this message translates to:
+  /// **'Остановить'**
+  String get webShareStop;
+
+  /// No description provided for @copyLink.
+  ///
+  /// In ru, this message translates to:
+  /// **'Скопировать ссылку'**
+  String get copyLink;
+
+  /// No description provided for @webShareSelectFirst.
+  ///
+  /// In ru, this message translates to:
+  /// **'Ссылка отдаёт выбранные файлы. Выберите файлы или разрешите загрузку.'**
+  String get webShareSelectFirst;
+
+  /// No description provided for @webShareQrSemantics.
+  ///
+  /// In ru, this message translates to:
+  /// **'QR-код ссылки для браузера'**
+  String get webShareQrSemantics;
+
+  /// No description provided for @receiving.
+  ///
+  /// In ru, this message translates to:
+  /// **'Получение'**
+  String get receiving;
+
+  /// No description provided for @autoSaveToPhotos.
+  ///
+  /// In ru, this message translates to:
+  /// **'Сохранять фото и видео в «Фото»'**
+  String get autoSaveToPhotos;
+
+  /// No description provided for @autoSaveHint.
+  ///
+  /// In ru, this message translates to:
+  /// **'Полученные снимки и видео сразу появятся в галерее.'**
+  String get autoSaveHint;
+
+  /// No description provided for @theme.
+  ///
+  /// In ru, this message translates to:
+  /// **'Тема'**
+  String get theme;
+
+  /// No description provided for @support.
+  ///
+  /// In ru, this message translates to:
+  /// **'Поддержка'**
+  String get support;
+
+  /// No description provided for @privacyPolicy.
+  ///
+  /// In ru, this message translates to:
+  /// **'Политика конфиденциальности'**
+  String get privacyPolicy;
+
+  /// No description provided for @howDataHandled.
+  ///
+  /// In ru, this message translates to:
+  /// **'Как обрабатываются данные'**
+  String get howDataHandled;
+
+  /// No description provided for @advanced.
+  ///
+  /// In ru, this message translates to:
+  /// **'Дополнительно'**
+  String get advanced;
+
+  /// No description provided for @advancedHint.
+  ///
+  /// In ru, this message translates to:
+  /// **'Хранилище, диагностика, сброс ключей'**
+  String get advancedHint;
+
+  /// No description provided for @about.
+  ///
+  /// In ru, this message translates to:
+  /// **'О приложении'**
+  String get about;
+
+  /// No description provided for @dangerZone.
+  ///
+  /// In ru, this message translates to:
+  /// **'Безопасность'**
+  String get dangerZone;
+
+  /// No description provided for @onbAllowTitle.
+  ///
+  /// In ru, this message translates to:
+  /// **'Разрешите доступ к сети'**
+  String get onbAllowTitle;
+
+  /// No description provided for @onbAllowBody.
+  ///
+  /// In ru, this message translates to:
+  /// **'Ulash ищет ваши устройства только в вашей сети Wi-Fi. Без этого разрешения устройства не найдут друг друга.'**
+  String get onbAllowBody;
+
+  /// No description provided for @allowAccess.
+  ///
+  /// In ru, this message translates to:
+  /// **'Разрешить доступ'**
+  String get allowAccess;
+
+  /// No description provided for @webUploadTitle.
+  ///
+  /// In ru, this message translates to:
+  /// **'Загрузка из браузера'**
+  String get webUploadTitle;
+
+  /// No description provided for @webUploadBody.
+  ///
+  /// In ru, this message translates to:
+  /// **'{client} хочет загрузить сюда {files} ({size}).'**
+  String webUploadBody(String client, String files, String size);
+
+  /// No description provided for @allow.
+  ///
+  /// In ru, this message translates to:
+  /// **'Разрешить'**
+  String get allow;
+
+  /// No description provided for @waitingForApprovalOn.
+  ///
+  /// In ru, this message translates to:
+  /// **'Ждём подтверждения на «{name}»'**
+  String waitingForApprovalOn(String name);
+
+  /// No description provided for @connectedTo.
+  ///
+  /// In ru, this message translates to:
+  /// **'Подключено к «{name}»'**
+  String connectedTo(String name);
+
+  /// No description provided for @shareSheetLink.
+  ///
+  /// In ru, this message translates to:
+  /// **'Ссылка'**
+  String get shareSheetLink;
+
+  /// No description provided for @nearbyEmpty.
+  ///
+  /// In ru, this message translates to:
+  /// **'Рядом пока никого. Откройте на другом устройстве «Устройства» → «Показать QR».'**
+  String get nearbyEmpty;
+
+  /// No description provided for @noDevicesYet.
+  ///
+  /// In ru, this message translates to:
+  /// **'Пока нет подключённых устройств'**
+  String get noDevicesYet;
+
+  /// No description provided for @filterText.
+  ///
+  /// In ru, this message translates to:
+  /// **'Текст'**
+  String get filterText;
+
+  /// No description provided for @saveDestination.
+  ///
+  /// In ru, this message translates to:
+  /// **'Куда сохранять'**
+  String get saveDestination;
+
+  /// No description provided for @largeTextSample.
+  ///
+  /// In ru, this message translates to:
+  /// **'Размер текста меняется в настройках устройства.'**
+  String get largeTextSample;
 }
 
 class _AppLocalizationsDelegate

@@ -10,11 +10,17 @@ class DiscoveredEndpoint {
     required this.name,
     required this.endpoint,
     required this.platform,
+    this.pairable = false,
   });
   final String instanceId;
   final String name;
   final Uri endpoint;
   final String platform;
+
+  /// The device advertises an open nearby pairing window (TXT `pair=1`).
+  /// Only a hint: the invitation fetched from it must match the TLS key, and
+  /// the host still approves after comparing six-digit codes.
+  final bool pairable;
 }
 
 /// Bonjour/NSD is an untrusted address hint. Authentication is exclusively the
@@ -31,23 +37,48 @@ class LanDiscovery {
   Stream<List<DiscoveredEndpoint>> get changes => _changes.stream;
   List<DiscoveredEndpoint> get endpoints => List.unmodifiable(_found.values);
 
-  Future<void> start({required String name, required int port}) async {
+  String? _name;
+  int? _port;
+  bool _pairable = false;
+
+  Future<void> _startBroadcast() async {
     final broadcast = BonsoirBroadcast(
       printLogs: false,
       service: BonsoirService(
-        name: name,
+        name: _name!,
         type: serviceType,
-        port: port,
+        port: _port!,
         attributes: {
           'v': '1',
           'id': instanceId,
           'os': Platform.operatingSystem,
+          if (_pairable) 'pair': '1',
         },
       ),
     );
     _broadcast = broadcast;
     await broadcast.initialize();
     await broadcast.start();
+  }
+
+  /// Re-announces this device with or without the nearby-pairing hint.
+  /// Bonjour records cannot be edited in place: the broadcast restarts.
+  Future<void> setPairable(bool pairable) async {
+    if (_pairable == pairable) return;
+    _pairable = pairable;
+    if (_name == null) return;
+    try {
+      await _broadcast?.stop();
+    } catch (_) {
+      /* Already stopped. */
+    }
+    await _startBroadcast();
+  }
+
+  Future<void> start({required String name, required int port}) async {
+    _name = name;
+    _port = port;
+    await _startBroadcast();
     final discovery = BonsoirDiscovery(type: serviceType, printLogs: false);
     _discovery = discovery;
     await discovery.initialize();
@@ -86,6 +117,7 @@ class LanDiscovery {
             name: service.name,
             endpoint: Uri(scheme: 'https', host: address, port: service.port),
             platform: service.attributes['os'] ?? 'unknown',
+            pairable: service.attributes['pair'] == '1',
           );
           _emit();
         } else if (event is BonsoirDiscoveryServiceLostEvent) {

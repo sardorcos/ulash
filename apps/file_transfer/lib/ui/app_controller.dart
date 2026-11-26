@@ -102,10 +102,12 @@ abstract class AppController extends ChangeNotifier {
   // ---- 1.2 contract (implemented by TransferAppController) ----
 
   /// Public privacy policy and support pages (required by the stores).
-  Uri get privacyPolicyUrl =>
-      Uri.parse('https://sardorcos.github.io/neverland-legal/ulash/privacy.html');
-  Uri get supportUrl =>
-      Uri.parse('https://sardorcos.github.io/neverland-legal/ulash/support.html');
+  Uri get privacyPolicyUrl => Uri.parse(
+    'https://sardorcos.github.io/neverland-legal/ulash/privacy.html',
+  );
+  Uri get supportUrl => Uri.parse(
+    'https://sardorcos.github.io/neverland-legal/ulash/support.html',
+  );
   Future<void> openExternalUrl(Uri url) async {}
 
   /// Joiner side of a pairing in progress: the 6-digit code that must match
@@ -121,9 +123,16 @@ abstract class AppController extends ChangeNotifier {
   bool get nearbyPairingOpen => false;
   Future<void> setNearbyPairing(bool open) async {}
 
+  /// Joiner side: stops a pairing in progress (stops waiting for the other
+  /// device's approval and clears [outgoingPairing]).
+  Future<void> cancelOutgoingPairing() async {}
+
   /// Sends a short text or link as a message.
   Future<void> sendText(String peerId, String text) =>
       Future.error(UnsupportedError('Not supported by this adapter.'));
+
+  /// Longest accepted message, in UTF-8 bytes (not characters).
+  int get maxMessageLength => 64 * 1024;
 
   /// Adds a whole folder (keeps its structure when the peer supports it).
   Future<void> chooseFolder() =>
@@ -134,6 +143,10 @@ abstract class AppController extends ChangeNotifier {
   Future<void> startWebShare({bool allowUpload = false}) =>
       Future.error(UnsupportedError('Not supported by this adapter.'));
   Future<void> stopWebShare() async {}
+
+  /// Browser upload batches waiting for consent in the app.
+  List<WebUploadRequest> get pendingWebUploads => const [];
+  Future<void> respondToWebUpload(String id, bool accept) async {}
 
   /// Saves a received photo/video into the system photo library.
   Future<void> saveToPhotos(String transferId, String fileId) =>
@@ -147,10 +160,19 @@ abstract class AppController extends ChangeNotifier {
 
   /// Copies the pairing invitation with sensitive/local-only clipboard flags
   /// and clears it after the invitation expires.
-  Future<void> copyInvitation() async {}
+  /// Returns true when the text was copied.
+  Future<bool> copyInvitation() async => false;
 
   /// Hides sensitive content (QR) from screenshots/app switcher while shown.
   Future<void> setSecureScreen(bool enabled) async {}
+
+  /// Stops preparing the remaining picked files.
+  Future<void> cancelPreparation() async {}
+  bool get canCancelPreparation => false;
+
+  /// The outgoing journal had unreadable rows: prepared copies are all kept
+  /// as "in use" and the interface shows a warning.
+  bool get journalWarning => false;
   Future<void> setTemporaryQuota(int bytes) =>
       Future.error(UnsupportedError('Not supported by this adapter.'));
   Future<void> clearUnusedTemporary(List<String> fileIds) =>
@@ -252,6 +274,7 @@ class SelectedSource {
     this.bytes,
     this.status = SourceStatus.ready,
     this.detail,
+    this.relativeDirectory,
   });
 
   final String id;
@@ -259,6 +282,10 @@ class SelectedSource {
   final int? bytes;
   final SourceStatus status;
   final String? detail;
+
+  /// Folder selection: path inside the chosen folder (forward slashes,
+  /// starting with the folder's own name); null for single files.
+  final String? relativeDirectory;
 }
 
 @immutable
@@ -539,4 +566,24 @@ class PairingInvitation {
 
   final String payload;
   final DateTime expiresAt;
+}
+
+@immutable
+class WebUploadRequest {
+  const WebUploadRequest({
+    required this.id,
+    required this.client,
+    required this.fileNames,
+    required this.totalBytes,
+    this.expiresAt,
+  });
+  final String id;
+
+  /// The request is declined automatically after this moment.
+  final DateTime? expiresAt;
+
+  /// LAN address of the browser asking to upload.
+  final String client;
+  final List<String> fileNames;
+  final int totalBytes;
 }

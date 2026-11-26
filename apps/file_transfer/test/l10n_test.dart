@@ -45,12 +45,14 @@ void main() {
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
       expect(find.text(send), findsWidgets);
-      expect(find.text(settings), findsWidgets);
+      // On phones Settings is the gear in the title bar.
+      expect(find.byTooltip(settings), findsOneWidget);
       await tester.tap(find.byKey(const Key('nav-history')));
       await tester.pumpAndSettle();
       expect(find.text(done), findsOneWidget);
       await tester.tap(find.byKey(const Key('nav-settings')));
       await tester.pumpAndSettle();
+      expect(find.text(settings), findsWidgets);
       expect(tester.takeException(), isNull);
     });
   }
@@ -68,7 +70,8 @@ void main() {
     expect(ru.filesCount(3), '3 файла');
     expect(ru.filesCount(5), '5 файлов');
     expect(ru.filesCount(21), '21 файл');
-    expect(formatBytes(ru, 1536), '1,5 КиБ');
+    expect(formatBytes(ru, 1536), '1,5 КБ');
+    expect(formatBytes(lookupAppLocalizations(const Locale('uz')), 1536), '1,5 KB');
     final en = lookupAppLocalizations(const Locale('en'));
     expect(en.filesCount(1), '1 file');
     expect(en.filesCount(2), '2 files');

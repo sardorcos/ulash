@@ -91,8 +91,48 @@ class TestController extends AppController {
     pairedText = payload;
   }
 
+  final pairingResponses = <(String, bool)>[];
   @override
-  Future<void> respondToPairing(String requestId, bool accept) async {}
+  Future<void> respondToPairing(String requestId, bool accept) async {
+    pairingResponses.add((requestId, accept));
+    pendingPairings = pendingPairings.where((p) => p.id != requestId).toList();
+    notifyListeners();
+  }
+
+  String? sentText;
+  @override
+  Future<void> sendText(String peerId, String text) async {
+    sentText = '$peerId:$text';
+  }
+
+  bool onboarding = false;
+  @override
+  bool get needsOnboarding => onboarding;
+
+  @override
+  List<WebUploadRequest> pendingWebUploads = [];
+  final uploadResponses = <(String, bool)>[];
+  @override
+  Future<void> respondToWebUpload(String id, bool accept) async {
+    uploadResponses.add((id, accept));
+    pendingWebUploads = pendingWebUploads.where((r) => r.id != id).toList();
+    notifyListeners();
+  }
+
+  @override
+  bool journalWarning = false;
+  @override
+  bool canCancelPreparation = false;
+  @override
+  String? busyLabel;
+  int cancelledPreparations = 0;
+  @override
+  Future<void> cancelPreparation() async => cancelledPreparations++;
+  @override
+  Future<void> completeOnboarding() async {
+    onboarding = false;
+    notifyListeners();
+  }
   @override
   Future<void> respondToTransfer(String transferId, bool accept) async {
     responses.add((transferId, accept));
@@ -164,8 +204,28 @@ Future<void> setSize(WidgetTester tester, Size size) async {
   });
 }
 
+/// Settings → Advanced (the row sits at the end of a long, lazy list).
+Future<void> openAdvanced(WidgetTester tester) async {
+  final row = find.byKey(const Key('settings-advanced'));
+  await tester.scrollUntilVisible(
+    row,
+    200,
+    scrollable: find.byType(Scrollable).last,
+  );
+  await reveal(tester, row);
+  await tester.tap(row);
+  await tester.pumpAndSettle();
+}
+
+/// Scrolls [finder] to the middle of the viewport, clear of the pinned
+/// large-title app bar and the bottom bars.
+Future<void> reveal(WidgetTester tester, Finder finder) async {
+  await Scrollable.ensureVisible(tester.element(finder), alignment: 0.5);
+  await tester.pumpAndSettle();
+}
+
 void main() {
-  testWidgets('all five mobile pages fit 360px and do not invent transfers', (
+  testWidgets('all mobile pages fit 360px and do not invent transfers', (
     tester,
   ) async {
     await setSize(tester, const Size(360, 800));
@@ -173,8 +233,9 @@ void main() {
     await tester.pumpWidget(FileTransferApp(controller: controller));
     await tester.pumpAndSettle();
     expect(find.text('Начнём с файлов'), findsOneWidget);
+    expect(find.text('Подключите первое устройство'), findsOneWidget);
     expect(find.text('Передача завершена'), findsNothing);
-    for (final tab in ['receive', 'devices', 'history', 'settings', 'send']) {
+    for (final tab in ['devices', 'history', 'send']) {
       await tester.tap(find.byKey(Key('nav-$tab')));
       await tester.pumpAndSettle();
       expect(
@@ -183,7 +244,17 @@ void main() {
         reason: 'Mobile page $tab must not overflow.',
       );
     }
-    await tester.ensureVisible(find.byKey(const Key('choose-files')));
+    await tester.tap(find.byKey(const Key('nav-settings')));
+    await tester.pumpAndSettle();
+    await openAdvanced(tester);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    // The interface is Russian, so tap the back arrow instead of pageBack().
+    for (var i = 0; i < 2; i++) {
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+    }
+    await reveal(tester, find.byKey(const Key('choose-files')));
     await tester.tap(find.byKey(const Key('choose-files')));
     await tester.pump();
     expect(controller.chooseCount, 1);
@@ -194,7 +265,7 @@ void main() {
     final controller = TestController();
     await tester.pumpWidget(FileTransferApp(controller: controller));
     await tester.pumpAndSettle();
-    for (final tab in ['send', 'receive', 'devices', 'history', 'settings']) {
+    for (final tab in ['send', 'history', 'devices', 'settings']) {
       await tester.tap(find.byKey(Key('nav-$tab')));
       await tester.pumpAndSettle();
       expect(
@@ -207,6 +278,79 @@ void main() {
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('every phone page survives 200% text with real content', (
+    tester,
+  ) async {
+    await setSize(tester, const Size(390, 844));
+    tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    final controller = TestController()
+      ..availableCapabilities = const AppCapabilities(
+        mediaSelection: true,
+        folderSelection: true,
+        textMessages: true,
+        nearbyPairing: true,
+        webShare: true,
+        photosSave: true,
+        storageManagement: true,
+        diagnostics: true,
+      )
+      ..selectedSources = [
+        const SelectedSource(
+          id: 's',
+          name: 'Очень длинное название документа для проверки.pdf',
+          bytes: 123456,
+        ),
+      ]
+      ..peers = [
+        const PeerDevice(
+          id: 'p',
+          name: 'Ноутбук Сардора',
+          platform: DevicePlatform.windows,
+          isTrusted: true,
+          isOnline: true,
+        ),
+      ]
+      ..pendingTransfers = [
+        IncomingTransfer(
+          id: 'offer',
+          peerName: 'iPhone',
+          fileNames: const ['IMG_0001.HEIC', 'IMG_0002.HEIC'],
+          totalBytes: 5 * 1024 * 1024,
+          expiresAt: DateTime(2026, 11, 21, 14, 30),
+        ),
+      ]
+      ..transfers = [
+        TransferItem(
+          id: 't',
+          title: 'Видео с отпуска.mov',
+          peerName: 'iPhone',
+          direction: TransferDirection.incoming,
+          phase: TransferPhase.transferring,
+          totalBytes: 1000000,
+          transferredBytes: 420000,
+          bytesPerSecond: 50000,
+          createdAt: DateTime.now(),
+          canPause: true,
+          canCancel: true,
+        ),
+      ];
+    await tester.pumpWidget(FileTransferApp(controller: controller));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull, reason: 'send');
+    for (final tab in ['history', 'devices']) {
+      await tester.tap(find.byKey(Key('nav-$tab')));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull, reason: tab);
+    }
+    await tester.tap(find.byKey(const Key('nav-settings')));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull, reason: 'settings');
+    await openAdvanced(tester);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull, reason: 'advanced');
   });
 
   testWidgets('sending needs a prepared source and a trusted available peer', (
@@ -267,9 +411,9 @@ void main() {
     await tester.pumpWidget(FileTransferApp(controller: controller));
     await tester.pumpAndSettle();
     expect(controller.responses, isEmpty);
-    await tester.tap(find.byKey(const Key('nav-receive')));
+    await tester.tap(find.byKey(const Key('nav-history')));
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.byKey(const Key('accept-incoming')));
+    await reveal(tester, find.byKey(const Key('accept-incoming')));
     await tester.tap(find.byKey(const Key('accept-incoming')));
     await tester.pumpAndSettle();
     expect(controller.responses, [('incoming', true)]);
@@ -365,7 +509,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('nav-history')));
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.byKey(const Key('open-package')));
+    await reveal(tester, find.byKey(const Key('open-package')));
     await tester.tap(find.byKey(const Key('open-package')));
     await tester.pumpAndSettle();
     expect(controller.openedFile, isNull);
@@ -413,7 +557,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(controller.exportedFile, isNull);
       expect(find.byKey(const Key('export-status-two')), findsOneWidget);
-      await tester.ensureVisible(find.byKey(const Key('export-received')));
+      await reveal(tester, find.byKey(const Key('export-received')));
       await tester.tap(find.byKey(const Key('export-received')));
       await tester.pumpAndSettle();
       expect(controller.exportedFile, isNull);
@@ -446,7 +590,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('nav-settings')));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.byKey(const Key('cleanup-temporary')));
+      await openAdvanced(tester);
+      await reveal(tester, find.byKey(const Key('cleanup-temporary')));
       await tester.tap(find.byKey(const Key('cleanup-temporary')));
       await tester.pumpAndSettle();
       expect(controller.cleanedFiles, isNull);
@@ -503,7 +648,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('nav-settings')));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.byKey(const Key('cleanup-incoming')));
+      await openAdvanced(tester);
+      await reveal(tester, find.byKey(const Key('cleanup-incoming')));
       await tester.tap(find.byKey(const Key('cleanup-incoming')));
       await tester.pumpAndSettle();
       expect(controller.cleanedIncoming, isNull);
@@ -547,7 +693,7 @@ void main() {
       ];
     await tester.pumpWidget(FileTransferApp(controller: controller));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('nav-receive')));
+    await tester.tap(find.byKey(const Key('nav-history')));
     await tester.pumpAndSettle();
     await tester.ensureVisible(
       find.byKey(const Key('offer-deadline-deadline')),
@@ -623,7 +769,7 @@ void main() {
     await tester.tap(find.byKey(const Key('nav-history')));
     await tester.pumpAndSettle();
     final retry = find.byKey(const Key('retry-expired-outgoing'));
-    await tester.ensureVisible(retry);
+    await reveal(tester, retry);
     await tester.tap(retry);
     await tester.pumpAndSettle();
     expect(controller.retriedTransfer, isNull);
@@ -638,5 +784,219 @@ void main() {
     expect(controller.retriedTransfer, 'expired-outgoing');
     expect(controller.sentPeer, isNull);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('pairing asks whether both codes match, like Bluetooth', (
+    tester,
+  ) async {
+    await setSize(tester, const Size(390, 844));
+    final controller = TestController();
+    await tester.pumpWidget(FileTransferApp(controller: controller));
+    await tester.pumpAndSettle();
+    controller.pendingPairings = [
+      const PairingRequest(
+        id: 'pair',
+        deviceName: 'Ноутбук',
+        platform: DevicePlatform.windows,
+        code: '123456',
+      ),
+    ];
+    controller.notifyListeners();
+    await tester.pumpAndSettle();
+    expect(find.text('Коды совпадают?'), findsOneWidget);
+    expect(find.text('123 456'), findsWidgets);
+    expect(controller.pairingResponses, isEmpty);
+    await tester.tap(find.byKey(const Key('dialog-approve-pair-pair')));
+    await tester.pumpAndSettle();
+    expect(controller.pairingResponses, [('pair', true)]);
+    expect(find.text('Коды совпадают?'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('history search and filters narrow the list', (tester) async {
+    await setSize(tester, const Size(390, 844));
+    final now = DateTime.now();
+    final controller = TestController()
+      ..transfers = [
+        TransferItem(
+          id: 'a',
+          title: 'Отчёт.pdf',
+          peerName: 'Ноутбук',
+          direction: TransferDirection.outgoing,
+          phase: TransferPhase.completed,
+          totalBytes: 10,
+          transferredBytes: 10,
+          createdAt: now,
+        ),
+        TransferItem(
+          id: 'b',
+          title: 'Фото.heic',
+          peerName: 'iPhone',
+          direction: TransferDirection.incoming,
+          phase: TransferPhase.completed,
+          totalBytes: 10,
+          transferredBytes: 10,
+          createdAt: now.subtract(const Duration(days: 1)),
+        ),
+      ];
+    await tester.pumpWidget(FileTransferApp(controller: controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('nav-history')));
+    await tester.pumpAndSettle();
+    expect(find.text('Сегодня'), findsOneWidget);
+    expect(find.text('Вчера'), findsOneWidget);
+    await tester.enterText(find.byKey(const Key('history-search')), 'фото');
+    await tester.pumpAndSettle();
+    expect(find.text('Отчёт.pdf'), findsNothing);
+    expect(find.text('Фото.heic'), findsOneWidget);
+    await tester.enterText(find.byKey(const Key('history-search')), '');
+    await tester.tap(find.byKey(const Key('filter-sent')));
+    await tester.pumpAndSettle();
+    expect(find.text('Отчёт.pdf'), findsOneWidget);
+    expect(find.text('Фото.heic'), findsNothing);
+  });
+
+  testWidgets('text messages are composed in a sheet and shown as bubbles', (
+    tester,
+  ) async {
+    await setSize(tester, const Size(390, 844));
+    final controller = TestController()
+      ..availableCapabilities = const AppCapabilities(textMessages: true)
+      ..peers = [
+        const PeerDevice(
+          id: 'laptop',
+          name: 'Ноутбук',
+          platform: DevicePlatform.macos,
+          isTrusted: true,
+          isOnline: true,
+        ),
+      ]
+      ..transfers = [
+        TransferItem(
+          id: 'msg',
+          title: 'Текст',
+          peerName: 'Ноутбук',
+          direction: TransferDirection.incoming,
+          phase: TransferPhase.completed,
+          totalBytes: 12,
+          transferredBytes: 12,
+          createdAt: DateTime.now(),
+          kind: TransferKind.text,
+          messageText: 'https://example.org',
+        ),
+      ];
+    await tester.pumpWidget(FileTransferApp(controller: controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('compose-text')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('message-input')), ' Привет ');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('send-message')));
+    await tester.pumpAndSettle();
+    expect(controller.sentText, 'laptop:Привет');
+    await tester.tap(find.byKey(const Key('nav-history')));
+    await tester.pumpAndSettle();
+    expect(find.text('https://example.org'), findsOneWidget);
+    expect(find.byKey(const Key('copy-text-msg')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('onboarding is two steps and ends by asking for access', (
+    tester,
+  ) async {
+    await setSize(tester, const Size(390, 844));
+    final controller = TestController()..onboarding = true;
+    await tester.pumpWidget(FileTransferApp(controller: controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('onboarding-next')));
+    await tester.pumpAndSettle();
+    expect(find.text('Разрешить доступ'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('onboarding-next')));
+    await tester.pumpAndSettle();
+    expect(controller.needsOnboarding, isFalse);
+    expect(find.text('Подключите первое устройство'), findsOneWidget);
+  });
+
+  testWidgets('executable files need a second confirmation to open', (
+    tester,
+  ) async {
+    await setSize(tester, const Size(390, 844));
+    final controller = TestController()
+      ..transfers = [
+        TransferItem(
+          id: 'exe',
+          title: 'setup.exe',
+          peerName: 'Ноутбук',
+          direction: TransferDirection.incoming,
+          phase: TransferPhase.completed,
+          totalBytes: 10,
+          transferredBytes: 10,
+          createdAt: DateTime.now(),
+          canOpen: true,
+          receivedFiles: const [
+            ReceivedFile(
+              id: 'bin',
+              name: 'setup.exe',
+              bytes: 10,
+              potentiallyExecutable: true,
+            ),
+          ],
+        ),
+      ];
+    await tester.pumpWidget(FileTransferApp(controller: controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('nav-history')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('open-exe')));
+    await tester.pumpAndSettle();
+    expect(controller.openedFile, isNull);
+    await tester.tap(find.byKey(const Key('confirm-open-bin')));
+    await tester.pumpAndSettle();
+    expect(controller.openedFile, ('exe', 'bin'));
+  });
+
+  testWidgets('browser uploads ask for consent like an incoming offer', (
+    tester,
+  ) async {
+    await setSize(tester, const Size(390, 844));
+    final controller = TestController();
+    await tester.pumpWidget(FileTransferApp(controller: controller));
+    await tester.pumpAndSettle();
+    controller.pendingWebUploads = [
+      const WebUploadRequest(
+        id: 'up',
+        client: '192.168.1.5',
+        fileNames: ['Скан.pdf'],
+        totalBytes: 2048,
+      ),
+    ];
+    controller.notifyListeners();
+    await tester.pumpAndSettle();
+    expect(find.text('Скан.pdf'), findsOneWidget);
+    expect(controller.uploadResponses, isEmpty);
+    await tester.tap(find.byKey(const Key('web-upload-allow-up')));
+    await tester.pumpAndSettle();
+    expect(controller.uploadResponses, [('up', true)]);
+    expect(find.text('Скан.pdf'), findsNothing);
+  });
+
+  testWidgets('preparation can be cancelled and journal problems are shown', (
+    tester,
+  ) async {
+    await setSize(tester, const Size(390, 844));
+    final controller = TestController()
+      ..isBusy = true
+      ..busyLabel = 'Готовим «Видео.mov»'
+      ..canCancelPreparation = true
+      ..journalWarning = true;
+    await tester.pumpWidget(FileTransferApp(controller: controller));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byKey(const Key('journal-warning')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('cancel-preparation')));
+    await tester.pump();
+    expect(controller.cancelledPreparations, 1);
+    await tester.tap(find.byKey(const Key('nav-history')));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byKey(const Key('journal-warning')), findsOneWidget);
   });
 }

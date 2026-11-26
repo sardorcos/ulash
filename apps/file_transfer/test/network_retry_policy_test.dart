@@ -34,6 +34,11 @@ void main() {
         const NetworkException('INCOMPLETE_FILE', ''),
         const NetworkException('AWAITING_COMMIT', ''),
         const NetworkException('HTTP_ERROR', '', statusCode: 503),
+        // A handshake failure without a key mismatch is a flaky network;
+        // a mismatch is reported as IDENTITY_CHANGED (never retried).
+        const HandshakeException('Connection reset during handshake'),
+        const TlsException('TLS failure'),
+        const NetworkException('BUSY', '', statusCode: 503),
       ]) {
         expect(
           policy.canRetry(error),
@@ -42,8 +47,6 @@ void main() {
         );
       }
       for (final error in <Object>[
-        const HandshakeException('Bad certificate'),
-        const TlsException('TLS failure'),
         const FileSystemException('Source cannot be read'),
         const FormatException('Malformed receipt'),
         const StorageException('DISK_FULL', ''),
@@ -63,6 +66,8 @@ void main() {
           'TEMP_QUOTA_EXCEEDED',
           'DISK_FULL',
           'UNKNOWN_FUTURE_ERROR',
+          'RATE_LIMITED',
+          'FOLDERS_UNSUPPORTED',
         ])
           NetworkException(code, '', statusCode: 503),
         const NetworkException('HTTP_ERROR', '', statusCode: 401),
@@ -77,4 +82,70 @@ void main() {
       }
     },
   );
+
+  test('Retry-After is honoured for BUSY/RATE_LIMITED within a budget', () {
+    final policy = NetworkRetryPolicy(randomUnit: () => 0);
+    const busy = NetworkException(
+      'BUSY',
+      '',
+      statusCode: 503,
+      retryAfter: Duration(seconds: 2),
+    );
+    const limited = NetworkException(
+      'RATE_LIMITED',
+      '',
+      statusCode: 429,
+      retryAfter: Duration(seconds: 60),
+    );
+    expect(
+      policy.serverRequestedDelay(busy, Duration.zero),
+      const Duration(seconds: 2),
+    );
+    expect(
+      policy.serverRequestedDelay(limited, const Duration(minutes: 3)),
+      const Duration(seconds: 60),
+    );
+    expect(
+      policy.serverRequestedDelay(
+        limited,
+        const Duration(minutes: 4, seconds: 30),
+      ),
+      isNull,
+      reason: 'the total waiting budget is exhausted',
+    );
+    expect(
+      policy.serverRequestedDelay(
+        const NetworkException(
+          'RATE_LIMITED',
+          '',
+          retryAfter: Duration(minutes: 10),
+        ),
+        Duration.zero,
+      ),
+      isNull,
+      reason: 'a wait longer than two minutes is not taken silently',
+    );
+    expect(
+      policy.serverRequestedDelay(
+        const NetworkException('BUSY', '', retryAfter: Duration.zero),
+        Duration.zero,
+      ),
+      const Duration(seconds: 1),
+    );
+    expect(
+      policy.serverRequestedDelay(
+        const NetworkException(
+          'IDENTITY_CHANGED',
+          '',
+          retryAfter: Duration(seconds: 2),
+        ),
+        Duration.zero,
+      ),
+      isNull,
+    );
+    expect(
+      policy.serverRequestedDelay(const SocketException('x'), Duration.zero),
+      isNull,
+    );
+  });
 }
