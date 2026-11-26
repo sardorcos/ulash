@@ -429,16 +429,27 @@ void main() {
 
   test('oversized JSON is refused before creating pairing state', () async {
     final raw = createPinnedHttpClient(endpoint, receiverIdentity.serverPin);
-    final request = await raw.postUrl(
-      endpoint.replace(path: '/v1/pairing/requests'),
-    );
-    request.headers.contentType = ContentType.json;
-    final body = utf8.encode(jsonEncode({'payload': 'x' * 20000}));
-    request.contentLength = body.length;
-    request.add(body);
-    final response = await request.close();
-    expect(response.statusCode, 413);
-    await response.drain<void>();
+    Future<int> post(String? invite) async {
+      final request = await raw.postUrl(
+        endpoint.replace(path: '/v1/pairing/requests'),
+      );
+      request.headers.contentType = ContentType.json;
+      if (invite != null) {
+        request.headers.set(HttpHeaders.authorizationHeader, 'Invite $invite');
+      }
+      final body = utf8.encode(jsonEncode({'payload': 'x' * 20000}));
+      request.contentLength = body.length;
+      request.add(body);
+      final response = await request.close();
+      await response.drain<void>();
+      return response.statusCode;
+    }
+
+    // Without a valid invitation the body is never read at all.
+    expect(await post(null), 401);
+    // With a live invitation the size limit applies.
+    final invite = host.createInvite();
+    expect(await post(invite.inviteSecret), 413);
     expect(host.pendingPairings, isEmpty);
     raw.close(force: true);
   });

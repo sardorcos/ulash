@@ -14,12 +14,69 @@ abstract final class TransferLimits {
 /// `invoice\u202Efdp.exe` look like `invoiceexe.pdf`. They are never needed
 /// in a stored or displayed file name.
 final RegExp invisibleNameCharacters = RegExp(
-  '[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\u061C\uFEFF]',
+  '[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\u061C\uFEFF'
+  '\u3164\u115F\u1160\u00AD\u2028\u2029\u180E\uFFA0\u034F]',
 );
 
 /// Removes invisible/bidirectional formatting characters from a display name.
 String stripInvisibleNameCharacters(String input) =>
     input.replaceAll(invisibleNameCharacters, '');
+
+/// Display-safe text for names shown to the user (file and device names):
+/// invisible/bidirectional characters removed and every run of whitespace
+/// (including the long space padding used to push an extension out of view)
+/// collapsed to a single space.
+String sanitizeDisplayText(String input) => stripInvisibleNameCharacters(
+  // Line/paragraph separators separate words: keep them as a space.
+  input.replaceAll(RegExp('[\u2028\u2029]'), ' '),
+).replaceAll(RegExp(r'\s+'), ' ').trim();
+
+const _executableExtensions = {
+  'exe', 'com', 'bat', 'cmd', 'ps1', 'psm1', 'vbs', 'vbe', 'js', 'jse', //
+  'wsf', 'wsh', 'hta', 'msi', 'msix', 'appx', 'scr', 'pif', 'lnk', 'url', //
+  'reg', 'cpl', 'jar', 'dll', 'sys', 'app', 'command', 'sh', 'workflow', //
+  'apk', 'ipa',
+};
+
+/// True when opening a file with this name may run code (Windows/macOS
+/// executables, scripts, installers, shortcuts). The UI warns or refuses
+/// instead of launching such files directly.
+bool isPotentiallyExecutable(String fileName) {
+  final name = sanitizeDisplayText(fileName).toLowerCase();
+  final dot = name.lastIndexOf('.');
+  if (dot < 0 || dot == name.length - 1) return false;
+  final extension = name.substring(dot + 1).replaceAll(RegExp(r'[. ]+$'), '');
+  return _executableExtensions.contains(extension);
+}
+
+/// Validates an optional folder path inside a transfer (protocol minor 1):
+/// forward-slash separated, 1–8 segments, each a plain name (no `.`, `..`,
+/// empty, control or path characters), at most 240 characters.
+String? validateRelativeDirectory(Object? value) {
+  if (value == null) return null;
+  if (value is! String ||
+      value.isEmpty ||
+      value.length > 240 ||
+      value.startsWith('/') ||
+      value.endsWith('/')) {
+    throw const StorageException('INVALID_MANIFEST', 'Invalid folder path.');
+  }
+  final segments = value.split('/');
+  if (segments.length > 8 ||
+      segments.any(
+        (segment) =>
+            segment.isEmpty ||
+            segment == '.' ||
+            segment == '..' ||
+            segment.trim().isEmpty ||
+            segment.runes.length > 120 ||
+            RegExp(r'[\\:\x00-\x1f\x7f]').hasMatch(segment) ||
+            invisibleNameCharacters.hasMatch(segment),
+      )) {
+    throw const StorageException('INVALID_MANIFEST', 'Invalid folder path.');
+  }
+  return value;
+}
 
 class StorageException implements Exception {
   const StorageException(this.code, this.message, {this.offset});
@@ -73,7 +130,8 @@ class FileManifest {
     required this.sizeBytes,
     required this.sha256,
     this.mimeType,
-  }) {
+    String? relativeDirectory,
+  }) : relativeDirectory = validateRelativeDirectory(relativeDirectory) {
     validateOpaqueId(fileId, 'fileId');
     if (displayName.isEmpty ||
         displayName.runes.length > 512 ||
@@ -101,7 +159,7 @@ class FileManifest {
   /// The name to show in UI and use for local files: the wire name without
   /// invisible bidirectional/zero-width characters (never empty).
   String get visibleName {
-    final cleaned = stripInvisibleNameCharacters(displayName).trim();
+    final cleaned = sanitizeDisplayText(displayName);
     return cleaned.isEmpty ? 'file' : cleaned;
   }
 
@@ -109,12 +167,19 @@ class FileManifest {
   final String sha256;
   final String? mimeType;
 
+  /// Folder of this file inside the transfer (`Photos/2026`), or null for a
+  /// top-level file. Requires protocol minor 1 on the receiver.
+  final String? relativeDirectory;
+
   factory FileManifest.fromJson(Map<String, dynamic> json) => FileManifest(
     fileId: _string(json, 'fileId'),
     displayName: _string(json, 'displayName'),
     sizeBytes: parseWireUint64(json['sizeBytes'], 'sizeBytes'),
     sha256: _string(json, 'sha256'),
     mimeType: json['mimeType'] == null ? null : _string(json, 'mimeType'),
+    relativeDirectory: json['relativeDirectory'] == null
+        ? null
+        : _string(json, 'relativeDirectory'),
   );
 
   Map<String, dynamic> toJson() => {
@@ -123,6 +188,8 @@ class FileManifest {
     'sizeBytes': sizeBytes.toString(),
     'mimeType': mimeType,
     'sha256': sha256,
+    // Omitted for top-level files so protocol-minor-0 manifests are unchanged.
+    if (relativeDirectory != null) 'relativeDirectory': relativeDirectory,
   };
 }
 
@@ -154,6 +221,9 @@ class TransferManifest {
   final String requestId;
   final List<FileManifest> files;
   int get totalBytes => files.fold(0, (total, file) => total + file.sizeBytes);
+
+  /// True when any file carries a folder path (needs protocol minor 1).
+  bool get usesFolders => files.any((file) => file.relativeDirectory != null);
 
   factory TransferManifest.fromJson(Map<String, dynamic> json) {
     if (json['protocolMajor'] != null && json['protocolMajor'] != 1) {
@@ -192,7 +262,9 @@ class TransferManifest {
   Map<String, dynamic> toJson() => {
     'requestId': requestId,
     'protocolMajor': 1,
-    'protocolMinor': 0,
+    // Minor 1 only when a folder feature is used: older receivers see the
+    // exact same manifest bytes as before for flat transfers.
+    'protocolMinor': usesFolders ? 1 : 0,
     'mode': 'push',
     'files': files.map((file) => file.toJson()).toList(),
     'totalBytes': totalBytes.toString(),

@@ -9,6 +9,7 @@ import '../security/pairing_service.dart';
 import '../security/trusted_peer_store.dart';
 import '../storage/durable_inbox.dart';
 import 'network_error.dart';
+import 'secure_socket_adapter.dart';
 
 /// Foreground alpha host: encrypted manual pairing and consent-gated resumable
 /// push. Pull/background transports are deliberately not advertised as ready.
@@ -21,9 +22,44 @@ final class CoreHost {
     this.uploadGracePeriod = const Duration(seconds: 30),
     this.uploadThroughputWindow = const Duration(seconds: 60),
     this.minUploadBytesPerWindow = 16 * 1024,
+    this.handshakeTimeout = const Duration(seconds: 10),
+    this.requestHeaderTimeout = const Duration(seconds: 10),
+    this.bodyReadDeadline = const Duration(seconds: 5),
+    this.maxConnections = 64,
+    this.maxConnectionsPerAddress = 16,
+    this.maxUnauthenticatedRequestsPerAddress = 4,
+    this.maxUnauthenticatedRequests = 8,
+    this.maxAuthenticatedRequests = 32,
+    this.nearbyRequestsPerMinute = 5,
     Duration Function()? clock,
   }) : pairing = PairingService(identity: identity, peers: peers),
        _clock = clock ?? _defaultClock;
+
+  /// A TLS handshake that does not finish in time is dropped.
+  final Duration handshakeTimeout;
+
+  /// A connection must deliver a complete request head this soon after the
+  /// handshake, or it is closed (slow-header protection).
+  final Duration requestHeaderTimeout;
+
+  /// Whole-body deadline for JSON metadata requests (not just the gap
+  /// between chunks), so a trickle of bytes cannot hold a request open.
+  final Duration bodyReadDeadline;
+
+  /// Connection caps. At a cap the oldest connection that has not yet made
+  /// an authenticated request is evicted; established paired-peer
+  /// connections are never evicted for a newcomer.
+  final int maxConnections;
+  final int maxConnectionsPerAddress;
+
+  /// Concurrency pools: unauthenticated requests (hello, pairing, nearby)
+  /// never compete with requests from paired peers.
+  final int maxUnauthenticatedRequestsPerAddress;
+  final int maxUnauthenticatedRequests;
+  final int maxAuthenticatedRequests;
+
+  /// Per-address rate limit for the unauthenticated nearby invitation.
+  final int nearbyRequestsPerMinute;
 
   static final Stopwatch _stopwatch = Stopwatch()..start();
   static Duration _defaultClock() => _stopwatch.elapsed;
@@ -48,7 +84,16 @@ final class CoreHost {
   final _changes = StreamController<void>.broadcast();
   Stream<void> get changes => _changes.stream;
   HttpServer? _server;
-  int _activeRequests = 0;
+  _ConnectionGuard? _guard;
+
+  /// Requests whose body [_body] read completely.
+  final _bodyRead = Expando<bool>();
+  int _authenticatedRequests = 0;
+  int _unauthenticatedRequests = 0;
+  final _unauthenticatedByAddress = <String, int>{};
+  final _nearbyRequests = <String, List<Duration>>{};
+  PairingInvite? _nearbyInvite;
+  Duration? _nearbyDeadline;
   final Set<Future<void>> _handlers = {};
   DateTime _lastProgressEvent = DateTime.fromMillisecondsSinceEpoch(0);
   bool _closed = false;
@@ -70,13 +115,22 @@ final class CoreHost {
       throw StateError('Host already started or closed');
     }
     await pairing.load();
-    final server = await HttpServer.bindSecure(
+    final raw = await RawServerSocket.bind(
       address ?? InternetAddress.loopbackIPv4,
       port,
-      identity.serverContext(),
     );
+    final guard = _ConnectionGuard(
+      raw,
+      identity.serverContext(),
+      handshakeTimeout: handshakeTimeout,
+      requestHeaderTimeout: requestHeaderTimeout,
+      maxConnections: maxConnections,
+      maxConnectionsPerAddress: maxConnectionsPerAddress,
+    );
+    _guard = guard;
+    final server = HttpServer.listenOn(guard);
     server.autoCompress = false;
-    server.idleTimeout = const Duration(seconds: 30);
+    server.idleTimeout = const Duration(seconds: 15);
     _server = server;
     _inboxSubscription = inbox.changes.listen((_) => _emit());
     server.listen(
@@ -151,9 +205,46 @@ final class CoreHost {
     return result;
   }
 
+  /// Opens a time-limited window in which an unpaired device on the LAN may
+  /// fetch an invitation without scanning the QR code
+  /// (`GET /v1/pairing/nearby`). Pairing still needs this device's approval
+  /// after comparing the six-digit code ([PendingPairing.sas]) with the code
+  /// on the joining device.
+  PairingInvite openNearbyPairing({
+    Duration ttl = const Duration(seconds: 120),
+    List<String>? hostAddresses,
+  }) {
+    closeNearbyPairing();
+    final invite = createInvite(hostAddresses: hostAddresses, ttl: ttl);
+    _nearbyInvite = invite;
+    _nearbyDeadline = _clock() + ttl;
+    _emit();
+    return invite;
+  }
+
+  /// Ends the nearby pairing window and invalidates its unused invitation.
+  void closeNearbyPairing() {
+    final invite = _nearbyInvite;
+    _nearbyInvite = null;
+    _nearbyDeadline = null;
+    if (invite != null) pairing.revokeInvite(invite.inviteId);
+  }
+
+  /// True while a nearby pairing window is open (for discovery records).
+  bool get nearbyPairingOpen {
+    final deadline = _nearbyDeadline;
+    if (deadline == null) return false;
+    if (_clock() >= deadline) {
+      closeNearbyPairing();
+      return false;
+    }
+    return true;
+  }
+
   Map<String, dynamic> get capabilities => {
     'protocolMajor': 1,
-    'protocolMinor': 0,
+    'protocolMinor': 1,
+    'supportsFolders': true,
     // Authenticated, pinned response: lets paired peers pick up a rename.
     'displayName': identity.displayName,
     'canHostForeground': true,
@@ -175,14 +266,38 @@ final class CoreHost {
     // reached response.close(). Observe response.done immediately so that an
     // intentional disconnect never becomes an unhandled isolate error.
     unawaited(request.response.done.then<void>((_) {}, onError: (Object _) {}));
-    _activeRequests++;
+    final remote = request.connectionInfo?.remoteAddress.address ?? '?';
+    _guard?.requestStarted(request);
+    final peer = peers.authenticate(_auth(request, 'Bearer'));
+    final authenticated = peer != null;
+    var counted = false;
     try {
       request.response.headers.set(HttpHeaders.cacheControlHeader, 'no-store');
       request.response.headers.set('X-Content-Type-Options', 'nosniff');
-      if (_closed || _activeRequests > 32) {
+      if (_closed) {
         throw const NetworkException('BUSY', 'Host is busy', statusCode: 503);
       }
-      await _route(request);
+      if (authenticated) {
+        if (_authenticatedRequests >= maxAuthenticatedRequests) {
+          throw const NetworkException('BUSY', 'Host is busy', statusCode: 503);
+        }
+        _authenticatedRequests++;
+        counted = true;
+        _guard?.markAuthenticated(request);
+      } else {
+        final perAddress = _unauthenticatedByAddress[remote] ?? 0;
+        if (perAddress >= maxUnauthenticatedRequestsPerAddress ||
+            _unauthenticatedRequests >= maxUnauthenticatedRequests) {
+          throw const NetworkException('BUSY', 'Host is busy', statusCode: 503);
+        }
+        _unauthenticatedByAddress[remote] = perAddress + 1;
+        _unauthenticatedRequests++;
+        counted = true;
+        // Free the connection right after the answer: unauthenticated
+        // callers never keep a keep-alive slot.
+        request.response.persistentConnection = false;
+      }
+      await _route(request, peer, remote);
     } on PairingException catch (error) {
       await _error(request, error.code, error.message);
     } on StorageException catch (error) {
@@ -207,11 +322,27 @@ final class CoreHost {
         'Operation could not be completed',
       );
     } finally {
-      _activeRequests--;
+      if (counted) {
+        if (authenticated) {
+          _authenticatedRequests--;
+        } else {
+          _unauthenticatedRequests--;
+          final left = (_unauthenticatedByAddress[remote] ?? 1) - 1;
+          if (left <= 0) {
+            _unauthenticatedByAddress.remove(remote);
+          } else {
+            _unauthenticatedByAddress[remote] = left;
+          }
+        }
+      }
     }
   }
 
-  Future<void> _route(HttpRequest request) async {
+  Future<void> _route(
+    HttpRequest request,
+    TrustedPeer? authenticatedPeer,
+    String remote,
+  ) async {
     final parts = request.uri.pathSegments;
     if (parts.isEmpty || parts.first != 'v1' || request.uri.hasFragment) {
       throw const NetworkException('NOT_FOUND', 'Unknown endpoint');
@@ -234,16 +365,24 @@ final class CoreHost {
       method = override;
     }
     if (path == '/v1/hello' && method == 'GET') {
-      return _json(request, {
-        'protocolMajor': 1,
-        'protocolMinor': 0,
-        'displayName': identity.displayName,
-        'peerId': identity.peerId,
-      });
+      // Unauthenticated: protocol versions only. No name or key identifier
+      // that would let anyone on a network recognise this device later.
+      return _json(request, {'protocolMajor': 1, 'protocolMinor': 1});
+    }
+    if (path == '/v1/pairing/nearby' && method == 'GET') {
+      _rateLimitNearby(remote);
+      final invite = nearbyPairingOpen ? _nearbyInvite : null;
+      if (invite == null) {
+        throw const NetworkException('NOT_FOUND', 'Not open for pairing');
+      }
+      return _json(request, {'invite': invite.encode()});
     }
     if (path == '/v1/pairing/requests' && method == 'POST') {
+      // Authenticate the invitation before reading any body bytes.
+      final secret = _auth(request, 'Invite');
+      pairing.preauthorizeInvite(secret);
       final body = await _body(request, maxBytes: 16384);
-      final result = await pairing.request(body, _auth(request, 'Invite'));
+      final result = await pairing.request(body, secret);
       _emit();
       return _json(request, result, status: 202);
     }
@@ -257,8 +396,10 @@ final class CoreHost {
         parts[1] == 'pairing' &&
         parts[3] == 'commit' &&
         method == 'POST') {
+      final token = _auth(request, 'Bearer');
+      pairing.preauthorizeCommit(parts[2], token);
       await _body(request, maxBytes: 1024, allowEmpty: true);
-      final result = await pairing.commit(parts[2], _auth(request, 'Bearer'));
+      final result = await pairing.commit(parts[2], token);
       _emit();
       return _json(request, result);
     }
@@ -266,8 +407,8 @@ final class CoreHost {
       return _json(request, pairing.state(parts[2], _auth(request, 'Bearer')));
     }
     final token = _auth(request, 'Bearer');
-    final peer = peers.authenticate(token);
-    if (peer == null) {
+    final peer = authenticatedPeer;
+    if (peer == null || token == null) {
       throw const NetworkException('UNAUTHORIZED', 'Active pairing required');
     }
     if (path == '/v1/capabilities' && method == 'GET') {
@@ -423,7 +564,7 @@ final class CoreHost {
       file.manifest.fileId,
       offset: offset,
       incarnation: file.storageIncarnationId,
-      bytes: _uploadBytes(request, token!, peer.peerId, remaining),
+      bytes: _uploadBytes(request, token, peer.peerId, remaining),
     );
     _emit();
     request.response.headers.set('Upload-Offset', result.offset.toString());
@@ -508,14 +649,43 @@ final class CoreHost {
       );
     }
     final bytes = <int>[];
-    await for (final chunk in request.timeout(const Duration(seconds: 10))) {
-      if (bytes.length + chunk.length > maxBytes) {
-        throw const NetworkException(
-          'BODY_TOO_LARGE',
-          'Metadata limit exceeded',
-        );
-      }
-      bytes.addAll(chunk);
+    final done = Completer<void>();
+    late final StreamSubscription<List<int>> subscription;
+    subscription = request.listen(
+      (chunk) {
+        if (bytes.length + chunk.length > maxBytes) {
+          unawaited(subscription.cancel());
+          if (!done.isCompleted) {
+            done.completeError(
+              const NetworkException(
+                'BODY_TOO_LARGE',
+                'Metadata limit exceeded',
+              ),
+            );
+          }
+          return;
+        }
+        bytes.addAll(chunk);
+      },
+      onError: (Object error) {
+        if (!done.isCompleted) done.completeError(error);
+      },
+      onDone: () {
+        if (!done.isCompleted) done.complete();
+      },
+      cancelOnError: true,
+    );
+    try {
+      // One deadline for the whole body, not per chunk.
+      await done.future.timeout(bodyReadDeadline);
+      _bodyRead[request] = true;
+    } on TimeoutException {
+      unawaited(subscription.cancel());
+      throw const NetworkException(
+        'REQUEST_TIMEOUT',
+        'Request body was not delivered in time',
+        statusCode: 408,
+      );
     }
     if (bytes.isEmpty && allowEmpty) return {};
     final decoded = jsonDecode(utf8.decode(bytes));
@@ -541,8 +711,50 @@ final class CoreHost {
   }) async {
     request.response.statusCode = status;
     request.response.headers.contentType = ContentType.json;
+    if (_mayHaveUnreadBody(request)) return _answerUnread(request, body);
     request.response.write(jsonEncode(body));
     await request.response.close();
+  }
+
+  bool _mayHaveUnreadBody(HttpRequest request) =>
+      _bodyRead[request] != true &&
+      (request.contentLength > 0 || request.headers.chunkedTransferEncoding);
+
+  /// Answers a request whose body was never read (refused before reading,
+  /// or a body deadline). HttpServer would destroy such a connection the
+  /// moment the response completes, discarding the TLS-buffered answer, so the
+  /// socket is detached, the answer flushed and the connection half-closed,
+  /// with a hard bound before it is destroyed.
+  Future<void> _answerUnread(
+    HttpRequest request,
+    Map<String, dynamic> body,
+  ) async {
+    final bytes = utf8.encode(jsonEncode(body));
+    final response = request.response
+      ..persistentConnection = false
+      ..contentLength = bytes.length;
+    final socket = await response.detachSocket();
+    unawaited(() async {
+      final linger = Timer(const Duration(seconds: 5), socket.destroy);
+      try {
+        // Discard whatever the caller still sends; end when it hangs up.
+        socket.listen(
+          (_) {},
+          onDone: socket.destroy,
+          onError: (Object _) => socket.destroy(),
+          cancelOnError: true,
+        );
+        socket.add(bytes);
+        await socket.flush();
+        await socket.close();
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+      } catch (_) {
+        /* Peer went away. */
+      } finally {
+        linger.cancel();
+        socket.destroy();
+      }
+    }());
   }
 
   Future<void> _error(
@@ -555,6 +767,17 @@ final class CoreHost {
     try {
       request.response.persistentConnection = false;
       request.response.headers.set('X-Transfer-Error', code);
+      final retryAfter = switch (code) {
+        'BUSY' => 2,
+        'RATE_LIMITED' => 60,
+        _ => null,
+      };
+      if (retryAfter != null) {
+        request.response.headers.set(
+          HttpHeaders.retryAfterHeader,
+          retryAfter.toString(),
+        );
+      }
       if (offset != null) {
         request.response.headers.set('Upload-Offset', offset.toString());
       }
@@ -587,7 +810,8 @@ final class CoreHost {
     'TRANSFER_TOO_SLOW' => 408,
     'UNSUPPORTED_MEDIA_TYPE' => 415,
     'CHECKSUM_MISMATCH' || 'HASH_MISMATCH' || 'INTEGRITY_MISMATCH' => 422,
-    'BUSY' => 423,
+    'BUSY' => 503,
+    'REQUEST_TIMEOUT' => 408,
     'NOT_ACCEPTED' => 403,
     'LENGTH_EXCEEDED' => 413,
     'CONFLICT' ||
@@ -608,12 +832,234 @@ final class CoreHost {
     if (!_changes.isClosed) _changes.add(null);
   }
 
+  void _rateLimitNearby(String remote) {
+    final now = _clock();
+    final history = _nearbyRequests.putIfAbsent(remote, () => [])
+      ..removeWhere((time) => now - time >= const Duration(minutes: 1));
+    if (history.length >= nearbyRequestsPerMinute) {
+      throw const NetworkException(
+        'RATE_LIMITED',
+        'Too many requests',
+        statusCode: 429,
+      );
+    }
+    history.add(now);
+    if (_nearbyRequests.length > 256) {
+      _nearbyRequests.remove(_nearbyRequests.keys.first);
+    }
+  }
+
   Future<void> close() async {
     _closed = true;
+    closeNearbyPairing();
     await _server?.close(force: true);
-    await Future.wait(_handlers.toList());
+    await _guard?.close();
+    // Connections are gone; a handler stuck on storage must not hang close.
+    await Future.wait(_handlers.toList())
+        .timeout(const Duration(seconds: 5), onTimeout: () => const []);
     await _inboxSubscription?.cancel();
     _server = null;
     await _changes.close();
+  }
+}
+
+/// Accepts TCP connections, performs the TLS handshake with a deadline and
+/// hands only completed TLS sockets to [HttpServer.listenOn]. Enforces
+/// connection caps by evicting the oldest connection that has not made an
+/// authenticated request, and closes connections that do not send a request
+/// head in time.
+final class _ConnectionGuard extends Stream<Socket> implements ServerSocket {
+  _ConnectionGuard(
+    this._raw,
+    this._context, {
+    required this.handshakeTimeout,
+    required this.requestHeaderTimeout,
+    required this.maxConnections,
+    required this.maxConnectionsPerAddress,
+  }) {
+    _rawSubscription = _raw.listen(
+      _accept,
+      onError: (Object _) {},
+      onDone: () => unawaited(_sockets.close()),
+    );
+  }
+
+  final RawServerSocket _raw;
+  final SecurityContext _context;
+  final Duration handshakeTimeout;
+  final Duration requestHeaderTimeout;
+  final int maxConnections;
+  final int maxConnectionsPerAddress;
+  final _sockets = StreamController<Socket>();
+  late final StreamSubscription<RawSocket> _rawSubscription;
+  final _connections = <_GuardedConnection>[];
+  final _byRemote = <String, _GuardedConnection>{};
+  var _sequence = 0;
+
+  @override
+  InternetAddress get address => _raw.address;
+  @override
+  int get port => _raw.port;
+
+  @override
+  StreamSubscription<Socket> listen(
+    void Function(Socket event)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) => _sockets.stream.listen(
+    onData,
+    onError: onError,
+    onDone: onDone,
+    cancelOnError: cancelOnError,
+  );
+
+  @override
+  Future<ServerSocket> close() async {
+    await _rawSubscription.cancel();
+    await _raw.close();
+    await closeAll();
+    if (!_sockets.isClosed) await _sockets.close();
+    return this;
+  }
+
+  Future<void> closeAll() async {
+    for (final connection in _connections.toList()) {
+      connection.destroy();
+    }
+    _connections.clear();
+    _byRemote.clear();
+  }
+
+  void _accept(RawSocket socket) {
+    String address;
+    int remotePort;
+    try {
+      address = socket.remoteAddress.address;
+      remotePort = socket.remotePort;
+    } catch (_) {
+      socket.close();
+      return;
+    }
+    final connection = _GuardedConnection(
+      address,
+      remotePort,
+      socket,
+      _sequence++,
+    );
+    if (!_admit(connection)) {
+      socket.close();
+      return;
+    }
+    _connections.add(connection);
+    _byRemote[connection.key] = connection;
+    connection.timer = Timer(handshakeTimeout, () {
+      if (connection.secure == null) _drop(connection);
+    });
+    // The raw socket stays closable during the handshake (deadline and
+    // eviction); SecureSocket.secureServer would detach it.
+    RawSecureSocket.secureServer(socket, _context).then((rawSecure) {
+      connection.timer?.cancel();
+      if (connection.closed) {
+        rawSecure.close();
+        return;
+      }
+      final secure = SecureSocketAdapter(rawSecure);
+      connection.secure = secure;
+      connection.timer = Timer(requestHeaderTimeout, () {
+        if (!connection.sawRequest) _drop(connection);
+      });
+      unawaited(
+        secure.done.then<void>(
+          (_) => _forget(connection),
+          onError: (Object _) => _forget(connection),
+        ),
+      );
+      if (_sockets.isClosed) {
+        secure.destroy();
+      } else {
+        _sockets.add(secure);
+      }
+    }, onError: (Object _) => _drop(connection));
+  }
+
+  /// Makes room for [incoming] under the caps by evicting the oldest
+  /// connection without an authenticated request (same address first for the
+  /// per-address cap). Returns false when nothing can be evicted.
+  bool _admit(_GuardedConnection incoming) {
+    while (_connections.where((c) => c.address == incoming.address).length >=
+        maxConnectionsPerAddress) {
+      final victim = _connections
+          .where((c) => c.address == incoming.address && !c.authenticated)
+          .firstOrNull;
+      if (victim == null) return false;
+      _drop(victim);
+    }
+    while (_connections.length >= maxConnections) {
+      final victim = _connections.where((c) => !c.authenticated).firstOrNull;
+      if (victim == null) return false;
+      _drop(victim);
+    }
+    return true;
+  }
+
+  _GuardedConnection? _of(HttpRequest request) {
+    final info = request.connectionInfo;
+    if (info == null) return null;
+    return _byRemote['${info.remoteAddress.address}:${info.remotePort}'];
+  }
+
+  void requestStarted(HttpRequest request) {
+    final connection = _of(request);
+    if (connection == null) return;
+    connection.sawRequest = true;
+    connection.timer?.cancel();
+  }
+
+  void markAuthenticated(HttpRequest request) {
+    _of(request)?.authenticated = true;
+  }
+
+  void _drop(_GuardedConnection connection) {
+    connection.destroy();
+    _forget(connection);
+  }
+
+  void _forget(_GuardedConnection connection) {
+    connection.timer?.cancel();
+    _connections.remove(connection);
+    if (identical(_byRemote[connection.key], connection)) {
+      _byRemote.remove(connection.key);
+    }
+  }
+}
+
+final class _GuardedConnection {
+  _GuardedConnection(this.address, this.remotePort, this.raw, this.sequence);
+  final String address;
+  final int remotePort;
+  final RawSocket raw;
+  final int sequence;
+  SecureSocket? secure;
+  Timer? timer;
+  bool sawRequest = false;
+  bool authenticated = false;
+  bool closed = false;
+  String get key => '$address:$remotePort';
+
+  void destroy() {
+    if (closed) return;
+    closed = true;
+    timer?.cancel();
+    try {
+      secure?.destroy();
+    } catch (_) {
+      /* Already closed. */
+    }
+    try {
+      unawaited(raw.close().then<void>((_) {}, onError: (Object _) {}));
+    } catch (_) {
+      /* Already closed. */
+    }
   }
 }

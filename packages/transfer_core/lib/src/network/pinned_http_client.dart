@@ -41,24 +41,43 @@ HttpClient createPinnedHttpClient(Uri origin, String expectedPin) {
         'Connection origin was rejected',
       );
     }
+    // A key mismatch inside the handshake surfaces as a generic
+    // HandshakeException; remember it so it is reported as IDENTITY_CHANGED
+    // (never retried) while ordinary handshake failures on a flaky network
+    // stay transport errors (retryable).
+    var mismatch = false;
     final task = await SecureSocket.startConnect(
       uri.host,
       uri.port,
       context: context,
-      onBadCertificate: matches,
+      onBadCertificate: (certificate) {
+        final ok = matches(certificate);
+        if (!ok) mismatch = true;
+        return ok;
+      },
     );
-    final verified = task.socket.then<Socket>((socket) {
-      final certificate = socket.peerCertificate;
-      // This unconditional post-handshake check also rejects CA-valid impostors.
-      if (certificate == null || !matches(certificate)) {
-        socket.destroy();
-        throw const NetworkException(
-          'IDENTITY_CHANGED',
-          'Server key did not match the paired identity',
-        );
-      }
-      return socket;
-    });
+    final verified = task.socket
+        .catchError((Object error) {
+          if (mismatch) {
+            throw const NetworkException(
+              'IDENTITY_CHANGED',
+              'Server key did not match the paired identity',
+            );
+          }
+          throw error;
+        })
+        .then<Socket>((socket) {
+          final certificate = socket.peerCertificate;
+          // This unconditional post-handshake check also rejects CA-valid impostors.
+          if (certificate == null || !matches(certificate)) {
+            socket.destroy();
+            throw const NetworkException(
+              'IDENTITY_CHANGED',
+              'Server key did not match the paired identity',
+            );
+          }
+          return socket;
+        });
     return ConnectionTask.fromSocket(verified, task.cancel);
   };
   return client;

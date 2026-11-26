@@ -289,7 +289,10 @@ void main() {
       await inbox!.close();
       inbox = null;
       final check = sqlite3.open(p.join(directory.path, 'inbox.sqlite'));
-      expect(check.select('PRAGMA user_version').single.values.single, 2);
+      expect(
+        check.select('PRAGMA user_version').single.values.single,
+        DurableInbox.schemaVersion,
+      );
       for (final row in check.select('SELECT * FROM inbox_files')) {
         expect(row['temporary_path'], startsWith('.staging/'));
       }

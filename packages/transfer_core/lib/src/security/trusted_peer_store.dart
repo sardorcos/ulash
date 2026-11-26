@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
-import '../models.dart' show stripInvisibleNameCharacters;
+import '../models.dart' show sanitizeDisplayText;
 import 'crypto.dart';
 import 'secret_store.dart';
 
@@ -189,7 +189,7 @@ final class TrustedPeerStore {
       _serialResult(() async {
         _ensureLoaded();
         final peer = _peers[peerId];
-        final clean = stripInvisibleNameCharacters(name).trim();
+        final clean = sanitizeDisplayText(name);
         if (peer == null ||
             clean.isEmpty ||
             clean.length > 80 ||

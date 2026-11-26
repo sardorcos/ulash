@@ -6,8 +6,18 @@ has been completed.
 
 ## Entry points
 
-- `DurableInbox.open(Directory, {checkpointBytes, checkpointInterval, budget,
-  offerLifetime, wallClock, monotonicClock})`
+- `DurableInbox.open(Directory, {checkpointBytes (8 MiB), checkpointInterval,
+  budget, offerLifetime, wallClock, monotonicClock, receivedDirectory,
+  maxPendingOffersPerPeer (5)})`
+- With `receivedDirectory`, results are committed to
+  `<dir>/<yyyy-MM-dd HH.mm> (<id6>)/<folder?>/<safe name>` (collisions get
+  ` (2)`; never overwritten) and journaled as `r:<relative path>`, so the
+  directory may move with its container. Results from the private
+  `received/` layout are migrated on open (crash-safe via `moved_from`).
+- `list({peerId})`, `listRecent({limit, before})`, `count({peerId})` and
+  `changedTransfers` (ids) for history screens.
+- `DurableOutbox.stageFile(..., adoptTemporary: true)` renames a temporary the
+  caller owns into the store (copy fallback); never for user originals.
 - `createOffer(TransferManifest, {required peerId})`
 - `accept`, `reject`, `cancel`, `pause`, `resume` return `TransferSnapshot`.
 - `pause` and `resume` accept `bySource: true`; the default is the local sink.

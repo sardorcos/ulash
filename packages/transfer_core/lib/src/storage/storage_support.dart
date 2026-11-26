@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
@@ -134,8 +136,10 @@ void requireContainedPath(Directory root, String target) {
 /// never used as directory paths. This is not a replacement for native
 /// no-follow/no-replace filesystem primitives on hostile shared directories.
 String safeDisplayName(String input) {
-  var name = stripInvisibleNameCharacters(input).trim();
-  name = name.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1f\x7f]'), '_');
+  var name = sanitizeDisplayText(input);
+  // `& ^ % !` are shell metacharacters for `cmd /c start`-style launchers on
+  // Windows; they are never needed in a locally stored name.
+  name = name.replaceAll(RegExp(r'[<>:"/\\|?*&^%!\x00-\x1f\x7f]'), '_');
   name = name.replaceAll(RegExp(r'[. ]+$'), '');
   if (name.isEmpty || name == '.' || name == '..') name = 'file';
   // Windows ignores trailing spaces before the extension: `CON .txt` is CON.
@@ -336,6 +340,19 @@ Future<List<String>> quarantineJournalFiles(File journal) async {
   return moved;
 }
 
+/// Public name for application journals: versioned, WAL + FULL, quick_check,
+/// `JOURNAL_CORRUPT` / `JOURNAL_TOO_NEW` (see [openJournal]).
+Database openVersionedJournal(
+  File file, {
+  required int version,
+  required void Function(Database db, int fromVersion) migrate,
+}) => openJournal(file, version: version, migrate: migrate);
+
+/// Moves one damaged journal (and its WAL/SHM files) aside; see
+/// [quarantineJournalFiles]. The caller must have closed the database.
+Future<List<String>> quarantineJournalFile(File journal) =>
+    quarantineJournalFiles(journal);
+
 T journalTransaction<T>(Database db, T Function() body) {
   db.execute('BEGIN IMMEDIATE');
   try {
@@ -366,6 +383,189 @@ Future<String> hashStoredFile(File file, {void Function()? check}) async {
   digest.close();
   check?.call();
   return result.value!.toString();
+}
+
+/// Streams a file through SHA-256 in a background isolate so large files
+/// never block the caller's event loop (the UI isolate in the app). [check] is
+/// polled while hashing; when it throws, the isolate is killed and the error
+/// is rethrown.
+Future<String> hashFileIsolated(
+  File file, {
+  void Function()? check,
+  Duration pollInterval = const Duration(milliseconds: 100),
+}) async {
+  check?.call();
+  final result = await _runFileWorker(
+    _FileJob(kind: _FileJobKind.hash, source: file.path),
+    check: check,
+    pollInterval: pollInterval,
+  );
+  check?.call();
+  return result.sha256;
+}
+
+/// Copies [source] to [destination] (which must exist and be empty) while
+/// hashing, in a background isolate. Fails with `SOURCE_CHANGED` when more
+/// than [maxBytes] are read. Returns the copied length and SHA-256.
+Future<({int length, String sha256})> copyAndHashIsolated(
+  File source,
+  File destination, {
+  required int maxBytes,
+  void Function(int bytes)? onProgress,
+  void Function()? check,
+  Duration pollInterval = const Duration(milliseconds: 100),
+}) async {
+  check?.call();
+  final result = await _runFileWorker(
+    _FileJob(
+      kind: _FileJobKind.copy,
+      source: source.path,
+      destination: destination.path,
+      maxBytes: maxBytes,
+    ),
+    check: check,
+    onProgress: onProgress,
+    pollInterval: pollInterval,
+  );
+  check?.call();
+  return (length: result.length, sha256: result.sha256);
+}
+
+enum _FileJobKind { hash, copy }
+
+final class _FileJob {
+  const _FileJob({
+    required this.kind,
+    required this.source,
+    this.destination,
+    this.maxBytes = 0,
+  });
+  final _FileJobKind kind;
+  final String source;
+  final String? destination;
+  final int maxBytes;
+}
+
+Future<({int length, String sha256})> _runFileWorker(
+  _FileJob job, {
+  void Function()? check,
+  void Function(int bytes)? onProgress,
+  required Duration pollInterval,
+}) async {
+  final port = ReceivePort();
+  final errors = ReceivePort();
+  final exits = ReceivePort();
+  final completer = Completer<({int length, String sha256})>();
+  Isolate? isolate;
+  Timer? poller;
+  void finish({({int length, String sha256})? value, Object? error}) {
+    if (completer.isCompleted) return;
+    poller?.cancel();
+    if (error != null) {
+      isolate?.kill(priority: Isolate.immediate);
+      completer.completeError(error);
+    } else {
+      completer.complete(value!);
+    }
+  }
+
+  port.listen((message) {
+    if (message is int) {
+      onProgress?.call(message);
+    } else if (message is List && message.length == 2) {
+      finish(value: (length: message[0] as int, sha256: message[1] as String));
+    } else if (message is List && message.length == 3) {
+      finish(
+        error: StorageException(message[1] as String, message[2] as String),
+      );
+    }
+  });
+  errors.listen((_) {
+    finish(
+      error: const StorageException(
+        'STORAGE_FAILURE',
+        'Background file operation failed.',
+      ),
+    );
+  });
+  exits.listen((_) {
+    // The result message is normally delivered first; give it a moment in
+    // case the exit notification overtakes it.
+    Timer(const Duration(milliseconds: 50), () {
+      finish(
+        error: const StorageException(
+          'STORAGE_FAILURE',
+          'Background file operation stopped.',
+        ),
+      );
+    });
+  });
+  try {
+    isolate = await Isolate.spawn(
+      _fileWorker,
+      (port.sendPort, job),
+      onError: errors.sendPort,
+      onExit: exits.sendPort,
+      errorsAreFatal: true,
+    );
+    if (check != null) {
+      poller = Timer.periodic(pollInterval, (_) {
+        try {
+          check();
+        } catch (error) {
+          finish(error: error);
+        }
+      });
+    }
+    return await completer.future;
+  } finally {
+    poller?.cancel();
+    port.close();
+    errors.close();
+    exits.close();
+  }
+}
+
+Future<void> _fileWorker((SendPort, _FileJob) message) async {
+  final (reply, job) = message;
+  RandomAccessFile? output;
+  try {
+    final collector = DigestCollector();
+    final digest = sha256.startChunkedConversion(collector);
+    if (job.kind == _FileJobKind.copy) {
+      output = await File(job.destination!).open(mode: FileMode.write);
+    }
+    var length = 0;
+    var reported = 0;
+    await for (final chunk in File(job.source).openRead()) {
+      length += chunk.length;
+      if (job.kind == _FileJobKind.copy && length > job.maxBytes) {
+        reply.send([
+          0,
+          'SOURCE_CHANGED',
+          'Source length changed during preparation.',
+        ]);
+        return;
+      }
+      digest.add(chunk);
+      await output?.writeFrom(chunk);
+      if (length - reported >= 4 * 1024 * 1024) {
+        reported = length;
+        reply.send(length);
+      }
+    }
+    digest.close();
+    await output?.flush();
+    await output?.close();
+    output = null;
+    reply.send(length);
+    reply.send([length, collector.value!.toString()]);
+  } on FileSystemException catch (error) {
+    final mapped = storageIoError(error);
+    reply.send([0, mapped.code, mapped.message]);
+  } finally {
+    await output?.close();
+  }
 }
 
 /// OS error numbers that mean "no space" (or per-user quota) differ per OS.

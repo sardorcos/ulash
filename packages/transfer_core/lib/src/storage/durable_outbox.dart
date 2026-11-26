@@ -43,7 +43,8 @@ class DurableOutbox {
     // A journal created just now (first launch, or a damaged one moved aside)
     // knows nothing about existing snapshots: those may be the last copy of a
     // user's file, so they are never deleted as "orphans" in that case.
-    final journalExisted = File(p.join(root.path, 'outbox.sqlite')).existsSync();
+    final journalExisted = File(p.join(root.path, 'outbox.sqlite'))
+        .existsSync();
     try {
       final db = openJournal(
         File(p.join(root.path, 'outbox.sqlite')),
@@ -211,12 +212,21 @@ class DurableOutbox {
     }
   }
 
+  /// Snapshots [source] into the outbox. Copying and hashing run in a
+  /// background isolate.
+  ///
+  /// [adoptTemporary]: the caller hands over a temporary file it owns (for
+  /// example a share-extension or picker copy in the app's own cache). It is
+  /// renamed into the store instead of copied, falling back to a copy when a
+  /// rename is impossible (another volume). After a successful adoption the
+  /// source path no longer exists. Never pass true for a user's original file.
   Future<PreparedFile> stageFile(
     File source, {
     String? displayName,
     String? mimeType,
     void Function(int bytes)? onProgress,
     bool Function()? isCancelled,
+    bool adoptTemporary = false,
   }) async {
     _checkOpen();
     final before = await source.stat();
@@ -235,7 +245,6 @@ class DurableOutbox {
     final fileId = const Uuid().v4();
     final temporary = File(p.join(root.path, '.preparing', '$fileId.part'));
     final ready = File(p.join(root.path, 'files', '$fileId.blob'));
-    RandomAccessFile? handle;
     var published = false;
     _preparing++;
     void checkCancelled() {
@@ -253,46 +262,65 @@ class DurableOutbox {
       await validateManagedDirectory(root, temporary.parent);
       await validateManagedDirectory(root, ready.parent);
       await temporary.create(exclusive: true);
-      handle = await temporary.open(mode: FileMode.write);
-      final collector = DigestCollector();
-      final digest = sha256.startChunkedConversion(collector);
-      var length = 0;
-      await for (final chunk in source.openRead()) {
-        checkCancelled();
-        length += chunk.length;
-        if (length > TransferLimits.maxFileBytes || length > before.size) {
+      var adopted = false;
+      if (adoptTemporary) {
+        try {
+          await source.rename(temporary.path);
+          adopted = true;
+        } on FileSystemException {
+          // Another volume or a read-only location: copy instead.
+        }
+      }
+      final int length;
+      final String hash;
+      if (adopted) {
+        final adoptedStat = await temporary.stat();
+        if (adoptedStat.type != FileSystemEntityType.file ||
+            adoptedStat.size != before.size) {
           throw const StorageException(
             'SOURCE_CHANGED',
-            'Source length changed during preparation.',
+            'Source changed during preparation.',
           );
         }
-        digest.add(chunk);
-        await _write(fileId, handle, chunk);
+        hash = await hashFileIsolated(temporary, check: checkCancelled);
+        length = adoptedStat.size;
         onProgress?.call(length);
-      }
-      digest.close();
-      await handle.flush();
-      await handle.close();
-      handle = null;
-      final afterCopy = await source.stat();
-      if (!_sameSource(before, afterCopy) || length != before.size) {
-        throw const StorageException(
-          'SOURCE_CHANGED',
-          'Source changed during preparation.',
+      } else {
+        final copied = await copyAndHashIsolated(
+          source,
+          temporary,
+          maxBytes: math.min(before.size, TransferLimits.maxFileBytes),
+          onProgress: onProgress,
+          check: checkCancelled,
         );
-      }
-      // The second streaming pass detects ordinary concurrent edits even when
-      // timestamp resolution is coarse. Native coordinated snapshots remain
-      // necessary for stronger guarantees on changing document providers.
-      final sourceHash = await hashStoredFile(source, check: checkCancelled);
-      final afterHash = await source.stat();
-      final hash = collector.value!.toString();
-      if (!_sameSource(before, afterHash) || sourceHash != hash) {
-        throw const StorageException(
-          'SOURCE_CHANGED',
-          'Source is not a stable snapshot.',
+        length = copied.length;
+        hash = copied.sha256;
+        final afterCopy = await source.stat();
+        if (!_sameSource(before, afterCopy) || length != before.size) {
+          throw const StorageException(
+            'SOURCE_CHANGED',
+            'Source changed during preparation.',
+          );
+        }
+        // The second streaming pass detects ordinary concurrent edits even
+        // when timestamp resolution is coarse. Native coordinated snapshots
+        // remain necessary for stronger guarantees on changing providers.
+        final sourceHash = await hashFileIsolated(
+          source,
+          check: checkCancelled,
         );
+        final afterHash = await source.stat();
+        if (!_sameSource(before, afterHash) || sourceHash != hash) {
+          throw const StorageException(
+            'SOURCE_CHANGED',
+            'Source is not a stable snapshot.',
+          );
+        }
       }
+      await _budget?.reconcile(
+        _budgetScope,
+        StorageBudgetClaim(key: fileId, usedBytes: length, totalBytes: length),
+      );
       final manifest = FileManifest(
         fileId: fileId,
         displayName: displayName ?? p.basename(source.path),
@@ -331,7 +359,6 @@ class DurableOutbox {
       if (error is StorageException) rethrow;
       throw storageIoError(error);
     } finally {
-      await handle?.close();
       try {
         if (!published) {
           try {

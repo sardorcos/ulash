@@ -53,6 +53,8 @@ void main() {
       incoming,
       budget: budget,
       checkpointBytes: 2,
+      // These scenarios exercise the global queue; one test peer fills it.
+      maxPendingOffersPerPeer: 10,
       wallClock: () => clock.wall,
       monotonicClock: () => clock.mono,
     );

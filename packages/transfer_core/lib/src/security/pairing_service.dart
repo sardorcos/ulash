@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:uuid/uuid.dart';
 
+import '../models.dart' show sanitizeDisplayText;
 import 'crypto.dart';
 import 'device_identity.dart';
 import 'pairing_invite.dart';
@@ -25,6 +26,7 @@ final class PendingPairing {
     required this.serverPin,
     required this.state,
     required this.expiresAt,
+    this.sas,
   });
   final String requestId;
   final String pairingId;
@@ -33,6 +35,10 @@ final class PendingPairing {
   final String serverPin;
   final String state;
   final DateTime expiresAt;
+
+  /// Six-digit verification code; the joining device shows the same value
+  /// (see [PairingInvite.sasFor]). Approve only when both codes match.
+  final String? sas;
   @override
   String toString() => 'PendingPairing($requestId, $state)';
 }
@@ -182,9 +188,73 @@ final class PairingService {
           serverPin: p['serverPin'] as String,
           state: p['state'] as String,
           expiresAt: DateTime.parse(p['expiresAt'] as String),
+          sas: _sasOf(p),
         ),
       )
       .toList(growable: false);
+
+  String? _sasOf(Map<String, dynamic> request) {
+    try {
+      return pairingSas(
+        inviteDigest: request['inviteDigest'] as String,
+        hostPin: identity.serverPin,
+        joinerPin: request['serverPin'] as String,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Cheap pre-check before any request body is read: the secret must be a
+  /// canonical token whose digest belongs to a live invitation or to a known
+  /// pairing request (an idempotent retry). Unknown callers are rejected
+  /// without consuming their body.
+  void preauthorizeInvite(String? secret) {
+    if (secret == null || !isCanonicalToken(secret)) {
+      throw const PairingException('UNAUTHORIZED', 'Invalid invitation');
+    }
+    final digest = tokenDigest(secret);
+    final live = _invitations.values.any(
+      (invite) =>
+          _clock.elapsed < invite.monotonicDeadline &&
+          constantTimeEqual(invite.digest, digest),
+    );
+    final known = _requests.values.any(
+      (request) => constantTimeEqual(request['inviteDigest'] as String, digest),
+    );
+    if (!live && !known) {
+      throw const PairingException('UNAUTHORIZED', 'Invalid invitation');
+    }
+  }
+
+  /// Pre-check for the commit endpoint before its (empty) body is read.
+  void preauthorizeCommit(String pairingId, String? token) {
+    if (token == null || !isCanonicalToken(token)) {
+      throw const PairingException('UNAUTHORIZED', 'Pairing is not authorized');
+    }
+    final request = _requests.values
+        .where((r) => r['pairingId'] == pairingId)
+        .firstOrNull;
+    if (request == null) {
+      throw const PairingException('UNAUTHORIZED', 'Pairing is not authorized');
+    }
+    final issued = request['issuedToken'];
+    final peer = peers.authenticate(token);
+    if ((issued is String && constantTimeEqual(issued, token)) ||
+        peer?.pairingId == pairingId) {
+      return;
+    }
+    throw const PairingException('UNAUTHORIZED', 'Pairing is not authorized');
+  }
+
+  /// Invalidates an invitation that has not been used yet (for example when
+  /// the nearby pairing window is closed early).
+  void revokeInvite(String inviteId) {
+    final invite = _invitations[inviteId];
+    if (invite != null && invite.requestId == null) {
+      _invitations.remove(inviteId);
+    }
+  }
 
   Future<Map<String, dynamic>> request(
     Map<String, dynamic> body,
@@ -212,13 +282,14 @@ final class PairingService {
     final inviteId = _id(body['inviteId']);
     final pin = body['serverPin'];
     final reverseToken = body['reverseToken'];
-    final name = body['displayName'];
+    final rawName = body['displayName'];
+    final name = rawName is String ? sanitizeDisplayText(rawName) : null;
     if (pin is! String ||
         !isCanonicalPin(pin) ||
         reverseToken is! String ||
         !isCanonicalToken(reverseToken) ||
-        name is! String ||
-        name.trim().isEmpty ||
+        name == null ||
+        name.isEmpty ||
         name.length > 80 ||
         name.runes.any((rune) => rune < 32 || rune == 127) ||
         body['peerId'] != peerIdFromPin(pin) ||
@@ -271,6 +342,8 @@ final class PairingService {
     invite.requestId = requestId;
     final data = <String, dynamic>{
       ...body,
+      // Stored and shown without invisible/bidi characters or space padding.
+      'displayName': name,
       'bodyDigest': bodyDigest,
       'inviteDigest': invite.digest,
       'pairingId': const Uuid().v4(),

@@ -78,6 +78,33 @@ String spkiPinFromCertificateDer(List<int> certificateDer) {
 /// its public key), e.g. `3FA2-91C0`. Shown on both devices during pairing so
 /// users can confirm they approve the device they are holding. It is a human
 /// check, not a cryptographic identifier: always pin the full key.
+/// Six-digit pairing verification code (SAS) shown on both devices. It binds
+/// the one-time invitation (its digest) to both device keys: an attacker who
+/// obtains the invitation but substitutes its own key gets a different code,
+/// and the code cannot be precomputed because the invitation is random.
+String pairingSas({
+  required String inviteDigest,
+  required String hostPin,
+  required String joinerPin,
+}) {
+  if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(inviteDigest) ||
+      !isCanonicalPin(hostPin) ||
+      !isCanonicalPin(joinerPin)) {
+    throw const FormatException('Invalid pairing code input');
+  }
+  final digest = sha256
+      .convert(
+        utf8.encode(
+          'ulash-pairing-sas-v1\n$inviteDigest\n$hostPin\n$joinerPin',
+        ),
+      )
+      .bytes;
+  final value =
+      ((digest[0] << 24) | (digest[1] << 16) | (digest[2] << 8) | digest[3]) %
+      1000000;
+  return value.toString().padLeft(6, '0');
+}
+
 String shortFingerprint(String peerId) {
   final hex = peerId.toLowerCase();
   if (!RegExp(r'^[0-9a-f]{8,}$').hasMatch(hex)) {

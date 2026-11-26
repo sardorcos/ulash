@@ -54,6 +54,14 @@ final class PairingInvite {
     return List.unmodifiable(result);
   }
 
+  /// The six-digit verification code for pairing this invitation with the
+  /// joining device's key ([joinerPin]); the host shows the same code.
+  String sasFor(String joinerPin) => pairingSas(
+    inviteDigest: tokenDigest(inviteSecret),
+    hostPin: hostPin,
+    joinerPin: joinerPin,
+  );
+
   String encode() {
     final payload = base64UrlEncode(
       utf8.encode(

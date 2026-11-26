@@ -136,7 +136,9 @@ Map<String, dynamic> _generate(String name) {
   final publicKey = pair.publicKey as ECPublicKey;
   final deviceId = const Uuid().v4();
   final csr = X509Utils.generateEccCsrPem(
-    {'CN': 'Transfer-$deviceId'},
+    // A constant subject: the certificate is presented to anyone who connects,
+    // so it must not carry a per-device identifier.
+    {'CN': 'Ulash'},
     privateKey,
     publicKey,
   );

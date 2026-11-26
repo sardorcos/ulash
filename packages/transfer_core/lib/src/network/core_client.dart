@@ -190,9 +190,10 @@ final class CoreClient {
         'Pairing commit was not acknowledged',
       );
     }
+    final hostName = sanitizeDisplayText(response['displayName'] as String);
     final peer = TrustedPeer(
       peerId: peerIdFromPin(serverPin),
-      displayName: response['displayName'] as String,
+      displayName: hostName.isEmpty ? 'Device' : hostName,
       serverPin: serverPin,
       outgoingToken: token,
       inboundTokenDigest: tokenDigest(record['reverseToken'] as String),
@@ -232,10 +233,34 @@ final class CoreClient {
     await peers.secretStore.write(_pendingKey, jsonEncode(record));
   }
 
-  Future<Map<String, dynamic>> capabilities() =>
-      _json('GET', '/v1/capabilities');
+  Map<String, dynamic>? _capabilities;
 
-  Future<TransferSnapshot> offer(TransferManifest manifest) async =>
+  Future<Map<String, dynamic>> capabilities() async =>
+      _capabilities = await _json('GET', '/v1/capabilities');
+
+  /// True when a peer's capabilities accept folder paths (protocol minor 1).
+  static bool capabilitiesSupportFolders(Map<String, dynamic> capabilities) =>
+      capabilities['supportsFolders'] == true &&
+      (capabilities['protocolMinor'] is int) &&
+      (capabilities['protocolMinor'] as int) >= 1;
+
+  /// Offers a manifest. A manifest with folder paths is refused locally
+  /// (`FOLDERS_UNSUPPORTED`) when the receiver predates folder support, so an
+  /// older receiver never silently flattens the structure.
+  Future<TransferSnapshot> offer(TransferManifest manifest) async {
+    if (manifest.usesFolders) {
+      final caps = _capabilities ?? await capabilities();
+      if (!capabilitiesSupportFolders(caps)) {
+        throw const NetworkException(
+          'FOLDERS_UNSUPPORTED',
+          'The receiving device cannot store folders; update it first.',
+        );
+      }
+    }
+    return _offer(manifest);
+  }
+
+  Future<TransferSnapshot> _offer(TransferManifest manifest) async =>
       TransferSnapshot.fromJson(
         await _json('POST', '/v1/transfers', body: manifest.toJson()),
       );
@@ -468,7 +493,15 @@ final class CoreClient {
       'Peer rejected the operation',
       statusCode: response.statusCode,
       offset: offsetRaw is String ? int.tryParse(offsetRaw) : null,
+      retryAfter: _retryAfter(response),
     );
+  }
+
+  /// `Retry-After` in delta-seconds form (HTTP-date is not used by peers).
+  static Duration? _retryAfter(HttpClientResponse response) {
+    final raw = response.headers.value(HttpHeaders.retryAfterHeader)?.trim();
+    if (raw == null || !RegExp(r'^[0-9]{1,5}$').hasMatch(raw)) return null;
+    return Duration(seconds: int.parse(raw));
   }
 
   int _headerInteger(HttpClientResponse response, String name) {
@@ -490,6 +523,96 @@ final class CoreClient {
   }
 
   void close() => _http.close(force: true);
+
+  /// Fetches the invitation a nearby device publishes while its pairing
+  /// window is open (`GET /v1/pairing/nearby`). The discovered address is
+  /// only a hint and no key is pinned yet, so the TLS certificate presented
+  /// here must carry the same key as the invitation (`hostPin`). Trust still
+  /// comes from the host's manual approval with matching six-digit codes on
+  /// both screens ([PairingInvite.sasFor] / `PendingPairing.sas`).
+  static Future<PairingInvite> fetchNearbyInvite(
+    Uri endpoint, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    final origin = validateEndpoint(endpoint);
+    X509Certificate? presented;
+    final context = SecurityContext(withTrustedRoots: false)
+      ..minimumTlsProtocolVersion = TlsProtocolVersion.tls1_2;
+    final client = HttpClient(context: context)
+      ..autoUncompress = false
+      ..connectionTimeout = timeout
+      ..findProxy = ((_) => 'DIRECT')
+      ..badCertificateCallback =
+          (X509Certificate certificate, String host, int port) {
+            presented = certificate;
+            return host == origin.host && port == origin.port;
+          };
+    try {
+      final request = await client
+          .getUrl(origin.replace(path: '/v1/pairing/nearby'))
+          .timeout(timeout);
+      request.followRedirects = false;
+      final response = await request.close().timeout(timeout);
+      if (response.statusCode != 200) {
+        await response.drain<void>();
+        throw NetworkException(
+          response.statusCode == 429 ? 'RATE_LIMITED' : 'NEARBY_UNAVAILABLE',
+          'The device is not open for pairing',
+          statusCode: response.statusCode,
+          retryAfter: _retryAfter(response),
+        );
+      }
+      final bytes = <int>[];
+      await for (final chunk in response.timeout(timeout)) {
+        if (bytes.length + chunk.length > 16384) {
+          throw const NetworkException(
+            'PROTOCOL_CONFLICT',
+            'Nearby invitation is too large',
+          );
+        }
+        bytes.addAll(chunk);
+      }
+      final json = jsonDecode(utf8.decode(bytes));
+      if (json is! Map<String, dynamic> || json['invite'] is! String) {
+        throw const NetworkException(
+          'PROTOCOL_CONFLICT',
+          'Invalid nearby invitation',
+        );
+      }
+      final invite = PairingInvite.parse(json['invite'] as String);
+      final certificate = presented;
+      if (certificate == null ||
+          !constantTimeEqual(
+            spkiPinFromCertificateDer(certificate.der),
+            invite.hostPin,
+          )) {
+        throw const NetworkException(
+          'IDENTITY_CHANGED',
+          'Nearby invitation does not match the device key',
+        );
+      }
+      // The discovered address answered with the invited key: use it first.
+      return PairingInvite(
+        inviteId: invite.inviteId,
+        inviteSecret: invite.inviteSecret,
+        hostPin: invite.hostPin,
+        displayName: invite.displayName,
+        endpoint: origin,
+        endpoints: [
+          origin,
+          ...invite.endpoints.where((item) => item != origin),
+        ].take(PairingInvite.maxEndpoints).toList(),
+        ttlSeconds: invite.ttlSeconds,
+      );
+    } on FormatException {
+      throw const NetworkException(
+        'PROTOCOL_CONFLICT',
+        'Invalid nearby invitation',
+      );
+    } finally {
+      client.close(force: true);
+    }
+  }
 
   @override
   String toString() => 'CoreClient(credentials redacted)';

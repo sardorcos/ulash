@@ -12,8 +12,12 @@ import 'storage_budget.dart';
 import 'storage_support.dart';
 
 /// Foreground, push-only receive store. Owns its private directory; it never
-/// writes into arbitrary paths supplied by the sender. Files are committed
-/// under `received/<transfer>/<incarnation>/<safe name>`, preserving existing results.
+/// writes into arbitrary paths supplied by the sender. Without a
+/// `receivedDirectory`, files are committed under
+/// `received/<transfer>/<incarnation>/<folder?>/<safe name>`. With one, they
+/// are committed to a user-visible layout
+/// `<receivedDirectory>/<yyyy-MM-dd HH.mm> (<id6>)/<folder?>/<safe name>`
+/// (collisions get ` (2)`, never overwriting). Existing results are preserved.
 class DurableInbox {
   DurableInbox._(
     this.root,
@@ -28,11 +32,24 @@ class DurableInbox {
     this.maxOffersPerWindow,
     this.offerRateWindow,
     this.maxRetainedUnacceptedOffersPerPeer,
+    this.receivedRoot,
+    this.maxPendingOffersPerPeer,
   );
 
   /// Current journal schema. 1 = 0.1–0.3 layout with offer deadlines,
-  /// 2 = store-relative payload paths.
-  static const int schemaVersion = 2;
+  /// 2 = store-relative payload paths, 3 = user-visible received directory
+  /// (`r:` final paths and the crash-safe `moved_from` migration marker).
+  static const int schemaVersion = 3;
+
+  /// Root of the user-visible received layout, or null for the private
+  /// `received/` layout inside [root].
+  final Directory? receivedRoot;
+
+  /// Pending (offered/accepted/active) transfers allowed per peer, in addition
+  /// to the global cap, so one paired device cannot occupy the whole queue.
+  final int maxPendingOffersPerPeer;
+  final _manifestCache = <String, TransferManifest>{};
+  final _fileManifestCache = <String, FileManifest>{};
   static const _managed = {'.staging', 'received'};
 
   final Directory root;
@@ -64,6 +81,10 @@ class DurableInbox {
 
   Stream<TransferSnapshot> get changes => _events.stream;
 
+  /// The id of every transfer whose state or progress changed.
+  Stream<String> get changedTransfers =>
+      _events.stream.map((snapshot) => snapshot.transferId);
+
   /// Testing seam only: awaited at internal race points ('afterFinalClose',
   /// 'beforeVerifying') so tests can interleave cancel/pause deterministically.
   /// Must stay null in production.
@@ -71,7 +92,7 @@ class DurableInbox {
 
   static Future<DurableInbox> open(
     Directory directory, {
-    int checkpointBytes = 4 * 1024 * 1024,
+    int checkpointBytes = 8 * 1024 * 1024,
     Duration checkpointInterval = const Duration(seconds: 2),
     StorageBudget? budget,
     Duration offerLifetime = const Duration(seconds: 120),
@@ -80,7 +101,12 @@ class DurableInbox {
     int maxOffersPerWindow = 20,
     Duration offerRateWindow = const Duration(minutes: 10),
     int maxRetainedUnacceptedOffersPerPeer = 50,
+    Directory? receivedDirectory,
+    int maxPendingOffersPerPeer = 5,
   }) async {
+    if (maxPendingOffersPerPeer < 1) {
+      throw ArgumentError('maxPendingOffersPerPeer must be positive.');
+    }
     if (maxOffersPerWindow < 1 ||
         offerRateWindow <= Duration.zero ||
         maxRetainedUnacceptedOffersPerPeer < 0) {
@@ -102,6 +128,9 @@ class DurableInbox {
     final root = await prepareStorageDirectory(directory);
     await ensurePlainDirectory(Directory(p.join(root.path, '.staging')));
     await ensurePlainDirectory(Directory(p.join(root.path, 'received')));
+    final receivedRoot = receivedDirectory == null
+        ? null
+        : await prepareStorageDirectory(receivedDirectory);
     final lease = await StorageLease.acquire(root, 'inbox');
     Database? opened;
     try {
@@ -124,8 +153,11 @@ class DurableInbox {
         maxOffersPerWindow,
         offerRateWindow,
         maxRetainedUnacceptedOffersPerPeer,
+        receivedRoot,
+        maxPendingOffersPerPeer,
       );
       await store._recover();
+      await store._migrateReceivedLayout();
       await store._restoreBudget();
       store._restoreOfferDeadlines();
       store.expireOffers();
@@ -181,12 +213,18 @@ class DurableInbox {
         row['id'],
       ]);
     }
+    // Step 3: crash-safe marker for moving results into the received layout.
+    final fileColumns = db.select('PRAGMA table_info(inbox_files)');
+    if (!fileColumns.any((column) => column['name'] == 'moved_from')) {
+      db.execute('ALTER TABLE inbox_files ADD COLUMN moved_from TEXT');
+    }
     // Step 2: store-relative paths. Earlier builds persisted absolute paths,
     // which break when the app container moves (iOS update/restore).
     for (final row in db.select(
       "SELECT transfer_id,file_id,incarnation,temporary_path,final_path FROM inbox_files "
       "WHERE temporary_path NOT LIKE '.staging/%' "
-      "OR (final_path IS NOT NULL AND final_path NOT LIKE 'received/%')",
+      "OR (final_path IS NOT NULL AND final_path NOT LIKE 'received/%' "
+      "AND final_path NOT LIKE 'r:%')",
     )) {
       final finalPath = row['final_path'] as String?;
       final rebased = finalPath == null
@@ -222,6 +260,117 @@ class DurableInbox {
 
   String _abs(String stored) =>
       resolveStoredPath(root, stored, managedTopLevel: _managed);
+
+  /// Resolves a stored final path: `r:<relative>` lives under
+  /// [receivedRoot], anything else under the private store root.
+  String _finalAbs(String stored) {
+    if (!stored.startsWith('r:')) return _abs(stored);
+    final base = receivedRoot;
+    if (base == null) {
+      throw const StorageException(
+        'UNSAFE_PATH',
+        'Received directory is not configured.',
+      );
+    }
+    final parts = stored.substring(2).split('/');
+    if (parts.length < 2 ||
+        parts.any((part) => part.isEmpty || part == '.' || part == '..')) {
+      throw const StorageException('UNSAFE_PATH', 'Unsafe stored path.');
+    }
+    final absolute = p.joinAll([base.path, ...parts]);
+    requireContainedPath(base, absolute);
+    return absolute;
+  }
+
+  /// `yyyy-MM-dd HH.mm (abc123)` from the transfer's creation time (local
+  /// time, as the user sees it) and its id: never from sender-chosen text.
+  static String _transferFolderName(String transferId, DateTime createdUtc) {
+    final local = createdUtc.toLocal();
+    String two(int value) => value.toString().padLeft(2, '0');
+    final short = transferId.replaceAll('-', '');
+    return '${local.year}-${two(local.month)}-${two(local.day)} '
+        '${two(local.hour)}.${two(local.minute)} '
+        '(${short.substring(0, math.min(6, short.length))})';
+  }
+
+  /// Picks a free file name in [directory] and reserves it with an exclusive
+  /// create, so a concurrent file is never overwritten by the later rename.
+  static Future<String> _reserveUniqueName(
+    Directory directory,
+    String safeName,
+  ) async {
+    final extension = p.extension(safeName);
+    final stem = extension.isEmpty
+        ? safeName
+        : safeName.substring(0, safeName.length - extension.length);
+    for (var index = 1; index <= 1000; index++) {
+      final candidate = p.join(
+        directory.path,
+        index == 1 ? safeName : '$stem ($index)$extension',
+      );
+      try {
+        await File(candidate).create(exclusive: true);
+        return candidate;
+      } on FileSystemException {
+        continue;
+      }
+    }
+    throw const StorageException(
+      'DESTINATION_EXISTS',
+      'No free name for the received file.',
+    );
+  }
+
+  /// Target for committing [file] of [transferId]: (absolute path, stored
+  /// journal value). The user-visible layout reserves the name up front.
+  Future<(String, String)> _commitTarget(
+    String transferId,
+    String incarnation,
+    FileManifest file,
+  ) async {
+    final folders = file.relativeDirectory == null
+        ? const <String>[]
+        : file.relativeDirectory!.split('/').map(safeDisplayName).toList();
+    final base = receivedRoot;
+    if (base == null) {
+      final directory = Directory(
+        p.joinAll([root.path, 'received', transferId, incarnation, ...folders]),
+      );
+      await validateManagedDirectory(root, directory, create: true);
+      final finalPath = p.join(
+        directory.path,
+        safeDisplayName(file.displayName),
+      );
+      requireContainedPath(root, finalPath);
+      if (await FileSystemEntity.type(finalPath, followLinks: false) !=
+          FileSystemEntityType.notFound) {
+        throw const StorageException(
+          'DESTINATION_EXISTS',
+          'Existing result will not be overwritten.',
+        );
+      }
+      return (finalPath, toStoredPath(root, finalPath));
+    }
+    final record = _db.select(
+      'SELECT created_at FROM inbox_transfers WHERE id=?',
+      [transferId],
+    ).first;
+    final created = DateTime.parse(record['created_at'] as String).toUtc();
+    final directory = Directory(
+      p.joinAll([
+        base.path,
+        _transferFolderName(transferId, created),
+        ...folders,
+      ]),
+    );
+    await validateManagedDirectory(base, directory, create: true);
+    final finalPath = await _reserveUniqueName(
+      directory,
+      safeDisplayName(file.displayName),
+    );
+    requireContainedPath(base, finalPath);
+    return (finalPath, 'r:${toStoredPath(base, finalPath)}');
+  }
 
   String _temporaryOf(Row row) => _abs(row['temporary_path'] as String);
 
@@ -313,6 +462,130 @@ class DurableInbox {
       usedBytes: length,
       totalBytes: target,
     );
+  }
+
+  /// Moves results committed under the private `received/` layout into the
+  /// user-visible [receivedRoot]. Crash-safe and idempotent: the journal row
+  /// is switched to the reserved target with `moved_from` = old path before
+  /// the file moves, and `moved_from` is cleared after; a row found with
+  /// `moved_from` set on the next open is finished first. A file that cannot
+  /// be moved keeps its old location (it is never lost).
+  Future<void> _migrateReceivedLayout() async {
+    if (receivedRoot == null) return;
+    final legacyRoot = Directory(p.join(root.path, 'received'));
+    for (final row in _db.select(
+      'SELECT transfer_id,file_id,final_path,moved_from FROM inbox_files '
+      'WHERE moved_from IS NOT NULL',
+    )) {
+      await _finishMove(row, legacyRoot);
+    }
+    for (final row in _db.select(
+      "SELECT * FROM inbox_files WHERE state='committed' "
+      "AND final_path LIKE 'received/%' AND moved_from IS NULL",
+    )) {
+      final transferId = row['transfer_id'] as String;
+      final fileId = row['file_id'] as String;
+      final oldStored = row['final_path'] as String;
+      final String oldPath;
+      try {
+        oldPath = _abs(oldStored);
+        if (await FileSystemEntity.type(oldPath, followLinks: false) !=
+            FileSystemEntityType.file) {
+          continue; // Reported as FILE_MISSING; nothing to move.
+        }
+        await validateManagedDirectory(root, File(oldPath).parent);
+      } on Object {
+        continue;
+      }
+      String? newStored;
+      try {
+        final (_, stored) = await _commitTarget(
+          transferId,
+          row['incarnation'] as String,
+          _fileSnapshot(row).manifest,
+        );
+        newStored = stored;
+        journalTransaction(_db, () {
+          _db.execute(
+            'UPDATE inbox_files SET final_path=?,moved_from=? '
+            'WHERE transfer_id=? AND file_id=?',
+            [stored, oldStored, transferId, fileId],
+          );
+        });
+        await _moveFile(File(oldPath), _finalAbs(stored));
+        _db.execute(
+          'UPDATE inbox_files SET moved_from=NULL WHERE transfer_id=? AND file_id=?',
+          [transferId, fileId],
+        );
+        await _removeEmptyParents(File(oldPath).parent, legacyRoot);
+      } on Object {
+        // Keep the result where it is; release the reserved name.
+        _db.execute(
+          'UPDATE inbox_files SET final_path=?,moved_from=NULL '
+          'WHERE transfer_id=? AND file_id=?',
+          [oldStored, transferId, fileId],
+        );
+        if (newStored != null) {
+          try {
+            final target = File(_finalAbs(newStored));
+            if (await target.exists() && await target.length() == 0) {
+              await target.delete();
+            }
+            await _removeEmptyParents(target.parent, receivedRoot!);
+          } on Object {
+            // Best effort.
+          }
+        }
+      }
+    }
+  }
+
+  Future<void> _finishMove(Row row, Directory legacyRoot) async {
+    final transferId = row['transfer_id'] as String;
+    final fileId = row['file_id'] as String;
+    final oldStored = row['moved_from'] as String;
+    try {
+      final oldPath = _abs(oldStored);
+      final target = _finalAbs(row['final_path'] as String);
+      if (await FileSystemEntity.type(oldPath, followLinks: false) ==
+          FileSystemEntityType.file) {
+        // The move did not complete; the target is our reservation (or a
+        // partial copy of this very file), so replacing it is safe.
+        await validateManagedDirectory(receivedRoot!, File(target).parent);
+        await _moveFile(File(oldPath), target);
+      }
+      _db.execute(
+        'UPDATE inbox_files SET moved_from=NULL WHERE transfer_id=? AND file_id=?',
+        [transferId, fileId],
+      );
+      await _removeEmptyParents(File(oldPath).parent, legacyRoot);
+    } on Object {
+      _db.execute(
+        'UPDATE inbox_files SET final_path=?,moved_from=NULL '
+        'WHERE transfer_id=? AND file_id=?',
+        [oldStored, transferId, fileId],
+      );
+    }
+  }
+
+  /// Rename, or copy+flush+delete when the target is on another volume.
+  static Future<void> _moveFile(File source, String target) async {
+    try {
+      await source.rename(target);
+      return;
+    } on FileSystemException {
+      // Cross-device: fall through to copy.
+    }
+    final output = await File(target).open(mode: FileMode.write);
+    try {
+      await for (final chunk in source.openRead()) {
+        await output.writeFrom(chunk);
+      }
+      await output.flush();
+    } finally {
+      await output.close();
+    }
+    await source.delete();
   }
 
   Future<void> _restoreBudget() async {
@@ -426,6 +699,18 @@ class DurableInbox {
     if (pending >= 10) {
       throw const StorageException('BUSY', 'Incoming queue is full.');
     }
+    final pendingFromPeer =
+        _db.select(
+              "SELECT COUNT(*) AS n FROM inbox_transfers WHERE peer_id=? AND state IN ('offered','accepted','transferring','paused')",
+              [peerId],
+            ).first['n']
+            as int;
+    if (pendingFromPeer >= maxPendingOffersPerPeer) {
+      throw const StorageException(
+        'BUSY',
+        'Too many pending offers from this device.',
+      );
+    }
     final id = const Uuid().v4();
     final created = _wallClock().toUtc();
     final createdMonotonic = _monotonicClock();
@@ -496,6 +781,10 @@ class DurableInbox {
     var removedBytes = 0;
     for (final row in rows) {
       removedBytes += await _deleteTemporary(row) ?? 0;
+      final stored = row['final_path'] as String?;
+      if (stored != null && stored.startsWith('r:')) {
+        removedBytes += await _deleteReceivedFile(stored);
+      }
     }
     final directory = Directory(p.join(root.path, 'received', id));
     final kind = await FileSystemEntity.type(
@@ -522,11 +811,61 @@ class DurableInbox {
       _db.execute('DELETE FROM inbox_files WHERE transfer_id=?', [id]);
       _db.execute('DELETE FROM inbox_transfers WHERE id=?', [id]);
     });
+    _forgetCached(id, rows.map((row) => row['incarnation'] as String));
     _offerDeadlines.remove(id);
     for (final row in rows) {
       await _budget?.forget(_budgetScope, row['incarnation'] as String);
     }
     return removedBytes;
+  }
+
+  /// Deletes one result in the user-visible layout (only a regular file, never
+  /// through a link) and then its now-empty parent folders up to the root.
+  Future<int> _deleteReceivedFile(String stored) async {
+    final String absolute;
+    try {
+      absolute = _finalAbs(stored);
+    } on StorageException {
+      return 0;
+    }
+    var removed = 0;
+    if (await FileSystemEntity.type(absolute, followLinks: false) ==
+        FileSystemEntityType.file) {
+      final file = File(absolute);
+      removed = await file.length();
+      await file.delete();
+    }
+    await _removeEmptyParents(Directory(p.dirname(absolute)), receivedRoot!);
+    return removed;
+  }
+
+  /// Removes [directory] and its ancestors while they are empty plain
+  /// directories strictly inside [stop].
+  static Future<void> _removeEmptyParents(
+    Directory directory,
+    Directory stop,
+  ) async {
+    var current = directory;
+    while (p.isWithin(stop.path, current.path)) {
+      if (await FileSystemEntity.type(current.path, followLinks: false) !=
+          FileSystemEntityType.directory) {
+        return;
+      }
+      if (!await current.list(followLinks: false).isEmpty) return;
+      try {
+        await current.delete();
+      } on FileSystemException {
+        return;
+      }
+      current = current.parent;
+    }
+  }
+
+  void _forgetCached(String transferId, Iterable<String> incarnations) {
+    _manifestCache.remove(transferId);
+    for (final incarnation in incarnations) {
+      _fileManifestCache.remove(incarnation);
+    }
   }
 
   /// Removes a finished transfer from history together with its received files
@@ -601,42 +940,107 @@ class DurableInbox {
     if (records.isEmpty) {
       throw const StorageException('NOT_FOUND', 'Transfer not found.');
     }
-    final record = records.first;
     final files = _db.select(
       'SELECT * FROM inbox_files WHERE transfer_id=? ORDER BY ordinal',
       [id],
     );
-    return TransferSnapshot(
-      transferId: id,
-      peerId: record['peer_id'] as String,
-      manifest: TransferManifest.fromJson(
+    return _snapshotOf(records.first, files);
+  }
+
+  /// Manifests are immutable once stored, so their decoded form is cached by
+  /// transfer id / storage incarnation (cleared when the rows are deleted).
+  TransferManifest _manifestOf(Row record) =>
+      _manifestCache[record['id'] as String] ??= TransferManifest.fromJson(
         jsonDecode(record['manifest'] as String) as Map<String, dynamic>,
-      ),
-      state: TransferState.fromWire(record['state'] as String),
-      files: files.map(_fileSnapshot).toList(),
-      createdAt: DateTime.parse(record['created_at'] as String),
-      updatedAt: DateTime.parse(record['updated_at'] as String),
-      pausedBySource: record['paused_source'] == 1,
-      pausedBySink: record['paused_sink'] == 1,
-      offerExpiresAt: record['offer_expires_at'] == null
-          ? null
-          : DateTime.parse(record['offer_expires_at'] as String).toUtc(),
+      );
+
+  TransferSnapshot _snapshotOf(Row record, Iterable<Row> files) =>
+      TransferSnapshot(
+        transferId: record['id'] as String,
+        peerId: record['peer_id'] as String,
+        manifest: _manifestOf(record),
+        state: TransferState.fromWire(record['state'] as String),
+        files: files.map(_fileSnapshot).toList(),
+        createdAt: DateTime.parse(record['created_at'] as String),
+        updatedAt: DateTime.parse(record['updated_at'] as String),
+        pausedBySource: record['paused_source'] == 1,
+        pausedBySink: record['paused_sink'] == 1,
+        offerExpiresAt: record['offer_expires_at'] == null
+            ? null
+            : DateTime.parse(record['offer_expires_at'] as String).toUtc(),
+      );
+
+  /// All transfers, newest first. Two queries regardless of history size.
+  List<TransferSnapshot> list({String? peerId}) {
+    _checkOpen();
+    expireOffers();
+    return _query(
+      peerId == null ? '' : 'WHERE peer_id=?',
+      peerId == null ? const [] : [peerId],
     );
   }
 
-  List<TransferSnapshot> list({String? peerId}) {
+  /// At most [limit] transfers created strictly before [before] (all when
+  /// null), newest first; page with the last item's `createdAt`.
+  List<TransferSnapshot> listRecent({int limit = 200, DateTime? before}) {
     _checkOpen();
-    final rows = _db.select(
-      'SELECT id FROM inbox_transfers ${peerId == null ? '' : 'WHERE peer_id=?'} ORDER BY created_at DESC',
-      peerId == null ? [] : [peerId],
+    if (limit < 1) throw ArgumentError.value(limit, 'limit');
+    expireOffers();
+    return _query(before == null ? '' : 'WHERE created_at < ?', [
+      if (before != null) before.toUtc().toIso8601String(),
+    ], limit: limit);
+  }
+
+  /// Number of transfers in history.
+  int count({String? peerId}) {
+    _checkOpen();
+    return _db
+            .select(
+              'SELECT COUNT(*) AS n FROM inbox_transfers ${peerId == null ? '' : 'WHERE peer_id=?'}',
+              peerId == null ? const [] : [peerId],
+            )
+            .first['n']
+        as int;
+  }
+
+  List<TransferSnapshot> _query(
+    String where,
+    List<Object?> parameters, {
+    int? limit,
+  }) {
+    final records = _db.select(
+      'SELECT * FROM inbox_transfers $where ORDER BY created_at DESC, id '
+      '${limit == null ? '' : 'LIMIT $limit'}',
+      parameters,
     );
-    return rows.map((row) => status(row['id'] as String)).toList();
+    if (records.isEmpty) return const [];
+    final byTransfer = <String, List<Row>>{};
+    final ids = [for (final record in records) record['id'] as String];
+    // Chunked to stay below SQLite's bound-parameter limit.
+    for (var start = 0; start < ids.length; start += 500) {
+      final chunk = ids.sublist(start, math.min(ids.length, start + 500));
+      final files = _db.select(
+        'SELECT * FROM inbox_files WHERE transfer_id IN '
+        '(${List.filled(chunk.length, '?').join(',')}) ORDER BY ordinal',
+        chunk,
+      );
+      for (final file in files) {
+        byTransfer
+            .putIfAbsent(file['transfer_id'] as String, () => [])
+            .add(file);
+      }
+    }
+    return [
+      for (final record in records)
+        _snapshotOf(record, byTransfer[record['id'] as String] ?? const []),
+    ];
   }
 
   FileSnapshot _fileSnapshot(Row row) => FileSnapshot(
-    manifest: FileManifest.fromJson(
-      jsonDecode(row['manifest'] as String) as Map<String, dynamic>,
-    ),
+    manifest: _fileManifestCache[row['incarnation'] as String] ??=
+        FileManifest.fromJson(
+          jsonDecode(row['manifest'] as String) as Map<String, dynamic>,
+        ),
     offset: row['durable_offset'] as int,
     state: FileState.fromWire(row['state'] as String),
     storageIncarnationId: row['incarnation'] as String,
@@ -647,7 +1051,7 @@ class DurableInbox {
   String? _resolvedFinalPath(String? stored) {
     if (stored == null) return null;
     try {
-      return _abs(stored);
+      return _finalAbs(stored);
     } on StorageException {
       // An unrecognised legacy value is reported as unavailable, never as a
       // path outside managed storage.
@@ -1319,7 +1723,7 @@ class DurableInbox {
     }
     _refreshTransfer(writer.transferId);
     _emit(writer.transferId);
-    final hash = await hashStoredFile(temporary, check: writer.check);
+    final hash = await hashFileIsolated(temporary, check: writer.check);
     if (hash != file.manifest.sha256) {
       throw const StorageException(
         'INTEGRITY_MISMATCH',
@@ -1327,34 +1731,25 @@ class DurableInbox {
       );
     }
     writer.check();
-    final transferDirectory = Directory(
-      p.join(root.path, 'received', writer.transferId),
+    final (finalPath, storedFinal) = await _commitTarget(
+      writer.transferId,
+      writer.incarnation,
+      file.manifest,
     );
-    final fileDirectory = Directory(
-      p.join(transferDirectory.path, writer.incarnation),
-    );
-    await validateManagedDirectory(root, transferDirectory, create: true);
-    await validateManagedDirectory(root, fileDirectory, create: true);
-    final finalPath = p.join(
-      fileDirectory.path,
-      safeDisplayName(file.manifest.displayName),
-    );
-    requireContainedPath(root, finalPath);
-    if (await FileSystemEntity.type(finalPath, followLinks: false) !=
-        FileSystemEntityType.notFound) {
-      throw const StorageException(
-        'DESTINATION_EXISTS',
-        'Existing result will not be overwritten.',
-      );
+    try {
+      writer.check();
+    } catch (_) {
+      // Release the name reserved in the user-visible layout.
+      if (receivedRoot != null) await _deleteReceivedFile(storedFinal);
+      rethrow;
     }
-    writer.check();
     // No async gap between acquiring the commit lock and persisting intent.
     // Cancel/pause now wait for this sink-authoritative commit decision.
     writer.commitLocked = true;
     journalTransaction(_db, () {
       _db.execute(
         "UPDATE inbox_files SET state='committing',final_path=? WHERE transfer_id=? AND file_id=?",
-        [toStoredPath(root, finalPath), writer.transferId, writer.fileId],
+        [storedFinal, writer.transferId, writer.fileId],
       );
       _refreshTransfer(writer.transferId);
     });
@@ -1517,25 +1912,44 @@ class DurableInbox {
               'Commit target missing.',
             );
           }
-          final finalPath = _abs(stored);
+          if (stored.startsWith('r:') && receivedRoot == null) {
+            // Opened without the received directory this commit targets:
+            // leave the intent for a later open that has it.
+            continue;
+          }
+          final finalPath = _finalAbs(stored);
           final target = File(finalPath);
-          await validateManagedDirectory(root, target.parent);
-          final targetKind = await FileSystemEntity.type(
-            finalPath,
+          final targetBase = stored.startsWith('r:') ? receivedRoot! : root;
+          await validateManagedDirectory(targetBase, target.parent);
+          // The temporary still existing means the rename did not happen; the
+          // target may then be the empty reservation of the user-visible name.
+          final temporaryKind = await FileSystemEntity.type(
+            temporary.path,
             followLinks: false,
           );
-          final candidate = targetKind == FileSystemEntityType.notFound
-              ? temporary
-              : target;
+          final renamed = temporaryKind == FileSystemEntityType.notFound;
+          final candidate = renamed ? target : temporary;
           await ensurePlainFile(candidate);
           if (await candidate.length() != file.manifest.sizeBytes ||
-              await hashStoredFile(candidate) != file.manifest.sha256) {
+              await hashFileIsolated(candidate) != file.manifest.sha256) {
             throw const StorageException(
               'RECOVERY_INCONSISTENT',
               'Commit candidate failed verification.',
             );
           }
-          if (targetKind == FileSystemEntityType.notFound) {
+          if (!renamed) {
+            final targetKind = await FileSystemEntity.type(
+              finalPath,
+              followLinks: false,
+            );
+            if (targetKind != FileSystemEntityType.notFound &&
+                (targetKind != FileSystemEntityType.file ||
+                    await target.length() != 0)) {
+              throw const StorageException(
+                'DESTINATION_EXISTS',
+                'Existing result will not be overwritten.',
+              );
+            }
             await temporary.rename(finalPath);
           }
           update(
