@@ -151,7 +151,8 @@ class _AppShellState extends State<AppShell> {
       _promptedOutgoing = null;
       return;
     }
-    final id = '${outgoing.hostName}/${outgoing.code}';
+    // One sheet per pairing: it updates itself from "connecting" to the code.
+    final id = outgoing.hostName;
     if (_promptedOutgoing == id) return;
     _promptedOutgoing = id;
     showOutgoingPairingSheet(context, c);
@@ -326,8 +327,7 @@ class _AppShellState extends State<AppShell> {
             NavigationBar(
               selectedIndex: _tab.index,
               onDestinationSelected: (value) => _select(AppTab.values[value]),
-              labelBehavior:
-                  NavigationDestinationLabelBehavior.alwaysShow,
+              labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
               destinations: [
                 for (final (_, key, data, label, badge) in destinations)
                   NavigationDestination(
@@ -421,7 +421,8 @@ class _SidebarItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final expanded = context.findAncestorWidgetOfExactType<_Sidebar>()?.expanded ?? true;
+    final expanded =
+        context.findAncestorWidgetOfExactType<_Sidebar>()?.expanded ?? true;
     return Semantics(
       selected: selected,
       button: true,

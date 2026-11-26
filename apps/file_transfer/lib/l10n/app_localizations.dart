@@ -2536,6 +2536,30 @@ abstract class AppLocalizations {
   /// **'За один раз можно отправить до 1000 файлов. Уберите часть из списка.'**
   String get errTooManyFiles;
 
+  /// No description provided for @pairingConnectingTo.
+  ///
+  /// In ru, this message translates to:
+  /// **'Связываемся с «{name}». Код появится через секунду.'**
+  String pairingConnectingTo(String name);
+
+  /// No description provided for @legacyCodesNote.
+  ///
+  /// In ru, this message translates to:
+  /// **'На другом устройстве старая версия Ulash, поэтому сравниваются коды устройств (вида ABCD-1234). Лучше обновите Ulash там.'**
+  String get legacyCodesNote;
+
+  /// No description provided for @errUpgradeRequired.
+  ///
+  /// In ru, this message translates to:
+  /// **'Обновите Ulash на другом устройстве: эта версия не может подключиться к нему без QR-кода.'**
+  String get errUpgradeRequired;
+
+  /// No description provided for @errCommitmentMismatch.
+  ///
+  /// In ru, this message translates to:
+  /// **'Подключение не удалось: проверка кода не прошла, возможно, соединение перехвачено. Попробуйте ещё раз с новым кодом.'**
+  String get errCommitmentMismatch;
+
   /// No description provided for @moreActions.
   ///
   /// In ru, this message translates to:

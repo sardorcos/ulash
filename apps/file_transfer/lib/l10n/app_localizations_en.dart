@@ -1475,6 +1475,23 @@ class AppLocalizationsEn extends AppLocalizations {
       'Up to 1,000 files can be sent at once. Remove some from the list.';
 
   @override
+  String pairingConnectingTo(String name) {
+    return 'Contacting “$name”. The code will appear in a moment.';
+  }
+
+  @override
+  String get legacyCodesNote =>
+      'The other device runs an older Ulash, so device codes (like ABCD-1234) are compared. Updating Ulash there is recommended.';
+
+  @override
+  String get errUpgradeRequired =>
+      'Update Ulash on the other device: this version cannot connect to it without a QR code.';
+
+  @override
+  String get errCommitmentMismatch =>
+      'Pairing failed: the code check did not pass, the connection may have been intercepted. Try again with a new code.';
+
+  @override
   String get moreActions => 'More';
 
   @override

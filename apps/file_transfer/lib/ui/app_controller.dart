@@ -411,14 +411,20 @@ enum TransferKind { files, folder, text }
 class OutgoingPairing {
   const OutgoingPairing({
     required this.hostName,
-    required this.code,
+    this.code,
     this.waitingForApproval = true,
+    this.legacy = false,
   });
   final String hostName;
 
-  /// 6 digits; the other device shows the same code.
-  final String code;
+  /// 6 digits; the other device shows the same code. Null while connecting
+  /// (the code exists only after both devices exchanged their nonces).
+  final String? code;
   final bool waitingForApproval;
+
+  /// The other device runs 1.0/1.1: [code] is this device's key code
+  /// (ABCD-1234), which that version shows.
+  final bool legacy;
 }
 
 @immutable
@@ -550,14 +556,19 @@ class PairingRequest {
     required this.deviceName,
     this.platform = DevicePlatform.unknown,
     this.code,
+    this.legacy = false,
   });
 
   final String id;
   final String deviceName;
   final DevicePlatform platform;
 
-  /// Short key code shown on the requesting device too; must match.
+  /// Code shown on the requesting device too; must match.
   final String? code;
+
+  /// The requesting device runs 1.0/1.1: [code] is its key code (ABCD-1234)
+  /// rather than a six-digit code.
+  final bool legacy;
 }
 
 @immutable

@@ -837,9 +837,12 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         (request) => PairingRequest(
           id: request.requestId,
           deviceName: core.sanitizeDisplayText(request.displayName),
-          // The six-digit code the joining device shows for this invitation
-          // and both keys; older joiners (no code) fall back to the key code.
-          code: request.sas ?? shortKeyCode(request.peerId),
+          // Commit/reveal code; only revealed requests are listed. A 1.0/1.1
+          // joiner has no such code and shows its own key code instead.
+          code: request.legacy
+              ? (request.legacyCode ?? shortKeyCode(request.peerId))
+              : request.sas,
+          legacy: request.legacy,
         ),
       )
       .toList();
@@ -1582,6 +1585,7 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   // ---------------------------------------------------------------- web share
 
   WebShareServer? _web;
+  String? _webHost;
   final _webAsks = <String, (WebUploadAsk, Completer<bool>, DateTime)>{};
   List<_WebBatch>? _webBatchCache;
 
@@ -1591,7 +1595,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   WebShareState? get webShare {
     final web = _web;
     if (web == null || !web.running || web.expiresAt == null) return null;
-    final host = _addresses.isEmpty ? '127.0.0.1' : _addresses.first;
+    final host =
+        _webHost ?? (_addresses.isEmpty ? '127.0.0.1' : _addresses.first);
     return WebShareState(
       url: web.urlFor(host),
       expiresAt: web.expiresAt!,
@@ -1635,7 +1640,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
             );
           }(),
     ];
-    final server = WebShareServer(
+    late final WebShareServer server;
+    server = WebShareServer(
       files: files,
       allowUpload: allowUpload,
       uploadDirectory: Directory(p.join(_webRoot.path, _stampNow())),
@@ -1655,12 +1661,23 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       onUploadAsk: _onWebUploadAsk,
       onFileStored: _onWebFileStored,
       onChanged: _emit,
+      onStopped: () => _onWebStopped(server),
+      ttl: _runtime.webShareTtl,
+      availableBytes: () async {
+        final probe = _runtime.availableBytes;
+        if (probe == null || _dataPath == null) return null;
+        return probe(Directory(_dataPath!));
+      },
     );
+    // Listen only on the address printed in the link (the same LAN
+    // interface), not on cellular/hotspot/VPN interfaces.
+    final host = _addresses.first;
     await server.start(
-      address: _runtime.webShareAddress,
+      address: _runtime.webShareAddress ?? InternetAddress.tryParse(host),
       preferredPort: _runtime.webSharePort,
     );
     _web = server;
+    _webHost = host;
     DiagnosticsLog.instance.info('web share started (upload=$allowUpload)');
   });
 
@@ -1670,12 +1687,28 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
   Future<void> _stopWebShareNow() async {
     final web = _web;
     _web = null;
-    for (final (_, decision, _) in _webAsks.values) {
+    _webHost = null;
+    _clearWebAsks();
+    await web?.stop();
+    _emit();
+  }
+
+  /// The server stopped (its own 10-minute expiry included): requests that
+  /// can no longer be accepted disappear at once.
+  void _onWebStopped(WebShareServer server) {
+    if (identical(_web, server)) {
+      _web = null;
+      _webHost = null;
+    }
+    _clearWebAsks();
+    _emit();
+  }
+
+  void _clearWebAsks() {
+    for (final (_, decision, _) in _webAsks.values.toList()) {
       if (!decision.isCompleted) decision.complete(false);
     }
     _webAsks.clear();
-    await web?.stop();
-    _emit();
   }
 
   Future<bool> _onWebUploadAsk(WebUploadAsk ask) {
@@ -2465,14 +2498,23 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
     }
     _pairing = true;
     _pairingCancelled = false;
-    final code = invite.sasFor(_identity!.serverPin);
-    final hostName = core.sanitizeDisplayText(invite.displayName);
-    _outgoingPairing = OutgoingPairing(
-      hostName: hostName.isEmpty ? _l.unknownDevice : hostName,
-      code: code,
-    );
-    _setStatus(_l.confirmPairingWithCode(code));
+    final cleanName = core.sanitizeDisplayText(invite.displayName);
+    final hostName = cleanName.isEmpty ? _l.unknownDevice : cleanName;
+    // Commit/reveal: no code exists until the host's nonce arrived and this
+    // device revealed its own. Until then the interface shows "connecting".
+    _outgoingPairing = OutgoingPairing(hostName: hostName);
     _emit();
+    void showCode(String code, {required bool legacy}) {
+      if (_pairingCancelled) return;
+      _outgoingPairing = OutgoingPairing(
+        hostName: hostName,
+        code: code,
+        legacy: legacy,
+      );
+      _setStatus(_l.confirmPairingWithCode(code));
+      _emit();
+    }
+
     core.CoreClient? client;
     try {
       _addresses = await _runtime.addresses();
@@ -2488,13 +2530,16 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
         );
         _pairingClient = candidate;
         try {
-          await candidate.requestPairing(
+          final progress = await candidate.requestPairing(
             invite,
             identity: _identity!,
             peers: _trusted!,
             localEndpoint: local,
           );
           client = candidate;
+          // A 1.0/1.1 host (scanned QR only) shows this device's key code.
+          final code = progress.legacy ? progress.legacyCode : progress.sas;
+          if (code != null) showCode(code, legacy: progress.legacy);
           break;
         } on SocketException catch (error) {
           lastError = error;
@@ -2532,10 +2577,15 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
           !_disposed &&
           !_pairingCancelled &&
           waiting.elapsed < const Duration(seconds: 180)) {
+        // completePairing also finishes a reveal that was interrupted.
         final peer = await client.completePairing(
           identity: _identity!,
           peers: _trusted!,
         );
+        if (peer == null && _outgoingPairing?.code == null) {
+          final pending = await client.pendingPairingCode(_trusted!);
+          if (pending != null) showCode(pending.code, legacy: pending.legacy);
+        }
         if (peer != null) {
           _online.add(peer.peerId);
           _status = _l.pairedWith(peer.displayName);
@@ -4062,6 +4112,8 @@ class TransferAppController extends AppController with WidgetsBindingObserver {
       'FOLDER_PATH' => _l.errFolderPath,
       'FOLDER_EMPTY' => _l.errFolderEmpty,
       'NEARBY_UNAVAILABLE' => _l.errNearbyUnavailable,
+      'UPGRADE_REQUIRED' => _l.errUpgradeRequired,
+      'COMMITMENT_MISMATCH' => _l.errCommitmentMismatch,
       'BUSY' || 'WRITER_BUSY' => _l.errBusy,
       'STORAGE_MISSING' || 'NOT_FOUND' => _l.errNotFound,
       '#handshake' => _l.errHandshake,

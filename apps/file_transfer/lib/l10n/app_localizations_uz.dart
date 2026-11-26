@@ -1481,6 +1481,23 @@ class AppLocalizationsUz extends AppLocalizations {
       'Bir martada 1000 tagacha fayl yuborish mumkin. Roʻyxatdan bir qismini olib tashlang.';
 
   @override
+  String pairingConnectingTo(String name) {
+    return '«$name» bilan bogʻlanmoqda. Kod bir soniyada paydo boʻladi.';
+  }
+
+  @override
+  String get legacyCodesNote =>
+      'Boshqa qurilmada Ulash eski versiyasi, shuning uchun qurilma kodlari (ABCD-1234 koʻrinishida) solishtiriladi. U yerda Ulashni yangilagan maʼqul.';
+
+  @override
+  String get errUpgradeRequired =>
+      'Boshqa qurilmada Ulashni yangilang: bu versiya unga QR-kodsiz ulana olmaydi.';
+
+  @override
+  String get errCommitmentMismatch =>
+      'Ulanib boʻlmadi: kod tekshiruvi oʻtmadi, ulanish tutib olingan boʻlishi mumkin. Yangi kod bilan qayta urinib koʻring.';
+
+  @override
   String get moreActions => 'Yana';
 
   @override

@@ -73,11 +73,22 @@ class _PairingRequestDialogState extends State<PairingRequestDialog> {
                     codeKey: const Key('pairing-request-code'),
                   ),
                 ],
+                if (request.legacy) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    l.legacyCodesNote,
+                    key: const Key('pairing-legacy-note'),
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
                 if (!stillPending) ...[
                   const SizedBox(height: 12),
                   Text(
                     l.requestNoLongerActive,
-                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
                   ),
                 ],
               ],
@@ -170,17 +181,44 @@ class _OutgoingPairingSheetState extends State<_OutgoingPairingSheet> {
               ),
             ),
             const SizedBox(height: 8),
-            Text(
-              l.sasJoinerBody(pairing.hostName),
-              textAlign: TextAlign.center,
-            ),
+            if (pairing.code case final code?) ...[
+              Text(
+                l.sasJoinerBody(pairing.hostName),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 20),
+              PairingCode(
+                code: code,
+                codeKey: const Key('outgoing-pairing-code'),
+              ),
+              if (pairing.legacy) ...[
+                const SizedBox(height: 12),
+                Text(
+                  l.legacyCodesNote,
+                  key: const Key('outgoing-legacy-note'),
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ] else
+              // Commit/reveal: the code exists only after both devices
+              // exchanged their nonces; never show a placeholder code.
+              Padding(
+                key: const Key('outgoing-pairing-connecting'),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: Column(
+                  children: [
+                    const CircularProgressIndicator(),
+                    const SizedBox(height: 16),
+                    Text(
+                      l.pairingConnectingTo(pairing.hostName),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
             const SizedBox(height: 20),
-            PairingCode(
-              code: pairing.code,
-              codeKey: const Key('outgoing-pairing-code'),
-            ),
-            const SizedBox(height: 20),
-            if (pairing.waitingForApproval)
+            if (pairing.waitingForApproval && pairing.code != null)
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [

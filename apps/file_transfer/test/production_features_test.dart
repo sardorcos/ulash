@@ -103,8 +103,8 @@ Future<void> _pair(TransferAppController a, TransferAppController b) async {
   expect(b.errorMessage, isNull);
   final pairing = a.pairFromText(b.invitation!.payload);
   await _waitUntil(
-    () => b.pendingPairings.isNotEmpty,
-    reason: 'pairing request arrives',
+    () => b.pendingPairings.isNotEmpty && a.outgoingPairing?.code != null,
+    reason: 'pairing request arrives and both codes are revealed',
   );
   // Both screens show the same six-digit code (SAS) bound to the invitation
   // and both device keys.

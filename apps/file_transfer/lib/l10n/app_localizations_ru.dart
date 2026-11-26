@@ -1481,6 +1481,23 @@ class AppLocalizationsRu extends AppLocalizations {
       'За один раз можно отправить до 1000 файлов. Уберите часть из списка.';
 
   @override
+  String pairingConnectingTo(String name) {
+    return 'Связываемся с «$name». Код появится через секунду.';
+  }
+
+  @override
+  String get legacyCodesNote =>
+      'На другом устройстве старая версия Ulash, поэтому сравниваются коды устройств (вида ABCD-1234). Лучше обновите Ulash там.';
+
+  @override
+  String get errUpgradeRequired =>
+      'Обновите Ulash на другом устройстве: эта версия не может подключиться к нему без QR-кода.';
+
+  @override
+  String get errCommitmentMismatch =>
+      'Подключение не удалось: проверка кода не прошла, возможно, соединение перехвачено. Попробуйте ещё раз с новым кодом.';
+
+  @override
   String get moreActions => 'Ещё';
 
   @override

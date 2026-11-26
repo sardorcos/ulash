@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_transfer/l10n/app_localizations.dart';
@@ -121,12 +122,15 @@ class _Node {
     bool discovery = false,
     bool platformHooks = false,
     List<IntakeItem> intake = const [],
+    Duration webShareTtl = const Duration(minutes: 10),
   }) async {
     final dir = root ?? await Directory.systemTemp.createTemp('ulash-b-');
     final hooks = _Hooks()..intake.addAll(intake);
     final controller = TransferAppController(
       runtime: AppRuntime(
         secrets: core.MemorySecretStore(),
+        webSharePort: 0,
+        webShareTtl: webShareTtl,
         storageDirectory: () async => dir,
         ensurePermission: () async => true,
         addresses: () async => ['127.0.0.1'],
@@ -250,14 +254,22 @@ void main() {
         final pairing = a.controller.pairFromText(
           b.controller.invitation!.payload,
         );
+        // Commit/reveal: neither side has a code until both nonces were
+        // exchanged; the joiner shows "connecting" meanwhile.
+        expect(a.controller.outgoingPairing?.hostName, 'Host');
+        expect(a.controller.outgoingPairing?.code, isNull);
         await _waitUntil(
-          () => b.controller.pendingPairings.isNotEmpty,
-          reason: 'pairing ask',
+          () =>
+              b.controller.pendingPairings.isNotEmpty &&
+              a.controller.outgoingPairing?.code != null,
+          reason: 'code revealed on both sides',
         );
         final outgoing = a.controller.outgoingPairing!;
         expect(outgoing.hostName, 'Host');
+        expect(outgoing.legacy, isFalse);
         expect(outgoing.code, matches(RegExp(r'^[0-9]{6}$')));
         expect(b.controller.pendingPairings.single.code, outgoing.code);
+        expect(b.controller.pendingPairings.single.legacy, isFalse);
 
         await a.controller.cancelOutgoingPairing();
         await pairing;
@@ -293,9 +305,12 @@ void main() {
 
         final pairing = a.controller.pairNearby(device.id);
         await _waitUntil(
-          () => b.controller.pendingPairings.isNotEmpty,
+          () =>
+              b.controller.pendingPairings.isNotEmpty &&
+              a.controller.outgoingPairing?.code != null,
           reason: 'host asked to approve',
         );
+        expect(a.controller.outgoingPairing!.legacy, isFalse);
         expect(
           b.controller.pendingPairings.single.code,
           a.controller.outgoingPairing!.code,
@@ -380,10 +395,13 @@ void main() {
         expect(files['setup.exe']!.potentiallyExecutable, isTrue);
         expect(files['notes.txt']!.potentiallyExecutable, isFalse);
         final preview = files['photo.jpg']!.previewPath!;
-        expect(p.isWithin(visible.path, preview), isTrue);
+        // Windows CI temp dirs use 8.3 short names (RUNNER~1); the store
+        // canonicalises its folders, so compare against the long form.
+        final visibleRoot = visible.resolveSymbolicLinksSync();
+        expect(p.isWithin(visibleRoot, preview), isTrue);
         expect(File(preview).existsSync(), isTrue);
         expect(
-          p.split(p.relative(preview, from: visible.path)).skip(1).toList(),
+          p.split(p.relative(preview, from: visibleRoot)).skip(1).toList(),
           ['Album', 'trip', 'photo.jpg'],
         );
         expect(files['notes.txt']!.previewPath, isNull);
@@ -623,5 +641,105 @@ void main() {
     } finally {
       await dir.delete(recursive: true);
     }
+  });
+
+  test(
+    'the browser share listens on the link address; its own expiry clears '
+    'pending upload requests',
+    () => _realNetwork(() async {
+      final node = await _Node.create(
+        'Web',
+        webShareTtl: const Duration(seconds: 2),
+      );
+      try {
+        await node.controller.startWebShare(allowUpload: true);
+        final share = node.controller.webShare!;
+        expect(share.url.host, '127.0.0.1');
+        final http = HttpClient();
+        final request = await http.postUrl(share.url.resolve('ask'));
+        request.write(
+          jsonEncode({
+            'files': [
+              {'name': 'a.txt', 'size': 3},
+            ],
+          }),
+        );
+        // Refused either with 403 or by the connection closing on stop.
+        final reply = request.close().then(
+          (response) => response.statusCode,
+          onError: (Object _) => 403,
+        );
+        await _waitUntil(
+          () => node.controller.pendingWebUploads.isNotEmpty,
+          reason: 'upload request shown',
+        );
+        await _waitUntil(
+          () => node.controller.webShare == null,
+          reason: 'share stops by itself',
+        );
+        expect(node.controller.pendingWebUploads, isEmpty);
+        expect(await reply, 403);
+        http.close(force: true);
+      } finally {
+        await node.close();
+      }
+    }),
+    timeout: const Timeout(Duration(seconds: 30)),
+  );
+
+  test(
+    'a 1.0/1.1 joiner (no commitment) is shown with its key code and a note',
+    () => _realNetwork(() async {
+      final host = await _Node.create('Host');
+      final old = await core.DeviceIdentity.generate(displayName: 'Old phone');
+      final http = HttpClient()
+        // Test-only: the request below plays an old joiner; the key check is
+        // not what this test is about.
+        ..badCertificateCallback = (_, _, _) => true;
+      try {
+        await host.controller.createInvitation();
+        final invite = core.PairingInvite.parse(
+          host.controller.invitation!.payload,
+        );
+        final request = await http.postUrl(
+          invite.endpoints.first.replace(path: '/v1/pairing/requests'),
+        );
+        request.headers
+          ..contentType = ContentType.json
+          ..set('Authorization', 'Invite ${invite.inviteSecret}');
+        request.write(
+          jsonEncode({
+            'requestId': 'legacy-request-1',
+            'inviteId': invite.inviteId,
+            'peerId': old.peerId,
+            'serverPin': old.serverPin,
+            'displayName': old.displayName,
+            'reverseToken': base64Url
+                .encode(List.generate(32, (i) => i * 7 % 256))
+                .replaceAll('=', ''),
+          }),
+        );
+        final response = await request.close();
+        await response.drain<void>();
+        expect(response.statusCode, inInclusiveRange(200, 202));
+        await _waitUntil(
+          () => host.controller.pendingPairings.isNotEmpty,
+          reason: 'legacy request listed',
+        );
+        final pending = host.controller.pendingPairings.single;
+        expect(pending.legacy, isTrue);
+        expect(pending.deviceName, 'Old phone');
+        expect(pending.code, core.shortFingerprint(old.peerId));
+        expect(pending.code, matches(RegExp(r'^[0-9A-F]{4}-[0-9A-F]{4}$')));
+      } finally {
+        http.close(force: true);
+        await host.close();
+      }
+    }),
+  );
+
+  test('pairing errors from the new scheme have clear messages', () {
+    expect(_ru.errUpgradeRequired, contains('Обновите Ulash'));
+    expect(_ru.errCommitmentMismatch, contains('новым кодом'));
   });
 }

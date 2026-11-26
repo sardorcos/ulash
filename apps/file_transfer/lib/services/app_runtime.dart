@@ -62,6 +62,7 @@ class AppRuntime {
     this.webShareAddress,
     this.pickerCopiesToCache = false,
     this.webSharePort = 53320,
+    this.webShareTtl = const Duration(minutes: 10),
     this.systemLocale,
     this.receivedDirectory,
     this.legacyStorageDirectory,
@@ -241,6 +242,9 @@ class AppRuntime {
   /// return originals, which are never deleted.
   final bool pickerCopiesToCache;
   final int webSharePort;
+
+  /// How long an opt-in browser share stays open before stopping itself.
+  final Duration webShareTtl;
 
   /// The OS language. Null (tests) means Russian, the source language.
   final Locale Function()? systemLocale;

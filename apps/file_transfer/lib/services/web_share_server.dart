@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
 import 'package:transfer_core/transfer_core.dart'
@@ -85,6 +86,9 @@ class WebShareServer {
     this.maxUploadFiles = 20,
     this.maxUploadFileBytes = 4 * 1024 * 1024 * 1024,
     this.consentTimeout = const Duration(seconds: 120),
+    this.approvalLifetime = const Duration(minutes: 10),
+    this.availableBytes,
+    this.onStopped,
   });
 
   final List<WebSharedFile> files;
@@ -103,19 +107,35 @@ class WebShareServer {
   final int maxUploadFileBytes;
   final Duration consentTimeout;
 
+  /// How long after consent the approved files may still be started.
+  final Duration approvalLifetime;
+
+  /// Free space of the upload volume; null result = unknown (not refused).
+  final Future<int?> Function()? availableBytes;
+
+  /// Called once when the server stops, by request or by its own expiry.
+  final void Function()? onStopped;
+
+  static const maxAskBytes = 64 * 1024;
+  static const askDeadline = Duration(seconds: 5);
+
   HttpServer? _server;
   late final String token = _randomToken();
   DateTime? _expiresAt;
   Timer? _expiry;
   final _hits = <String, List<int>>{};
   final _recentClients = <String, int>{};
-  final _approved = <String, WebUploadAsk>{};
+  final _approved = <String, _Approval>{};
+
+  /// Declared bytes of approved files not yet stored or failed.
+  int _reservedBytes = 0;
   final _clock = Stopwatch()..start();
   int downloads = 0;
   int uploads = 0;
 
   DateTime? get expiresAt => _expiresAt;
   bool get running => _server != null;
+  InternetAddress? get boundAddress => _server?.address;
   int get port => _server?.port ?? 0;
 
   /// Distinct browser addresses seen in the last minute.
@@ -133,12 +153,20 @@ class WebShareServer {
     int preferredPort = 53320,
   }) async {
     if (_server != null) return;
-    final bind = address ?? InternetAddress.anyIPv4;
-    HttpServer server;
-    try {
-      server = await HttpServer.bind(bind, preferredPort);
-    } on SocketException {
-      server = await HttpServer.bind(bind, 0);
+    // Bind to the LAN address used in the link, so the share is not reachable
+    // through other interfaces (cellular, hotspot, VPN). Only if that address
+    // cannot be bound at all, fall back to every IPv4 interface.
+    HttpServer? server;
+    for (final bind in [
+      ?address,
+      if (address == null) InternetAddress.anyIPv4,
+    ]) {
+      server = await _bind(bind, preferredPort);
+      if (server != null) break;
+    }
+    server ??= await _bind(InternetAddress.anyIPv4, preferredPort);
+    if (server == null) {
+      throw const SocketException('Web share could not listen');
     }
     server.autoCompress = false;
     server.idleTimeout = const Duration(seconds: 20);
@@ -150,12 +178,28 @@ class WebShareServer {
     }, onError: (Object _) {});
   }
 
+  static Future<HttpServer?> _bind(InternetAddress address, int port) async {
+    try {
+      return await HttpServer.bind(address, port);
+    } on SocketException {
+      try {
+        return await HttpServer.bind(address, 0);
+      } on SocketException {
+        return null;
+      }
+    }
+  }
+
   Future<void> stop() async {
     _expiry?.cancel();
     _expiry = null;
     final server = _server;
     _server = null;
     _approved.clear();
+    _reservedBytes = 0;
+    // Report first, so the app drops dead requests in the same frame in
+    // which the share disappears.
+    if (server != null) onStopped?.call();
     await server?.close(force: true);
     onChanged?.call();
   }
@@ -196,7 +240,7 @@ class WebShareServer {
           rest.length == 3 &&
           rest[0] == 'u' &&
           request.method == 'PUT') {
-        return await _upload(request, rest[1], int.tryParse(rest[2]));
+        return await _upload(request, client, rest[1], int.tryParse(rest[2]));
       }
       return await _plain(response, HttpStatus.notFound, 'Not found');
     } catch (_) {
@@ -257,18 +301,34 @@ class WebShareServer {
   }
 
   Future<void> _ask(HttpRequest request, String client) async {
-    if (request.contentLength > 65536) {
+    if (request.contentLength > maxAskBytes) {
       return _plain(
         request.response,
         HttpStatus.requestEntityTooLarge,
         'Too large',
       );
     }
-    final body = await utf8.decoder
-        .bind(request)
-        .timeout(const Duration(seconds: 10))
-        .join();
-    final json = jsonDecode(body);
+    // Counted while reading (chunked bodies have no Content-Length) and
+    // bounded by one overall deadline, not only by gaps between chunks.
+    final List<int>? raw;
+    try {
+      raw = await readLimited(request, maxAskBytes, askDeadline);
+    } on TimeoutException {
+      return _plain(request.response, HttpStatus.requestTimeout, 'Timeout');
+    }
+    if (raw == null) {
+      return _plain(
+        request.response,
+        HttpStatus.requestEntityTooLarge,
+        'Too large',
+      );
+    }
+    final Object? json;
+    try {
+      json = jsonDecode(utf8.decode(raw));
+    } on FormatException {
+      return _plain(request.response, HttpStatus.badRequest, 'Bad request');
+    }
     final list = json is Map ? json['files'] : null;
     if (list is! List || list.isEmpty || list.length > maxUploadFiles) {
       return _plain(request.response, HttpStatus.badRequest, 'Bad request');
@@ -293,6 +353,10 @@ class WebShareServer {
       names: names,
       sizes: sizes,
     );
+    // Do not ask the user for a batch that cannot fit.
+    if (!await _fits(ask.totalBytes)) {
+      return _plain(request.response, 507, 'Insufficient storage');
+    }
     bool accepted;
     try {
       accepted = await onUploadAsk(ask).timeout(consentTimeout);
@@ -302,62 +366,195 @@ class WebShareServer {
     if (!accepted || _server == null) {
       return _plain(request.response, HttpStatus.forbidden, 'Declined');
     }
-    _approved[ask.id] = ask;
+    if (!await _fits(ask.totalBytes)) {
+      return _plain(request.response, 507, 'Insufficient storage');
+    }
+    _reservedBytes += ask.totalBytes;
+    _approved[ask.id] = _Approval(
+      ask,
+      _clock.elapsedMilliseconds + approvalLifetime.inMilliseconds,
+    );
     request.response.headers.contentType = ContentType.json;
     request.response.write(jsonEncode({'upload': ask.id}));
     await request.response.close();
   }
 
-  Future<void> _upload(HttpRequest request, String askId, int? index) async {
-    final ask = _approved[askId];
+  Future<bool> _fits(int bytes) async {
+    final probe = availableBytes;
+    if (probe == null) return true;
+    int? free;
+    try {
+      free = await probe();
+    } catch (_) {
+      free = null;
+    }
+    // Unknown free space is not converted into an invented capacity.
+    if (free == null) return true;
+    return free - _reservedBytes >= bytes;
+  }
+
+  /// Reads at most [limit] bytes within [deadline]. Null = over the limit.
+  static Future<List<int>?> readLimited(
+    Stream<List<int>> source,
+    int limit,
+    Duration deadline,
+  ) {
+    final done = Completer<List<int>?>();
+    final bytes = BytesBuilder(copy: false);
+    late final StreamSubscription<List<int>> subscription;
+    final timer = Timer(deadline, () {
+      if (done.isCompleted) return;
+      unawaited(subscription.cancel());
+      done.completeError(TimeoutException('Request body too slow'));
+    });
+    subscription = source.listen(
+      (chunk) {
+        if (done.isCompleted) return;
+        if (bytes.length + chunk.length > limit) {
+          timer.cancel();
+          unawaited(subscription.cancel());
+          done.complete(null);
+          return;
+        }
+        bytes.add(chunk);
+      },
+      onError: (Object error, StackTrace stack) {
+        timer.cancel();
+        if (!done.isCompleted) done.completeError(error, stack);
+      },
+      onDone: () {
+        timer.cancel();
+        if (!done.isCompleted) done.complete(bytes.takeBytes());
+      },
+      cancelOnError: true,
+    );
+    return done.future;
+  }
+
+  Future<void> _upload(
+    HttpRequest request,
+    String client,
+    String askId,
+    int? index,
+  ) async {
+    final approval = _approved[askId];
+    final now = _clock.elapsedMilliseconds;
+    if (approval != null && now > approval.deadline) {
+      _expire(askId, approval);
+    }
+    final ask = _approved[askId]?.ask;
+    // Bound to the browser that asked, each declared file exactly once.
     if (ask == null ||
+        ask.client != client ||
         index == null ||
         index < 0 ||
-        index >= ask.names.length) {
+        index >= ask.names.length ||
+        approval!.used.contains(index)) {
       return _plain(request.response, HttpStatus.forbidden, 'Not approved');
     }
+    approval.used.add(index);
     final declared = ask.sizes[index];
+    var reservationOpen = true;
+    void release() {
+      if (!reservationOpen) return;
+      reservationOpen = false;
+      _reservedBytes = max(0, _reservedBytes - declared);
+      if (approval.used.length == ask.names.length) _approved.remove(askId);
+    }
+
     if (request.contentLength >= 0 && request.contentLength != declared) {
+      release();
       return _plain(request.response, HttpStatus.badRequest, 'Size mismatch');
     }
     final staging = Directory(p.join(uploadDirectory.path, '.staging'));
-    await staging.create(recursive: true);
-    final part = File(p.join(staging.path, '$askId-$index.part'));
-    final sink = part.openWrite();
-    var received = 0;
+    // A unique part per request: concurrent or repeated requests never
+    // share (or truncate) one another's staging file.
+    final part = File(
+      p.join(staging.path, '$askId-$index-${_randomToken()}.part'),
+    );
+    File? target;
+    var stored = false;
+    // The response is written only after the staging file is cleaned up.
+    String? refusal;
     try {
-      await for (final chunk in request.timeout(const Duration(seconds: 30))) {
-        received += chunk.length;
-        if (received > declared) throw const FormatException('too many bytes');
-        sink.add(chunk);
+      await staging.create(recursive: true);
+      final sink = part.openWrite();
+      var received = 0;
+      try {
+        await for (final chunk in request.timeout(
+          const Duration(seconds: 30),
+        )) {
+          received += chunk.length;
+          if (received > declared) {
+            throw const FormatException('too many bytes');
+          }
+          sink.add(chunk);
+        }
+        await sink.flush();
+      } finally {
+        await sink.close();
       }
-      await sink.flush();
+      if (received != declared) {
+        refusal = 'Incomplete';
+      } else {
+        target = await _reserveTarget(ask.names[index]);
+        await part.rename(target.path);
+        stored = true;
+      }
+    } on FormatException {
+      refusal = 'Too large';
     } finally {
-      await sink.close();
+      release();
+      if (!stored) {
+        await _deleteQuietly(part);
+        // An empty placeholder reserved for this upload is ours to remove.
+        if (target != null) await _deleteQuietly(target);
+      }
     }
-    if (received != declared) {
-      await part.delete().catchError((Object _) => part);
-      return _plain(request.response, HttpStatus.badRequest, 'Incomplete');
+    if (refusal != null || target == null) {
+      return _plain(request.response, HttpStatus.badRequest, refusal ?? '?');
     }
-    final target = await _uniqueTarget(ask.names[index]);
-    await part.rename(target.path);
     uploads++;
     onFileStored(askId, ask.names[index], target);
     onChanged?.call();
     await _plain(request.response, HttpStatus.ok, 'OK');
   }
 
-  Future<File> _uniqueTarget(String name) async {
+  void _expire(String askId, _Approval approval) {
+    _approved.remove(askId);
+    var unused = 0;
+    for (var i = 0; i < approval.ask.sizes.length; i++) {
+      if (!approval.used.contains(i)) unused += approval.ask.sizes[i];
+    }
+    _reservedBytes = max(0, _reservedBytes - unused);
+  }
+
+  static Future<void> _deleteQuietly(File file) async {
+    try {
+      if (await file.exists()) await file.delete();
+    } catch (_) {
+      /* Best effort. */
+    }
+  }
+
+  /// Reserves a free final name atomically (exclusive create), so two
+  /// uploads with the same name can never pick the same target.
+  Future<File> _reserveTarget(String name) async {
     await uploadDirectory.create(recursive: true);
     final base = p.basenameWithoutExtension(name);
     final ext = p.extension(name);
-    var candidate = File(p.join(uploadDirectory.path, name));
-    var n = 2;
-    while (await candidate.exists()) {
-      candidate = File(p.join(uploadDirectory.path, '$base ($n)$ext'));
-      n++;
+    for (var n = 1; n < 10000; n++) {
+      final candidate = File(
+        p.join(uploadDirectory.path, n == 1 ? name : '$base ($n)$ext'),
+      );
+      try {
+        await candidate.create(exclusive: true);
+        return candidate;
+      } on FileSystemException {
+        continue;
+      }
     }
-    return candidate;
+    throw const FileSystemException('No free name');
   }
 
   Future<void> _plain(HttpResponse response, int status, String text) async {
@@ -469,4 +666,15 @@ $upload</body></html>''';
     }
     return name;
   }
+}
+
+class _Approval {
+  _Approval(this.ask, this.deadline);
+  final WebUploadAsk ask;
+
+  /// Monotonic milliseconds after which unused files can no longer start.
+  final int deadline;
+
+  /// Indices already started (successfully or not): each is usable once.
+  final used = <int>{};
 }

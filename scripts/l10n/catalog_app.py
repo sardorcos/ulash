@@ -37,3 +37,9 @@ e('errOpenBlocked', 'Это программа или скрипт — Ulash н�
 e('saveLocationFiles', 'Приложение «Файлы» → На iPhone → Ulash', '«Fayllar» ilovasi → iPhone’da → Ulash', 'Files app → On My iPhone → Ulash')
 e('intakeAdded', 'Добавлено из другого приложения: {count}', 'Boshqa ilovadan qoʻshildi: {count}', 'Added from another app: {count}', count=I)
 e('errTooManyFiles', 'За один раз можно отправить до 1000 файлов. Уберите часть из списка.', 'Bir martada 1000 tagacha fayl yuborish mumkin. Roʻyxatdan bir qismini olib tashlang.', 'Up to 1,000 files can be sent at once. Remove some from the list.')
+
+# ---------- 1.2 commit/reveal pairing ----------
+e('pairingConnectingTo', 'Связываемся с «{name}». Код появится через секунду.', '«{name}» bilan bogʻlanmoqda. Kod bir soniyada paydo boʻladi.', 'Contacting “{name}”. The code will appear in a moment.', name=S)
+e('legacyCodesNote', 'На другом устройстве старая версия Ulash, поэтому сравниваются коды устройств (вида ABCD-1234). Лучше обновите Ulash там.', 'Boshqa qurilmada Ulash eski versiyasi, shuning uchun qurilma kodlari (ABCD-1234 koʻrinishida) solishtiriladi. U yerda Ulashni yangilagan maʼqul.', 'The other device runs an older Ulash, so device codes (like ABCD-1234) are compared. Updating Ulash there is recommended.')
+e('errUpgradeRequired', 'Обновите Ulash на другом устройстве: эта версия не может подключиться к нему без QR-кода.', 'Boshqa qurilmada Ulashni yangilang: bu versiya unga QR-kodsiz ulana olmaydi.', 'Update Ulash on the other device: this version cannot connect to it without a QR code.')
+e('errCommitmentMismatch', 'Подключение не удалось: проверка кода не прошла, возможно, соединение перехвачено. Попробуйте ещё раз с новым кодом.', 'Ulanib boʻlmadi: kod tekshiruvi oʻtmadi, ulanish tutib olingan boʻlishi mumkin. Yangi kod bilan qayta urinib koʻring.', 'Pairing failed: the code check did not pass, the connection may have been intercepted. Try again with a new code.')
