@@ -418,7 +418,7 @@ class WebShareState {
     this.sharedFileCount = 0,
   });
 
-  /// http://<lan-ip>:<port>/<token> — encode as QR for the browser.
+  /// `http://LAN-IP:PORT/TOKEN` — encode as QR for the browser.
   final Uri url;
   final DateTime expiresAt;
   final bool allowUpload;
