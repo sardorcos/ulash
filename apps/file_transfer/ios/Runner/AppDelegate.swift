@@ -375,6 +375,14 @@ private final class NetworkBridge: NSObject {
 
 // MARK: - Intake ("Open in Ulash" and the Share Extension)
 
+/// A file URL handed to Ulash by another app. `openInPlace` comes from
+/// UIOpenURLContext.options: true means the URL is the user's ORIGINAL
+/// document (another app's folder, iCloud Drive, a file provider).
+struct IntakeSource {
+  let url: URL
+  let openInPlace: Bool
+}
+
 /// Collects files handed to Ulash from other apps. "Open in" files are copied
 /// into tmp/Intake; the Share Extension writes complete batches into the App
 /// Group container. `takePending` moves both into tmp/IntakeTaken and returns
@@ -382,6 +390,11 @@ private final class NetworkBridge: NSObject {
 final class IntakeStore {
   static let shared = IntakeStore()
   static let appGroup = "group.uz.ulash.app"
+  /// Abandoned (never completed) extension batches and taken copies Dart did
+  /// not clean up are removed after this age. Complete batches that were
+  /// never taken are kept for a week, then dropped (the originals are intact).
+  static let staleAge: TimeInterval = 24 * 60 * 60
+  static let untakenAge: TimeInterval = 7 * 24 * 60 * 60
   /// Called on the main thread whenever new items may be waiting.
   var onAvailable: (() -> Void)?
   private let io = DispatchQueue(label: "uz.ulash.intake")
@@ -396,31 +409,84 @@ final class IntakeStore {
       .appendingPathComponent("Intake", isDirectory: true)
   }
 
-  /// Copies opened files (security-scoped when needed) into the intake folder.
-  func accept(_ urls: [URL]) {
+  /// Ulash's own Documents/Inbox, where iOS places "Copy to Ulash" copies.
+  private var ownInbox: URL? {
+    FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+      .appendingPathComponent("Inbox", isDirectory: true)
+  }
+
+  /// Copies opened files into the intake folder with a coordinated read
+  /// (security-scoped when needed; iCloud-only files are downloaded first).
+  /// The source is deleted ONLY when it is a copy iOS made inside Ulash's own
+  /// Documents/Inbox and the URL was not opened in place. A user's original
+  /// is never removed.
+  func accept(_ sources: [IntakeSource]) {
     io.async {
+      let fm = FileManager.default
       let batch = self.intakeRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
-      try? FileManager.default.createDirectory(at: batch, withIntermediateDirectories: true)
+      try? fm.createDirectory(at: batch, withIntermediateDirectories: true)
       var copied = 0
-      for url in urls {
+      for source in sources where source.url.isFileURL {
+        let url = source.url
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        let name = IntakeStore.safeName(url.lastPathComponent)
-        let target = IntakeStore.unique(batch.appendingPathComponent(name))
-        do {
-          var isDirectory: ObjCBool = false
-          guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
-            !isDirectory.boolValue else { continue }
-          try FileManager.default.copyItem(at: url, to: target)
-          copied += 1
-        } catch {
-          continue
+        var ok = false
+        var coordinationError: NSError?
+        NSFileCoordinator(filePresenter: nil).coordinate(
+          readingItemAt: url, options: [.withoutChanges], error: &coordinationError
+        ) { readable in
+          let values = try? readable.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+          guard values?.isRegularFile == true, values?.isSymbolicLink != true else { return }
+          let name = IntakeStore.safeName(url.lastPathComponent)
+          guard let target = IntakeStore.reserve(batch.appendingPathComponent(name)) else { return }
+          do {
+            // `reserve` created an empty placeholder; replace it with the copy.
+            try fm.removeItem(at: target)
+            try fm.copyItem(at: readable, to: target)
+            ok = true
+          } catch {
+            try? fm.removeItem(at: target)
+          }
         }
-        // Files placed in Documents/Inbox by older "Copy to" flows are ours to remove.
-        if url.path.contains("/Documents/Inbox/") { try? FileManager.default.removeItem(at: url) }
+        guard ok, coordinationError == nil else { continue }
+        copied += 1
+        if !source.openInPlace, let inbox = self.ownInbox, IntakeStore.isInside(url, inbox) {
+          try? fm.removeItem(at: url)
+        }
       }
-      if copied == 0 { try? FileManager.default.removeItem(at: batch) }
+      if copied == 0 { try? fm.removeItem(at: batch) }
       if copied > 0 { DispatchQueue.main.async { self.onAvailable?() } }
+    }
+  }
+
+  /// True when `child` (after resolving symlinks and `..`) lies strictly below `root`.
+  static func isInside(_ child: URL, _ root: URL) -> Bool {
+    let childParts = child.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+    let rootParts = root.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+    return childParts.count > rootParts.count && Array(childParts.prefix(rootParts.count)) == rootParts
+  }
+
+  /// Removes stale intake leftovers: abandoned extension batches, week-old
+  /// untaken batches and day-old taken copies. Runs on the intake queue.
+  private func pruneStale() {
+    let fm = FileManager.default
+    let now = Date()
+    func age(_ url: URL) -> TimeInterval {
+      let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+      let date = values?.creationDate ?? values?.contentModificationDate ?? now
+      return now.timeIntervalSince(date)
+    }
+    if let root = groupIntakeRoot,
+      let batches = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.creationDateKey]) {
+      for batch in batches {
+        let complete = fm.fileExists(atPath: batch.appendingPathComponent(".complete").path)
+        if age(batch) > (complete ? IntakeStore.untakenAge : IntakeStore.staleAge) {
+          try? fm.removeItem(at: batch)
+        }
+      }
+    }
+    if let taken = try? fm.contentsOfDirectory(at: takenRoot, includingPropertiesForKeys: [.creationDateKey]) {
+      for batch in taken where age(batch) > IntakeStore.staleAge { try? fm.removeItem(at: batch) }
     }
   }
 
@@ -431,6 +497,7 @@ final class IntakeStore {
   /// Returns every pending file exactly once as [{path, name}].
   func takePending() -> [[String: String]] {
     io.sync {
+      pruneStale()
       let fm = FileManager.default
       try? fm.createDirectory(at: takenRoot, withIntermediateDirectories: true)
       var sources: [URL] = []
@@ -492,6 +559,25 @@ final class IntakeStore {
     let cleaned = raw.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
       .trimmingCharacters(in: .whitespacesAndNewlines)
     return cleaned.isEmpty || cleaned.hasPrefix(".") ? "file" + cleaned : cleaned
+  }
+
+  /// Atomically claims a free name (`name`, `name 2`, …) by creating an empty
+  /// file with O_EXCL, so concurrent writers never pick the same name.
+  static func reserve(_ url: URL) -> URL? {
+    let base = url.deletingPathExtension().lastPathComponent
+    let ext = url.pathExtension
+    for index in 1...10_000 {
+      let name = index == 1 ? url.lastPathComponent
+        : (ext.isEmpty ? "\(base) \(index)" : "\(base) \(index).\(ext)")
+      let candidate = url.deletingLastPathComponent().appendingPathComponent(name)
+      let fd = Darwin.open(candidate.path, O_CREAT | O_EXCL | O_WRONLY, 0o644)
+      if fd >= 0 {
+        Darwin.close(fd)
+        return candidate
+      }
+      if errno != EEXIST { return nil }
+    }
+    return nil
   }
 
   static func unique(_ url: URL) -> URL {

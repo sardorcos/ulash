@@ -263,6 +263,17 @@ workflows:
         # keep drafts until the store listing and Data safety form are complete.
         submit_as_draft: true
 
+  # MSIX storage notes (packaged = has package identity):
+  # * Writes below %LOCALAPPDATA% / %APPDATA% are virtualised into
+  #   %LOCALAPPDATA%\Packages\<PFN>\LocalCache\{Local,Roaming}. That copy never
+  #   roams and is deleted on uninstall. The app sees its logical paths; other
+  #   processes (Explorer, handler apps) do not, so the native openFile and
+  #   revealInFolder pass the shell the final path (GetFinalPathNameByHandleW).
+  # * Downloads (Downloads\Ulash, visible received files) is NOT virtualised.
+  # * A packaged install has no 1.0 Roaming data, so the Roaming → LocalAppData
+  #   migration is skipped: the native localDataDirectory returns null under
+  #   package identity (GetCurrentPackageFullName) and Dart keeps its
+  #   application-support directory.
   windows-msix:
     name: Windows → MSIX package
     instance_type: windows_x2

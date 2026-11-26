@@ -6,6 +6,7 @@ import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.ContentValues
 import android.content.Context
+import android.content.ContentResolver
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -126,11 +127,12 @@ class MainActivity : FlutterActivity() {
         var text: String? = null
         when (intent.action) {
             Intent.ACTION_SEND -> {
-                streamExtra(intent)?.let { uris.add(it) }
-                if (uris.isEmpty()) text = intent.getStringExtra(Intent.EXTRA_TEXT)
+                val stream = streamExtra(intent)
+                stream?.takeIf { isForeignContentUri(it) }?.let { uris.add(it) }
+                if (stream == null) text = intent.getStringExtra(Intent.EXTRA_TEXT)
             }
-            Intent.ACTION_SEND_MULTIPLE -> uris.addAll(streamListExtra(intent))
-            Intent.ACTION_VIEW -> intent.data?.takeIf { it.scheme == "content" }?.let { uris.add(it) }
+            Intent.ACTION_SEND_MULTIPLE -> uris.addAll(streamListExtra(intent).filter { isForeignContentUri(it) })
+            Intent.ACTION_VIEW -> intent.data?.takeIf { isForeignContentUri(it) }?.let { uris.add(it) }
             else -> return
         }
         intent.putExtra(handledExtra, true)
@@ -160,6 +162,31 @@ class MainActivity : FlutterActivity() {
             if (copied == 0) batch.deleteRecursively()
             else mainHandler.post { intakeChannel?.invokeMethod("intakeAvailable", null) }
         }
+    }
+
+    /**
+     * Only content:// URIs served by ANOTHER app are read. file:// URIs and
+     * URIs of Ulash's own providers are refused: otherwise any app could make
+     * Ulash copy its private files (keys, databases) into the send list.
+     */
+    private fun isForeignContentUri(uri: Uri): Boolean {
+        if (uri.scheme?.lowercase() != ContentResolver.SCHEME_CONTENT) return false
+        val authority = uri.authority?.takeIf { it.isNotBlank() } ?: return false
+        // A provider may declare several authorities separated by ';'; drop
+        // any user-info part ("user@authority").
+        return authority.substringAfterLast('@').split(';').none { isOwnAuthority(it.trim()) }
+    }
+
+    private fun isOwnAuthority(authority: String): Boolean {
+        if (authority.isEmpty()) return true
+        if (authority == packageName || authority.startsWith("$packageName.")) return true
+        val provider = try {
+            @Suppress("DEPRECATION")
+            packageManager.resolveContentProvider(authority, 0)
+        } catch (_: Exception) {
+            null
+        }
+        return provider?.packageName == packageName
     }
 
     @Suppress("DEPRECATION")

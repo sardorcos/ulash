@@ -11,13 +11,19 @@ class SceneDelegate: FlutterSceneDelegate {
     options connectionOptions: UIScene.ConnectionOptions
   ) {
     super.scene(scene, willConnectTo: session, options: connectionOptions)
-    let urls = connectionOptions.urlContexts.map { $0.url }.filter { $0.isFileURL }
-    if !urls.isEmpty { IntakeStore.shared.accept(urls) }
+    accept(connectionOptions.urlContexts)
   }
 
   override func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
     super.scene(scene, openURLContexts: URLContexts)
-    let urls = URLContexts.map { $0.url }.filter { $0.isFileURL }
-    if !urls.isEmpty { IntakeStore.shared.accept(urls) }
+    accept(URLContexts)
+  }
+
+  /// `openInPlace` tells the intake whether the URL is the user's original
+  /// (never deleted) or a copy iOS placed in Ulash's Documents/Inbox.
+  private func accept(_ contexts: Set<UIOpenURLContext>) {
+    let sources = contexts.filter { $0.url.isFileURL }
+      .map { IntakeSource(url: $0.url, openInPlace: $0.options.openInPlace) }
+    if !sources.isEmpty { IntakeStore.shared.accept(sources) }
   }
 }

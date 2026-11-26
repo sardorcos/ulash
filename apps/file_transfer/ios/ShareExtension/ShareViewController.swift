@@ -50,8 +50,9 @@ final class ShareViewController: UIViewController {
       finish(Self.text("unavailable"))
       return
     }
-    let batch = container.appendingPathComponent("Intake", isDirectory: true)
-      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let intake = container.appendingPathComponent("Intake", isDirectory: true)
+    Self.pruneStale(intake)
+    let batch = intake.appendingPathComponent(UUID().uuidString, isDirectory: true)
     do {
       try FileManager.default.createDirectory(at: batch, withIntermediateDirectories: true)
     } catch {
@@ -142,38 +143,68 @@ final class ShareViewController: UIViewController {
       if !ext.isEmpty && (name as NSString).pathExtension.lowercased() != ext.lowercased() {
         name += "." + ext
       }
-      let target = Self.unique(batch.appendingPathComponent(name))
+      guard let target = Self.reserve(batch.appendingPathComponent(name)) else { return done(nil) }
+      // The provided file is deleted when this handler returns: copy now, to
+      // a hidden temporary name, then rename over the reserved placeholder.
+      let partial = batch.appendingPathComponent(".partial-\(UUID().uuidString)")
       do {
-        // The provided file is deleted when this handler returns: copy now.
-        try FileManager.default.copyItem(at: url, to: target)
+        try FileManager.default.copyItem(at: url, to: partial)
+        guard Darwin.rename(partial.path, target.path) == 0 else { throw CocoaError(.fileWriteUnknown) }
         done(target.lastPathComponent)
       } catch {
+        try? FileManager.default.removeItem(at: partial)
+        try? FileManager.default.removeItem(at: target)
         done(nil)
       }
     }
   }
 
   private static func write(_ text: String, named name: String, in batch: URL) -> String? {
-    let target = unique(batch.appendingPathComponent(name))
+    guard let target = reserve(batch.appendingPathComponent(name)) else { return nil }
     do {
+      // Atomic write: a temporary file renamed over the reserved placeholder.
       try text.write(to: target, atomically: true, encoding: .utf8)
       return target.lastPathComponent
     } catch {
+      try? FileManager.default.removeItem(at: target)
       return nil
     }
   }
 
-  private static func unique(_ url: URL) -> URL {
-    var candidate = url
-    var index = 2
+  /// Atomically claims a free name (`name`, `name 2`, …) by creating an empty
+  /// file with O_EXCL: providers finish concurrently and may share a name.
+  private static func reserve(_ url: URL) -> URL? {
     let base = url.deletingPathExtension().lastPathComponent
     let ext = url.pathExtension
-    while FileManager.default.fileExists(atPath: candidate.path) {
-      candidate = url.deletingLastPathComponent()
-        .appendingPathComponent(ext.isEmpty ? "\(base) \(index)" : "\(base) \(index).\(ext)")
-      index += 1
+    for index in 1...10_000 {
+      let name = index == 1 ? url.lastPathComponent
+        : (ext.isEmpty ? "\(base) \(index)" : "\(base) \(index).\(ext)")
+      let candidate = url.deletingLastPathComponent().appendingPathComponent(name)
+      let fd = Darwin.open(candidate.path, O_CREAT | O_EXCL | O_WRONLY, 0o644)
+      if fd >= 0 {
+        Darwin.close(fd)
+        return candidate
+      }
+      if errno != EEXIST { return nil }
     }
-    return candidate
+    return nil
+  }
+
+  /// Same policy as the app's IntakeStore: batches the extension never
+  /// finished are dropped after 24 h; complete batches the app never took
+  /// after 7 days (the originals stay in the sharing app).
+  private static func pruneStale(_ intake: URL) {
+    let fm = FileManager.default
+    guard let batches = try? fm.contentsOfDirectory(
+      at: intake, includingPropertiesForKeys: [.creationDateKey, .contentModificationDateKey])
+    else { return }
+    let now = Date()
+    for batch in batches {
+      let values = try? batch.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+      let age = now.timeIntervalSince(values?.creationDate ?? values?.contentModificationDate ?? now)
+      let complete = fm.fileExists(atPath: batch.appendingPathComponent(".complete").path)
+      if age > (complete ? 7 * 24 * 60 * 60 : 24 * 60 * 60) { try? fm.removeItem(at: batch) }
+    }
   }
 
   private func finish(_ message: String) {

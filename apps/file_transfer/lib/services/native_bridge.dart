@@ -150,8 +150,9 @@ abstract final class NativeBridge {
   }
 
   /// Windows: opens a file with its associated application through
-  /// ShellExecuteEx (never cmd.exe). Executable and script types are refused
-  /// unless [allowExecutable] is true. Other platforms: [OpenFileResult.unsupported].
+  /// ShellExecuteEx (never cmd.exe). Executable, script, installer, disk
+  /// image and shortcut types (a superset of core's isPotentiallyExecutable)
+  /// are refused unless [allowExecutable] is true. Other platforms: [OpenFileResult.unsupported].
   static Future<OpenFileResult> openFileSafely(
     File file, {
     bool allowExecutable = false,
@@ -207,8 +208,10 @@ abstract final class NativeBridge {
     }
   }
 
-  /// Windows: %LOCALAPPDATA%\Ulash (created). Null elsewhere or on failure;
-  /// callers keep using the platform's application-support directory.
+  /// Windows: %LOCALAPPDATA%\Ulash (created). Null elsewhere, on failure and
+  /// when running as an MSIX package (AppData is virtualised there and there
+  /// is no 1.0 Roaming data to migrate); callers then keep using the
+  /// platform's application-support directory.
   static Future<Directory?> localDataDirectory() async {
     if (!Platform.isWindows) return null;
     return _desktopDirectory('localDataDirectory');
