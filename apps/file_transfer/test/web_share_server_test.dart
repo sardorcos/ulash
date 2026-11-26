@@ -137,7 +137,17 @@ class _Harness {
 
   Future<void> close() async {
     await server.stop();
-    await dir.delete(recursive: true);
+    // Windows runners: antivirus may briefly hold freshly written files.
+    // A real handle leak still fails after the retries.
+    for (var attempt = 0; ; attempt++) {
+      try {
+        await dir.delete(recursive: true);
+        return;
+      } on FileSystemException {
+        if (attempt >= 20) rethrow;
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+    }
   }
 }
 
@@ -305,12 +315,22 @@ void main() {
       try {
         expect(h.server.boundAddress, InternetAddress.loopbackIPv4);
         final http = HttpClient();
-        final request = await http.postUrl(h.base.resolve('ask'));
-        request.add(utf8.encode('{"files":[${'1,' * 40000}1]}'));
-        final response = await request.close();
-        await response.drain<void>();
-        http.close(force: true);
-        expect(response.statusCode, 413);
+        // The server answers 413 without reading the rest of the body. On
+        // Windows that resets the connection before the client sees the
+        // status; either outcome means the ask was refused.
+        int? status;
+        try {
+          final request = await http.postUrl(h.base.resolve('ask'));
+          request.add(utf8.encode('{"files":[${'1,' * 40000}1]}'));
+          final response = await request.close();
+          await response.drain<void>();
+          status = response.statusCode;
+        } on IOException {
+          status = null;
+        } finally {
+          http.close(force: true);
+        }
+        if (status != null) expect(status, 413);
         expect(h.asks, 0);
         await _waitUntil(() => stopped == 1, 'expiry reported');
         expect(h.server.running, isFalse);

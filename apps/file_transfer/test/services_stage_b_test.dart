@@ -405,7 +405,7 @@ void main() {
           ['Album', 'trip', 'photo.jpg'],
         );
         expect(files['notes.txt']!.previewPath, isNull);
-        expect(b.controller.saveLocationLabel, visible.path);
+        expect(b.controller.saveLocationLabel, visibleRoot);
 
         // Originals are untouched.
         expect(File(p.join(album, 'trip', 'photo.jpg')).existsSync(), isTrue);
