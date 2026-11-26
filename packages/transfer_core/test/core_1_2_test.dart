@@ -128,6 +128,7 @@ void main() {
       Duration requestHeaderTimeout = const Duration(seconds: 10),
       Duration bodyReadDeadline = const Duration(seconds: 5),
       int nearbyRequestsPerMinute = 5,
+      int maxConnections = 64,
     }) async {
       host = CoreHost(
         identity: receiverIdentity,
@@ -137,6 +138,7 @@ void main() {
         requestHeaderTimeout: requestHeaderTimeout,
         bodyReadDeadline: bodyReadDeadline,
         nearbyRequestsPerMinute: nearbyRequestsPerMinute,
+        maxConnections: maxConnections,
       );
       endpoint = await host.start();
       client = CoreClient(
@@ -150,10 +152,12 @@ void main() {
       Duration requestHeaderTimeout = const Duration(seconds: 10),
       Duration bodyReadDeadline = const Duration(seconds: 5),
       int nearbyRequestsPerMinute = 5,
+      int maxConnections = 64,
     }) async {
       client.close();
       await host.close();
       await startHost(
+        maxConnections: maxConnections,
         handshakeTimeout: handshakeTimeout,
         requestHeaderTimeout: requestHeaderTimeout,
         bodyReadDeadline: bodyReadDeadline,
@@ -251,6 +255,42 @@ void main() {
     );
 
     test(
+      'at the global cap the heaviest address is evicted, not small holders',
+      () async {
+        await restartHost(maxConnections: 6);
+        Future<(Socket, Future<String>)> from(String source) async {
+          final socket = await Socket.connect(
+            endpoint.host,
+            endpoint.port,
+            sourceAddress: source,
+          );
+          return (socket, untilClosed(socket));
+        }
+
+        final small = await from('127.0.0.3');
+        final flood = [for (var i = 0; i < 5; i++) await from('127.0.0.2')];
+        final newcomer = await from('127.0.0.4');
+        try {
+          // The oldest connection of the flooding address goes ...
+          await flood.first.$2.timeout(const Duration(seconds: 3));
+          // ... while the small holder (older still) and the newcomer stay.
+          var smallClosed = false;
+          unawaited(small.$2.then((_) => smallClosed = true));
+          var newcomerClosed = false;
+          unawaited(newcomer.$2.then((_) => newcomerClosed = true));
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+          expect(smallClosed, isFalse);
+          expect(newcomerClosed, isFalse);
+        } finally {
+          for (final (socket, _) in [small, ...flood, newcomer]) {
+            socket.destroy();
+          }
+        }
+      },
+      skip: Platform.isLinux ? false : 'needs several loopback addresses',
+    );
+
+    test(
       'a TCP connection that never starts TLS is dropped at the deadline',
       () async {
         await restartHost(handshakeTimeout: const Duration(milliseconds: 300));
@@ -339,28 +379,38 @@ void main() {
       },
     );
 
-    test('both screens derive the same six-digit code', () async {
+    test('both screens derive the same commit/reveal code', () async {
       final invite = host.createInvite();
-      await client.requestPairing(
+      final progress = await client.requestPairing(
         invite,
         identity: senderIdentity,
         peers: senderPeers,
       );
+      expect(progress.legacy, isFalse);
+      expect(progress.legacyCode, isNull);
+      expect(progress.sas, matches(RegExp(r'^[0-9]{6}$')));
       final pending = host.pendingPairings.single;
-      expect(pending.sas, matches(RegExp(r'^[0-9]{6}$')));
-      expect(invite.sasFor(senderIdentity.serverPin), pending.sas);
-      // A different joining key (an interceptor) yields a different code.
-      final attacker = await DeviceIdentity.generate(displayName: 'Mallory');
-      expect(invite.sasFor(attacker.serverPin), isNot(pending.sas));
+      expect(pending.legacy, isFalse);
+      expect(pending.sas, progress.sas);
       expect(pending.displayName, 'Sender');
       expect(
-        () => pairingSas(
-          inviteDigest: 'xyz',
-          hostPin: receiverIdentity.serverPin,
-          joinerPin: senderIdentity.serverPin,
-        ),
-        throwsA(anything),
+        (await client.pendingPairingCode(senderPeers))?.code,
+        progress.sas,
       );
+      // Retrying the same request (e.g. after a restart) keeps the code.
+      final again = await client.requestPairing(
+        invite,
+        identity: senderIdentity,
+        peers: senderPeers,
+      );
+      expect(again.sas, progress.sas);
+      expect(host.pendingPairings, hasLength(1));
+      await host.approvePairing(pending.requestId);
+      final peer = await client.completePairing(
+        identity: senderIdentity,
+        peers: senderPeers,
+      );
+      expect(peer?.peerId, receiverIdentity.peerId);
     });
 
     test('peer names are sanitized at pairing', () async {
@@ -391,15 +441,14 @@ void main() {
         expect(fetched.inviteId, opened.inviteId);
         expect(fetched.hostPin, receiverIdentity.serverPin);
         expect(fetched.endpoint, endpoint);
-        await client.requestPairing(
+        expect(fetched.discovered, isTrue);
+        final progress = await client.requestPairing(
           fetched,
           identity: senderIdentity,
           peers: senderPeers,
         );
-        expect(
-          host.pendingPairings.single.sas,
-          fetched.sasFor(senderIdentity.serverPin),
-        );
+        expect(progress.legacy, isFalse);
+        expect(host.pendingPairings.single.sas, progress.sas);
         host.closeNearbyPairing();
         await expectLater(
           CoreClient.fetchNearbyInvite(endpoint),
@@ -623,6 +672,15 @@ void main() {
         'b.apk',
         'c.app',
         'd.sh',
+        'trailing.exe. .',
+        'setup.msixbundle',
+        'disk.iso',
+        'disk.vhdx',
+        'help.chm',
+        'page.mhtml',
+        'x.search-ms',
+        'y.settingcontent-ms',
+        'addin.xll',
       ]) {
         expect(isPotentiallyExecutable(name), isTrue, reason: name);
       }
@@ -914,11 +972,85 @@ void main() {
       },
     );
 
+    test(
+      'recovery after the final rename only removes the temporary',
+      () async {
+        await open(receivedDirectory: received);
+        final transfer = await receive(
+          [
+            fileFor([1, 2, 3]),
+          ],
+          {
+            'file-1': [1, 2, 3],
+          },
+        );
+        final file = transfer.files.single;
+        await inbox!.close();
+        inbox = null;
+        // Simulate a crash between the verified copy taking its final name and
+        // the deletion of the source (cross-volume commit).
+        final staging = File(
+          p.join(
+            inboxDirectory.path,
+            '.staging',
+            '${file.storageIncarnationId}.part',
+          ),
+        )..writeAsBytesSync([1, 2, 3]);
+        final db = sqlite3.open(p.join(inboxDirectory.path, 'inbox.sqlite'));
+        db.execute("UPDATE inbox_files SET state='committing'");
+        db.execute("UPDATE inbox_transfers SET state='transferring'");
+        db.close();
+        await open(receivedDirectory: received);
+        final recovered = inbox!.status(transfer.transferId).files.single;
+        expect(recovered.state, FileState.committed);
+        expect(recovered.finalPath, file.finalPath);
+        expect(File(file.finalPath!).readAsBytesSync(), [1, 2, 3]);
+        expect(staging.existsSync(), isFalse);
+      },
+    );
+
     final shm = Directory('/dev/shm');
     final crossDevice =
         Platform.isLinux &&
         shm.existsSync() &&
         FileStat.statSync(shm.path).type == FileSystemEntityType.directory;
+    test('committing into a received directory on another volume', () async {
+      final other = shm.createTempSync('transfer-xdev-commit-');
+      try {
+        final target = Directory(p.join(other.path, 'Downloads'));
+        await open(receivedDirectory: target);
+        final bytes = List<int>.generate(4000, (i) => i % 251);
+        final transfer = await receive(
+          [
+            fileFor(bytes, id: 'a', name: 'big.bin'),
+            fileFor(const [], id: 'b', name: 'empty.txt'),
+          ],
+          {'a': bytes, 'b': const []},
+        );
+        expect(transfer.state, TransferState.completed);
+        final big = transfer.files.first.finalPath!;
+        expect(p.isWithin(target.path, big), isTrue);
+        expect(File(big).readAsBytesSync(), bytes);
+        expect(File(transfer.files.last.finalPath!).lengthSync(), 0);
+        // No staging leftovers and no part files next to the results.
+        expect(
+          Directory(p.join(inboxDirectory.path, '.staging')).listSync(),
+          isEmpty,
+        );
+        expect(
+          Directory(p.dirname(big))
+              .listSync()
+              .map((entry) => p.basename(entry.path))
+              .where((name) => name.startsWith('.ulash-')),
+          isEmpty,
+        );
+      } finally {
+        await inbox?.close();
+        inbox = null;
+        other.deleteSync(recursive: true);
+      }
+    }, skip: crossDevice ? false : 'needs a second filesystem (/dev/shm)');
+
     test(
       'migration and adoption fall back to copying across volumes',
       () async {

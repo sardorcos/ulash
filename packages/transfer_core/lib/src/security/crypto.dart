@@ -78,10 +78,10 @@ String spkiPinFromCertificateDer(List<int> certificateDer) {
 /// its public key), e.g. `3FA2-91C0`. Shown on both devices during pairing so
 /// users can confirm they approve the device they are holding. It is a human
 /// check, not a cryptographic identifier: always pin the full key.
-/// Six-digit pairing verification code (SAS) shown on both devices. It binds
-/// the one-time invitation (its digest) to both device keys: an attacker who
-/// obtains the invitation but substitutes its own key gets a different code,
-/// and the code cannot be precomputed because the invitation is random.
+/// Superseded invitation-bound code. NOT safe when the invitation can be
+/// observed (nearby pairing): an attacker who sees the invitation and the
+/// joiner key can grind its own inputs to match. Hosts no longer show it; use
+/// [pairingSasV2] (commit/reveal).
 String pairingSas({
   required String inviteDigest,
   required String hostPin,
@@ -96,6 +96,48 @@ String pairingSas({
       .convert(
         utf8.encode(
           'ulash-pairing-sas-v1\n$inviteDigest\n$hostPin\n$joinerPin',
+        ),
+      )
+      .bytes;
+  final value =
+      ((digest[0] << 24) | (digest[1] << 16) | (digest[2] << 8) | digest[3]) %
+      1000000;
+  return value.toString().padLeft(6, '0');
+}
+
+/// Commitment to the joiner's pairing nonce (sent before the host nonce is
+/// known): hex SHA-256 over a domain tag and the nonce.
+String pairingCommitment(String joinerNonce) {
+  if (!isCanonicalToken(joinerNonce)) {
+    throw const FormatException('Invalid pairing nonce');
+  }
+  return sha256
+      .convert(utf8.encode('ulash-pairing-commit-v1\n$joinerNonce'))
+      .toString();
+}
+
+/// Six-digit verification code of the commit/reveal pairing scheme
+/// (numeric comparison). The joiner commits to its nonce before it learns the
+/// host nonce, and the host picks its nonce before the joiner nonce is
+/// revealed, so neither side (nor a man in the middle playing one of them)
+/// can choose inputs that steer the code: a substituted key matches with
+/// probability 10^-6 per attempt, and each invitation allows one attempt.
+String pairingSasV2({
+  required String hostNonce,
+  required String joinerNonce,
+  required String hostPin,
+  required String joinerPin,
+}) {
+  if (!isCanonicalToken(hostNonce) ||
+      !isCanonicalToken(joinerNonce) ||
+      !isCanonicalPin(hostPin) ||
+      !isCanonicalPin(joinerPin)) {
+    throw const FormatException('Invalid pairing code input');
+  }
+  final digest = sha256
+      .convert(
+        utf8.encode(
+          'ulash-pairing-sas-v2\n$hostNonce\n$joinerNonce\n$hostPin\n$joinerPin',
         ),
       )
       .bytes;

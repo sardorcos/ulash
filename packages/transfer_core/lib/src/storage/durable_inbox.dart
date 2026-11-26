@@ -474,8 +474,7 @@ class DurableInbox {
     if (receivedRoot == null) return;
     final legacyRoot = Directory(p.join(root.path, 'received'));
     for (final row in _db.select(
-      'SELECT transfer_id,file_id,final_path,moved_from FROM inbox_files '
-      'WHERE moved_from IS NOT NULL',
+      'SELECT * FROM inbox_files WHERE moved_from IS NOT NULL',
     )) {
       await _finishMove(row, legacyRoot);
     }
@@ -498,11 +497,13 @@ class DurableInbox {
         continue;
       }
       String? newStored;
+      var moved = false;
       try {
+        final manifest = _fileSnapshot(row).manifest;
         final (_, stored) = await _commitTarget(
           transferId,
           row['incarnation'] as String,
-          _fileSnapshot(row).manifest,
+          manifest,
         );
         newStored = stored;
         journalTransaction(_db, () {
@@ -512,13 +513,22 @@ class DurableInbox {
             [stored, oldStored, transferId, fileId],
           );
         });
-        await _moveFile(File(oldPath), _finalAbs(stored));
+        await _moveVerified(
+          File(oldPath),
+          _finalAbs(stored),
+          partName: '.ulash-${row['incarnation']}.moving',
+          sizeBytes: manifest.sizeBytes,
+          sha256: manifest.sha256,
+        );
+        moved = true;
         _db.execute(
           'UPDATE inbox_files SET moved_from=NULL WHERE transfer_id=? AND file_id=?',
           [transferId, fileId],
         );
-        await _removeEmptyParents(File(oldPath).parent, legacyRoot);
       } on Object {
+        // After the move the journal must keep the new path: a leftover
+        // `moved_from` is finished on the next open (the old file is gone).
+        if (moved) continue;
         // Keep the result where it is; release the reserved name.
         _db.execute(
           'UPDATE inbox_files SET final_path=?,moved_from=NULL '
@@ -536,6 +546,12 @@ class DurableInbox {
             // Best effort.
           }
         }
+        continue;
+      }
+      try {
+        await _removeEmptyParents(File(oldPath).parent, legacyRoot);
+      } on Object {
+        // Cosmetic only: an empty legacy folder may remain.
       }
     }
   }
@@ -552,7 +568,14 @@ class DurableInbox {
         // The move did not complete; the target is our reservation (or a
         // partial copy of this very file), so replacing it is safe.
         await validateManagedDirectory(receivedRoot!, File(target).parent);
-        await _moveFile(File(oldPath), target);
+        final manifest = _fileSnapshot(row).manifest;
+        await _moveVerified(
+          File(oldPath),
+          target,
+          partName: '.ulash-${row['incarnation']}.moving',
+          sizeBytes: manifest.sizeBytes,
+          sha256: manifest.sha256,
+        );
       }
       _db.execute(
         'UPDATE inbox_files SET moved_from=NULL WHERE transfer_id=? AND file_id=?',
@@ -568,22 +591,80 @@ class DurableInbox {
     }
   }
 
-  /// Rename, or copy+flush+delete when the target is on another volume.
-  static Future<void> _moveFile(File source, String target) async {
+  /// Moves [source] to [target], which must be absent or our own empty
+  /// reservation (never a user's file).
+  ///
+  /// Same volume: one atomic rename. Another volume (EXDEV; Windows
+  /// ERROR_NOT_SAME_DEVICE when the data folder and Downloads are on
+  /// different drives): copy into the sibling [partName] next to the target
+  /// (exclusive create), verify length and SHA-256, rename it over the
+  /// reservation, then delete the source. Repeating after a crash is safe: the
+  /// source stays until the verified copy has its final name, and a target
+  /// that already holds the verified content only needs the source removed.
+  static Future<void> _moveVerified(
+    File source,
+    String target, {
+    required String partName,
+    required int sizeBytes,
+    required String sha256,
+  }) async {
+    final targetKind = await FileSystemEntity.type(target, followLinks: false);
+    if (targetKind == FileSystemEntityType.file) {
+      final length = await File(target).length();
+      if (length == sizeBytes &&
+          (length == 0 || await hashFileIsolated(File(target)) == sha256)) {
+        // Interrupted after the final rename: only the source is left.
+        if (await FileSystemEntity.type(source.path, followLinks: false) ==
+            FileSystemEntityType.file) {
+          await source.delete();
+        }
+        return;
+      }
+      if (length != 0) {
+        throw const StorageException(
+          'DESTINATION_EXISTS',
+          'Existing result will not be overwritten.',
+        );
+      }
+    } else if (targetKind != FileSystemEntityType.notFound) {
+      throw const StorageException(
+        'DESTINATION_EXISTS',
+        'Existing result will not be overwritten.',
+      );
+    }
     try {
       await source.rename(target);
       return;
     } on FileSystemException {
-      // Cross-device: fall through to copy.
+      // Typically another volume; any real problem resurfaces in the copy.
     }
-    final output = await File(target).open(mode: FileMode.write);
+    final part = File(p.join(p.dirname(target), partName));
+    if (await FileSystemEntity.type(part.path, followLinks: false) ==
+        FileSystemEntityType.file) {
+      await part.delete(); // Ours (named after the incarnation): a stale copy.
+    }
+    await part.create(exclusive: true);
     try {
-      await for (final chunk in source.openRead()) {
-        await output.writeFrom(chunk);
+      final copied = await copyAndHashIsolated(
+        source,
+        part,
+        maxBytes: sizeBytes,
+      );
+      if (copied.length != sizeBytes || copied.sha256 != sha256) {
+        throw const StorageException(
+          'RECOVERY_INCONSISTENT',
+          'Copied file failed verification.',
+        );
       }
-      await output.flush();
-    } finally {
-      await output.close();
+      // Same folder: atomic, and replaces only our empty reservation.
+      await part.rename(target);
+    } catch (_) {
+      try {
+        if (await part.exists()) await part.delete();
+      } catch (_) {
+        /* Best effort. */
+      }
+      rethrow;
     }
     await source.delete();
   }
@@ -1753,7 +1834,13 @@ class DurableInbox {
       );
       _refreshTransfer(writer.transferId);
     });
-    await temporary.rename(finalPath);
+    await _moveVerified(
+      temporary,
+      finalPath,
+      partName: '.ulash-${writer.incarnation}.part',
+      sizeBytes: file.manifest.sizeBytes,
+      sha256: file.manifest.sha256,
+    );
     journalTransaction(_db, () {
       _db.execute(
         "UPDATE inbox_files SET state='committed',error_code=NULL WHERE transfer_id=? AND file_id=?",
@@ -1938,19 +2025,13 @@ class DurableInbox {
             );
           }
           if (!renamed) {
-            final targetKind = await FileSystemEntity.type(
+            await _moveVerified(
+              temporary,
               finalPath,
-              followLinks: false,
+              partName: '.ulash-${row['incarnation']}.part',
+              sizeBytes: file.manifest.sizeBytes,
+              sha256: file.manifest.sha256,
             );
-            if (targetKind != FileSystemEntityType.notFound &&
-                (targetKind != FileSystemEntityType.file ||
-                    await target.length() != 0)) {
-              throw const StorageException(
-                'DESTINATION_EXISTS',
-                'Existing result will not be overwritten.',
-              );
-            }
-            await temporary.rename(finalPath);
           }
           update(
             transferId,

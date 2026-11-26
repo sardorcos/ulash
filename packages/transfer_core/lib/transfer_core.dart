@@ -13,7 +13,8 @@ export 'src/storage/storage_support.dart'
         journalTransaction,
         safeDisplayName,
         hashFileIsolated;
-export 'src/security/crypto.dart' show shortFingerprint, pairingSas;
+export 'src/security/crypto.dart'
+    show shortFingerprint, pairingSas, pairingSasV2, pairingCommitment;
 export 'src/security/secret_store.dart';
 export 'src/security/device_identity.dart';
 export 'src/security/trusted_peer_store.dart';

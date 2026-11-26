@@ -18,11 +18,38 @@ final class PairingProgress {
     required this.pairingId,
     required this.state,
     required this.expiresAt,
+    this.sas,
+    this.legacy = false,
+    this.legacyCode,
   });
   final String requestId;
   final String pairingId;
   final String state;
   final DateTime expiresAt;
+
+  /// Six-digit commit/reveal code to show on this (joining) device; the host
+  /// shows the same code (`PendingPairing.sas`). Available only after the
+  /// host's nonce arrived and this device revealed its own. Null when
+  /// [legacy].
+  final String? sas;
+
+  /// The host predates commit/reveal (1.0/1.1; QR invitations only). There is
+  /// no six-digit code: show [legacyCode], which such hosts display.
+  final bool legacy;
+
+  /// This device's key code (`ABCD-1234`) for [legacy] hosts.
+  final String? legacyCode;
+
+  PairingProgress _with({String? sas, bool? legacy, String? legacyCode}) =>
+      PairingProgress(
+        requestId: requestId,
+        pairingId: pairingId,
+        state: state,
+        expiresAt: expiresAt,
+        sas: sas ?? this.sas,
+        legacy: legacy ?? this.legacy,
+        legacyCode: legacyCode ?? this.legacyCode,
+      );
   factory PairingProgress.fromJson(Map<String, dynamic> json) =>
       PairingProgress(
         requestId: json['requestId'] as String,
@@ -78,6 +105,14 @@ final class CoreClient {
 
   /// Persists the request ID and reverse credential BEFORE the network request.
   /// Receiving this result never means the other user has approved pairing.
+  ///
+  /// Commit/reveal: the request carries a commitment to a random nonce; the
+  /// host answers with its own nonce, then this device reveals its nonce and
+  /// derives [PairingProgress.sas]. Show that code and let the user compare it
+  /// with the host's screen. A 1.0/1.1 host (which refuses the commitment
+  /// field) is retried without it for scanned invitations only
+  /// ([PairingProgress.legacy]); a [PairingInvite.discovered] invitation
+  /// never falls back (`UPGRADE_REQUIRED`).
   Future<PairingProgress> requestPairing(
     PairingInvite invite, {
     required DeviceIdentity identity,
@@ -115,24 +150,119 @@ final class CoreClient {
           ? null
           : validateEndpoint(localEndpoint).toString(),
       'hostEndpoint': endpoint.toString(),
+      'joinerNonce': randomToken(),
+      'discovered': invite.discovered,
     };
     await peers.secretStore.write(_pendingKey, jsonEncode(record));
+    Map<String, dynamic> response;
+    try {
+      response = await _postPairingRequest(record);
+    } on NetworkException catch (error) {
+      final fallback =
+          error.code == 'INVALID_REQUEST' &&
+          record['joinerNonce'] != null &&
+          record['hostNonce'] == null &&
+          record['discovered'] != true &&
+          !invite.discovered;
+      if (!fallback) rethrow;
+      // A 1.0/1.1 host rejects the unknown commitment field. The host key is
+      // authenticated by the scanned QR code, so the older scheme is safe.
+      record
+        ..remove('joinerNonce')
+        ..['legacy'] = true;
+      await peers.secretStore.write(_pendingKey, jsonEncode(record));
+      response = await _postPairingRequest(record);
+    }
+    await _rememberPairingResponse(record, response, peers);
+    await _revealIfNeeded(record, peers);
+    return _progressOf(record, PairingProgress.fromJson(response));
+  }
+
+  Future<Map<String, dynamic>> _postPairingRequest(
+    Map<String, dynamic> record,
+  ) => _json(
+    'POST',
+    '/v1/pairing/requests',
+    authorization: 'Invite ${record['inviteSecret']}',
+    body: {
+      'requestId': record['requestId'],
+      'inviteId': record['inviteId'],
+      'peerId': record['peerId'],
+      'serverPin': record['selfPin'],
+      'displayName': record['displayName'],
+      'reverseToken': record['reverseToken'],
+      if (record['endpoint'] != null) 'endpoint': record['endpoint'],
+      if (record['joinerNonce'] != null)
+        'commitment': pairingCommitment(record['joinerNonce'] as String),
+    },
+  );
+
+  /// Reveals this device's nonce once the host nonce is known (never before)
+  /// and records the code. Safe to repeat after a restart.
+  Future<void> _revealIfNeeded(
+    Map<String, dynamic> record,
+    TrustedPeerStore peers,
+  ) async {
+    final joinerNonce = record['joinerNonce'];
+    if (joinerNonce is! String || record['revealed'] == true) return;
+    if (record['hostNonce'] is! String) {
+      // Interrupted before the host answered: repeat the (idempotent) request.
+      await _rememberPairingResponse(
+        record,
+        await _postPairingRequest(record),
+        peers,
+      );
+    }
     final response = await _json(
       'POST',
-      '/v1/pairing/requests',
+      '/v1/pairing/requests/${record['requestId']}/reveal',
       authorization: 'Invite ${record['inviteSecret']}',
-      body: {
-        'requestId': record['requestId'],
-        'inviteId': record['inviteId'],
-        'peerId': record['peerId'],
-        'serverPin': record['selfPin'],
-        'displayName': record['displayName'],
-        'reverseToken': record['reverseToken'],
-        if (record['endpoint'] != null) 'endpoint': record['endpoint'],
-      },
+      body: {'nonce': joinerNonce},
     );
-    await _rememberPairingResponse(record, response, peers);
-    return PairingProgress.fromJson(response);
+    if (response['requestId'] != record['requestId'] ||
+        response['revealed'] != true) {
+      throw const NetworkException(
+        'PROTOCOL_CONFLICT',
+        'Pairing code was not confirmed',
+      );
+    }
+    record['revealed'] = true;
+    record['sas'] = pairingSasV2(
+      hostNonce: record['hostNonce'] as String,
+      joinerNonce: joinerNonce,
+      hostPin: serverPin,
+      joinerPin: record['selfPin'] as String,
+    );
+    await peers.secretStore.write(_pendingKey, jsonEncode(record));
+  }
+
+  PairingProgress _progressOf(
+    Map<String, dynamic> record,
+    PairingProgress progress,
+  ) {
+    final legacy = record['joinerNonce'] == null;
+    return progress._with(
+      sas: record['sas'] as String?,
+      legacy: legacy,
+      legacyCode: legacy ? shortFingerprint(record['peerId'] as String) : null,
+    );
+  }
+
+  /// The code of the pairing in progress with this host (after a restart, for
+  /// example): the six-digit [PairingProgress.sas], or for a legacy host the
+  /// key code. Null when no pairing is pending or the code is not known yet.
+  Future<({String code, bool legacy})?> pendingPairingCode(
+    TrustedPeerStore peers,
+  ) async {
+    final raw = await peers.secretStore.read(_pendingKey);
+    if (raw == null) return null;
+    final record = jsonDecode(raw) as Map<String, dynamic>;
+    if (record['hostPin'] != serverPin) return null;
+    if (record['joinerNonce'] == null) {
+      return (code: shortFingerprint(record['peerId'] as String), legacy: true);
+    }
+    final sas = record['sas'];
+    return sas is String ? (code: sas, legacy: false) : null;
   }
 
   /// Poll once. Returns null while manual approval is pending, otherwise commits
@@ -163,6 +293,7 @@ final class CoreClient {
       );
     }
     if (record['credential'] == null) {
+      await _revealIfNeeded(record, peers);
       final response = await _json(
         'GET',
         '/v1/pairing/requests/${record['requestId']}',
@@ -221,6 +352,20 @@ final class CoreClient {
       );
     }
     record['pairingId'] = response['pairingId'];
+    final hostNonce = response['hostNonce'];
+    if (record['joinerNonce'] != null) {
+      // We committed: a host that understood the commitment must answer with
+      // a nonce, and it must never change.
+      if (hostNonce is! String ||
+          !isCanonicalToken(hostNonce) ||
+          (record['hostNonce'] != null && record['hostNonce'] != hostNonce)) {
+        throw const NetworkException(
+          'PROTOCOL_CONFLICT',
+          'Invalid pairing nonce',
+        );
+      }
+      record['hostNonce'] = hostNonce;
+    }
     if (response['credential'] != null) {
       if (!isCanonicalToken(response['credential'] as String)) {
         throw const NetworkException(
@@ -529,7 +674,7 @@ final class CoreClient {
   /// only a hint and no key is pinned yet, so the TLS certificate presented
   /// here must carry the same key as the invitation (`hostPin`). Trust still
   /// comes from the host's manual approval with matching six-digit codes on
-  /// both screens ([PairingInvite.sasFor] / `PendingPairing.sas`).
+  /// both screens (`PairingProgress.sas` / `PendingPairing.sas`).
   static Future<PairingInvite> fetchNearbyInvite(
     Uri endpoint, {
     Duration timeout = const Duration(seconds: 5),
@@ -598,6 +743,7 @@ final class CoreClient {
         hostPin: invite.hostPin,
         displayName: invite.displayName,
         endpoint: origin,
+        discovered: true,
         endpoints: [
           origin,
           ...invite.endpoints.where((item) => item != origin),
