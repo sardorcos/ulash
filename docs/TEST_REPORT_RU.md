@@ -26,7 +26,7 @@
 | `flutter analyze` (приложение) | без замечаний |
 | `flutter test` (приложение) | 101 пройдено, 1 пропущен (генератор скриншотов) |
 | GitHub Actions `Verify source` на `bc32e0d` с нативными сборками | компиляция пройдена: `flutter build ios --release --no-codesign` (macOS), `flutter build apk --debug` (Ubuntu), `flutter build windows` (Windows); анализ и тесты на Ubuntu пройдены |
-| Тесты на Windows | GITHUB_WINDOWS |
+| GitHub Actions `Verify source` на `9645375` | пройдено: анализ и все тесты на Ubuntu и Windows (после правок тестов под короткие пути Windows 8.3 и сброс соединения при отказе сервера) |
 | Codemagic `ios-testflight`, ветка `release/1.2` (`bc32e0d`) | подписанный `Ulash.ipa` 1.2.0 (263301028) загружен, статус в App Store Connect **VALID**, внутренняя группа «Internal Testers» имеет доступ ко всем сборкам. Собрано без расширения «Поделиться» (App Group ещё не создана). Предупреждение Apple 90725: с апреля 2027 нужен SDK iOS 27 |
 | Независимое ревью ядра, сервисов и нативного кода | найденные проблемы исправлены: подмена кода «рядом», перенос между дисками, «Открыть в» удалял оригинал на iOS, приём `file://` на Android, список блокировки Windows, повторное использование разрешения в браузере, утечки `.part` |
 
