@@ -98,6 +98,59 @@ abstract class AppController extends ChangeNotifier {
       Future.error(UnsupportedError('Sharing is unavailable.'));
   Future<void> exportDiagnostics() =>
       Future.error(UnsupportedError('Diagnostics are unavailable.'));
+
+  // ---- 1.2 contract (implemented by TransferAppController) ----
+
+  /// Public privacy policy and support pages (required by the stores).
+  Uri get privacyPolicyUrl =>
+      Uri.parse('https://sardorcos.github.io/neverland-legal/ulash/privacy.html');
+  Uri get supportUrl =>
+      Uri.parse('https://sardorcos.github.io/neverland-legal/ulash/support.html');
+  Future<void> openExternalUrl(Uri url) async {}
+
+  /// Joiner side of a pairing in progress: the 6-digit code that must match
+  /// the code shown on the other device (null when not pairing).
+  OutgoingPairing? get outgoingPairing => null;
+
+  /// Devices on this network that currently accept pairing without a QR code.
+  List<NearbyDevice> get nearbyPairable => const [];
+  Future<void> pairNearby(String nearbyId) =>
+      Future.error(UnsupportedError('Not supported by this adapter.'));
+
+  /// Host side: this device is visible for QR-less pairing (time-limited).
+  bool get nearbyPairingOpen => false;
+  Future<void> setNearbyPairing(bool open) async {}
+
+  /// Sends a short text or link as a message.
+  Future<void> sendText(String peerId, String text) =>
+      Future.error(UnsupportedError('Not supported by this adapter.'));
+
+  /// Adds a whole folder (keeps its structure when the peer supports it).
+  Future<void> chooseFolder() =>
+      Future.error(UnsupportedError('Not supported by this adapter.'));
+
+  /// Opt-in browser link to download selected files / upload to this device.
+  WebShareState? get webShare => null;
+  Future<void> startWebShare({bool allowUpload = false}) =>
+      Future.error(UnsupportedError('Not supported by this adapter.'));
+  Future<void> stopWebShare() async {}
+
+  /// Saves a received photo/video into the system photo library.
+  Future<void> saveToPhotos(String transferId, String fileId) =>
+      Future.error(UnsupportedError('Not supported by this adapter.'));
+  bool get autoSaveToPhotos => false;
+  Future<void> setAutoSaveToPhotos(bool enabled) async {}
+
+  /// Desktop: shows a received file in Explorer/Finder.
+  Future<void> revealReceivedFile(String transferId, String fileId) =>
+      Future.error(UnsupportedError('Not supported by this adapter.'));
+
+  /// Copies the pairing invitation with sensitive/local-only clipboard flags
+  /// and clears it after the invitation expires.
+  Future<void> copyInvitation() async {}
+
+  /// Hides sensitive content (QR) from screenshots/app switcher while shown.
+  Future<void> setSecureScreen(bool enabled) async {}
   Future<void> setTemporaryQuota(int bytes) =>
       Future.error(UnsupportedError('Not supported by this adapter.'));
   Future<void> clearUnusedTemporary(List<String> fileIds) =>
@@ -158,6 +211,12 @@ class AppCapabilities {
     this.mediaSelection = false,
     this.share = false,
     this.diagnostics = false,
+    this.folderSelection = false,
+    this.textMessages = false,
+    this.nearbyPairing = false,
+    this.webShare = false,
+    this.photosSave = false,
+    this.revealInFolder = false,
   });
 
   final bool fileSelection;
@@ -177,6 +236,12 @@ class AppCapabilities {
   /// System share sheet for received files.
   final bool share;
   final bool diagnostics;
+  final bool folderSelection;
+  final bool textMessages;
+  final bool nearbyPairing;
+  final bool webShare;
+  final bool photosSave;
+  final bool revealInFolder;
 }
 
 @immutable
@@ -238,6 +303,8 @@ class TransferItem {
     this.canExport = false,
     this.canDelete = false,
     this.receivedFiles = const [],
+    this.kind = TransferKind.files,
+    this.messageText,
   });
 
   final String id;
@@ -264,6 +331,10 @@ class TransferItem {
 
   /// Only verified, committed files that the user can open explicitly.
   final List<ReceivedFile> receivedFiles;
+  final TransferKind kind;
+
+  /// Text of a message transfer (sent or received), shown inline.
+  final String? messageText;
 
   bool get isTerminal =>
       phase == TransferPhase.completed ||
@@ -281,6 +352,10 @@ class ReceivedFile {
     this.exportPhase = ExportPhase.notExported,
     this.exportDestination,
     this.exportDetail,
+    this.isMedia = false,
+    this.previewPath,
+    this.potentiallyExecutable = false,
+    this.relativeDirectory,
   });
 
   final String id;
@@ -289,6 +364,68 @@ class ReceivedFile {
   final ExportPhase exportPhase;
   final String? exportDestination;
   final String? exportDetail;
+
+  /// Photo or video that can be saved to the photo library.
+  final bool isMedia;
+
+  /// Local path for a thumbnail (images only); null when not previewable.
+  final String? previewPath;
+
+  /// Executable/script type: the interface must warn before opening.
+  final bool potentiallyExecutable;
+
+  /// Folder inside the transfer (folder transfers), forward slashes.
+  final String? relativeDirectory;
+}
+
+enum TransferKind { files, folder, text }
+
+@immutable
+class OutgoingPairing {
+  const OutgoingPairing({
+    required this.hostName,
+    required this.code,
+    this.waitingForApproval = true,
+  });
+  final String hostName;
+
+  /// 6 digits; the other device shows the same code.
+  final String code;
+  final bool waitingForApproval;
+}
+
+@immutable
+class NearbyDevice {
+  const NearbyDevice({
+    required this.id,
+    required this.name,
+    this.platform = DevicePlatform.unknown,
+  });
+  final String id;
+  final String name;
+  final DevicePlatform platform;
+}
+
+@immutable
+class WebShareState {
+  const WebShareState({
+    required this.url,
+    required this.expiresAt,
+    this.allowUpload = false,
+    this.connectedClients = 0,
+    this.downloadedFiles = 0,
+    this.uploadedFiles = 0,
+    this.sharedFileCount = 0,
+  });
+
+  /// http://<lan-ip>:<port>/<token> — encode as QR for the browser.
+  final Uri url;
+  final DateTime expiresAt;
+  final bool allowUpload;
+  final int connectedClients;
+  final int downloadedFiles;
+  final int uploadedFiles;
+  final int sharedFileCount;
 }
 
 enum ExportPhase {
