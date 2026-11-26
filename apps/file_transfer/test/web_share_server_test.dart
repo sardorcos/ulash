@@ -226,13 +226,21 @@ void main() {
         await _waitUntil(() => _empty(h.staging), 'aborted part removed');
         expect(await h.put(id, 0, List.filled(100, 1)), 403, reason: 'used');
         // Declared 2 bytes, sent 5 without a length (chunked).
+        // Refused without reading the rest; on Windows that can surface as
+        // a connection reset instead of the 400.
         final http = HttpClient();
-        final request = await http.putUrl(h.base.resolve('u/$id/1'));
-        request.add([1, 2, 3, 4, 5]);
-        final response = await request.close();
-        await response.drain<void>();
-        http.close(force: true);
-        expect(response.statusCode, 400);
+        try {
+          final request = await http.putUrl(h.base.resolve('u/$id/1'));
+          request.add([1, 2, 3, 4, 5]);
+          final response = await request.close();
+          await response.drain<void>();
+          expect(response.statusCode, 400);
+        } on IOException {
+          // Refused by reset.
+        } finally {
+          http.close(force: true);
+        }
+        await _waitUntil(() => _empty(h.staging), 'oversized part removed');
         expect(_empty(h.staging), isTrue);
         expect(h.stored, isEmpty);
         final visible = Directory(p.join(h.dir.path, 'up'))
